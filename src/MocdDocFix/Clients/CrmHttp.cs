@@ -1,0 +1,30 @@
+using System.Net;
+using MocdDocFix.Config;
+
+namespace MocdDocFix.Clients;
+
+public static class CrmHttp
+{
+    /// <summary>
+    /// On-prem Dataverse is v9.1 maximum — v9.2 returns HTTP 501. NTLM is the only
+    /// supported scheme here.
+    /// </summary>
+    public static HttpClient Create(ResolvedEnvironment env)
+    {
+        var handler = new HttpClientHandler
+        {
+            Credentials = new NetworkCredential(env.CrmUser, env.CrmPassword, env.CrmDomain),
+            PreAuthenticate = true
+        };
+
+        var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri($"{env.CrmUrl}/api/data/v9.1/"),
+            Timeout = TimeSpan.FromMinutes(5)
+        };
+        http.DefaultRequestHeaders.Add("OData-MaxVersion", "4.0");
+        http.DefaultRequestHeaders.Add("OData-Version", "4.0");
+        http.DefaultRequestHeaders.Add("Accept", "application/json");
+        return http;
+    }
+}
