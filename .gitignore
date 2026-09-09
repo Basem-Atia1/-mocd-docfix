@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# NEVER COMMIT CITIZEN DATA
+# Downloaded backups are real citizen documents (medical certificates,
+# good-conduct certificates, payment receipts, board decisions).
+# They live in D:\mocd-docfix-data, OUTSIDE this repo, by design.
+# These patterns are a second line of defence in case that ever changes.
+# ---------------------------------------------------------------------------
+backup/
+data/
+downloads/
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.doc
+*.docx
+*.xls
+*.xlsx
+
+# Reports, manifests, state and logs contain document ids, file paths and
+# citizen file names. Keep them out of the repo too.
+reports/
+state/
+logs/
+*.jsonl
+scan-*.csv
+migration-report-*.csv
+review-*.csv
+quarantine-*.csv
+audit-*.log
+
+# Secrets — API keys and CRM credentials are never stored in the repo.
+appsettings.*.json
+!appsettings.Example.json
+*.env
+secrets.json
+
+# ---------------------------------------------------------------------------
+# .NET
+# ---------------------------------------------------------------------------
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+.vs/
+TestResults/
+*.trx
+*.coverage
+coverage*.xml
+coverage*.json
