@@ -1,4 +1,3 @@
-using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -23,7 +22,11 @@ public sealed class InMemorySecretStore : ISecretStore
 /// Secrets encrypted with Windows DPAPI, scoped to the current user. The file is unreadable
 /// by any other Windows account and never leaves the machine.
 /// </summary>
-[SupportedOSPlatform("windows")]
+/// <remarks>
+/// Guarded at runtime rather than annotated with [SupportedOSPlatform], so callers do not have
+/// to be Windows-scoped too. The tool is Windows-only regardless (DPAPI, NTLM, ShellExecute),
+/// so a non-Windows host fails loudly here instead of silently storing secrets in the clear.
+/// </remarks>
 public sealed class DpapiSecretStore : ISecretStore
 {
     private readonly string _path;
@@ -31,8 +34,16 @@ public sealed class DpapiSecretStore : ISecretStore
 
     public DpapiSecretStore(string path)
     {
+        RequireWindows();
         _path = path;
         _cache = Read();
+    }
+
+    private static void RequireWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new PlatformNotSupportedException(
+                "Secret storage uses Windows DPAPI. Run docfix on Windows.");
     }
 
     public string? Get(string key) => _cache.TryGetValue(key, out var v) ? v : null;
@@ -45,17 +56,21 @@ public sealed class DpapiSecretStore : ISecretStore
 
     private Dictionary<string, string> Read()
     {
-        if (!File.Exists(_path)) return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var empty = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!File.Exists(_path)) return empty;
+        if (!OperatingSystem.IsWindows()) return empty;
 
         var protectedBytes = File.ReadAllBytes(_path);
         var plain = ProtectedData.Unprotect(protectedBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
         var json = Encoding.UTF8.GetString(plain);
-        return JsonSerializer.Deserialize<Dictionary<string, string>>(json)
-               ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? empty;
     }
 
     private void Write(Dictionary<string, string> values)
     {
+        RequireWindows();
+        if (!OperatingSystem.IsWindows()) return;   // narrows the type for the analyzer
+
         Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
         var json = JsonSerializer.Serialize(values);
         var protectedBytes = ProtectedData.Protect(
