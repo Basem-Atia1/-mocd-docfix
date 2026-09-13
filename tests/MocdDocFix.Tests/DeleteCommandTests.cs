@@ -168,6 +168,64 @@ public class DeleteCommandTests : IDisposable
 
     // ---- the delete step shows its working ----
 
+    // ---- a file that more than one record points at ----
+
+    [Fact]
+    public async Task A_shared_file_is_never_deleted()
+    {
+        _read.FilesByPath[OldPath] = new List<Guid> { OldFileId, Guid.NewGuid() };
+        var prompts = Confirmed();
+        prompts.ReadLineQueue = new Queue<string>(new[] { "1" });   // leave everything
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Empty(_files.Deleted);
+        Assert.Empty(_write.DeletedFiles);
+        Assert.Equal(0, summary.Deleted);
+        Assert.Equal(1, summary.Refused);
+    }
+
+    [Fact]
+    public async Task A_shared_file_is_explained_before_the_question()
+    {
+        var other = Guid.NewGuid();
+        _read.FilesByPath[OldPath] = new List<Guid> { OldFileId, other };
+        var prompts = Confirmed();
+        prompts.ReadLineQueue = new Queue<string>(new[] { "1" });
+
+        await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        var said = string.Join("|", prompts.Messages);
+        Assert.Contains("PROBLEM", said);
+        Assert.Contains(other.ToString(), said);
+        Assert.Contains("would leave those records pointing at nothing", said);
+    }
+
+    [Fact]
+    public async Task The_operator_can_remove_only_the_old_crm_record_and_keep_the_shared_file()
+    {
+        _read.FilesByPath[OldPath] = new List<Guid> { OldFileId, Guid.NewGuid() };
+        var prompts = Confirmed();
+        prompts.ReadLineQueue = new Queue<string>(new[] { "2" });   // CRM record only
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Empty(_files.Deleted);                    // the file is kept for the others
+        Assert.Contains(OldFileId, _write.DeletedFiles); // our old row is gone
+        Assert.Equal(1, summary.Deleted);
+    }
+
+    [Fact]
+    public async Task A_file_nobody_else_points_at_is_deleted_as_usual()
+    {
+        _read.FilesByPath[OldPath] = new List<Guid> { OldFileId };   // only us
+
+        var summary = await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Contains(OldPath, _files.Deleted);
+        Assert.Equal(1, summary.Deleted);
+    }
+
     [Fact]
     public async Task The_log_says_the_file_was_found_before_it_was_deleted()
     {

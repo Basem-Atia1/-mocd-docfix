@@ -54,6 +54,13 @@ public sealed class FakeCrmReadClient : ICrmReadClient
             : $$"""{"stub":true,"entitySet":"{{entitySet}}","id":"{{id}}"}""");
     }
 
+    /// <summary>path → the documentfile ids that reference it. Empty unless a test sets it.</summary>
+    public Dictionary<string, List<Guid>> FilesByPath { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<IReadOnlyList<Guid>> FindDocumentFilesByPathAsync(string filePath, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<Guid>>(
+            FilesByPath.TryGetValue(filePath, out var ids) ? ids : new List<Guid>());
+
     /// <summary>documentId → raw JSON, or set the value to null to simulate a failed query.</summary>
     public Dictionary<Guid, string?> Annotations { get; } = new();
 

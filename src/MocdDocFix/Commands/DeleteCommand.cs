@@ -79,6 +79,24 @@ public sealed class DeleteCommand
             var entry = manifest[candidate.DocumentId];
             if (_state.IsAtLeast(candidate.DocumentId, MigrationState.Deleted)) { skipped++; continue; }
 
+            // Asked first, so a shared file becomes a decision rather than a bare refusal.
+            switch (await AskAboutSharedPathAsync(entry, ct))
+            {
+                case SharedPathChoice.LeaveEverything:
+                    _prompts.Info("    Left alone. Nothing was deleted for this document.");
+                    refused++;
+                    continue;
+
+                case SharedPathChoice.CrmRecordOnly:
+                    await _write.DeleteDocumentFileAsync(entry.OldFileId, ct);
+                    _prompts.Info($"    Removed the old CRM record {entry.OldFileId}. The file stays.");
+                    _state.Append(new StateRecord(candidate.DocumentId, MigrationState.Deleted,
+                        DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
+                        $"Deleted documentfile {entry.OldFileId} only — the file is shared, so it was kept."));
+                    deleted++;
+                    continue;
+            }
+
             var refusal = await WhyNotSafeAsync(candidate, entry, ct);
             if (refusal is not null)
             {
@@ -115,6 +133,55 @@ public sealed class DeleteCommand
     /// <param name="Removed">True when the file is gone from the server AND the CRM row is gone.</param>
     /// <param name="Log">What happened, line by line, for the operator to read.</param>
     private sealed record RemovalOutcome(bool Removed, string? Reason, IReadOnlyList<string> Log);
+
+    private enum SharedPathChoice { NotShared, LeaveEverything, CrmRecordOnly }
+
+    /// <summary>
+    /// Looks for other mocd_documentfile records pointing at the same file, and if there are any,
+    /// explains the problem and offers the two things that can sensibly be done about it.
+    ///
+    /// Deleting a shared file is never one of them: the other records would be left pointing at
+    /// something that no longer exists, and nothing in this run would notice.
+    /// </summary>
+    private async Task<SharedPathChoice> AskAboutSharedPathAsync(ManifestEntry entry, CancellationToken ct)
+    {
+        var sharers = (await _read.FindDocumentFilesByPathAsync(entry.OldFilePath, ct))
+            .Where(id => id != entry.OldFileId)
+            .ToList();
+
+        if (sharers.Count == 0) return SharedPathChoice.NotShared;
+
+        _prompts.Info("");
+        _prompts.Info($"  PROBLEM — {entry.FileName}");
+        _prompts.Info($"    {entry.OldFilePath}");
+        _prompts.Info($"    is also referenced by {sharers.Count} other mocd_documentfile record(s):");
+        foreach (var id in sharers.Take(10)) _prompts.Info($"      {id}");
+        if (sharers.Count > 10) _prompts.Info($"      … and {sharers.Count - 10} more");
+        _prompts.Info("");
+        _prompts.Info("    Deleting the file would leave those records pointing at nothing, and");
+        _prompts.Info("    their documents would stop opening. So the file will NOT be deleted.");
+        _prompts.Info("");
+        _prompts.Info("    Two things can be done instead:");
+        _prompts.Info("      1  Leave everything. The old file and its CRM record both stay.");
+        _prompts.Info("         Costs nothing; the old row remains as clutter.");
+        _prompts.Info("      2  Delete only this document's old CRM record, and keep the file.");
+        _prompts.Info("         This document is already repointed, so it loses nothing, and the");
+        _prompts.Info("         other records keep working because the file is still there.");
+
+        var answer = new Asker(_prompts).Ask("What should happen to this one?", new[]
+        {
+            new Choice("Leave everything", "the file and the old record both stay",
+                "Nothing is removed. Re-run the delete step later if the other records get " +
+                "migrated too, at which point the file stops being shared."),
+            new Choice("Delete the CRM record only", "keep the file, remove this old row",
+                "The file stays on the server for the other records. This document already " +
+                "points at its new file, so removing its old row changes nothing it depends on.")
+        }, defaultIndex: 0, allowBack: false);
+
+        return answer.Kind == AnswerKind.Chosen && answer.Index == 1
+            ? SharedPathChoice.CrmRecordOnly
+            : SharedPathChoice.LeaveEverything;
+    }
 
     /// <summary>
     /// Looks before and after. A delete endpoint answering "success" is not evidence that the
@@ -278,6 +345,20 @@ public sealed class DeleteCommand
 
         var pathCheck = Verifier.FileRecordPointsAtTheNewFile(candidate.NewFilePath!, recordPath);
         if (!pathCheck.Passed) return pathCheck.Detail;
+
+        // One file can be referenced by more than one mocd_documentfile. Deleting it would break
+        // every record except the one we migrated, and nothing else in the run would notice.
+        var sharers = (await _read.FindDocumentFilesByPathAsync(entry.OldFilePath, ct))
+            .Where(id => id != entry.OldFileId)
+            .ToList();
+
+        if (sharers.Count > 0)
+        {
+            return $"{sharers.Count} other CRM record(s) still point at this same file — " +
+                   string.Join(", ", sharers.Take(5)) +
+                   (sharers.Count > 5 ? ", …" : "") +
+                   ". Deleting it would break them.";
+        }
 
         return null;
     }

@@ -24,6 +24,13 @@ public interface ICrmReadClient
     Task<string?> GetRawRecordAsync(string entitySet, Guid id, CancellationToken ct);
 
     /// <summary>
+    /// Every mocd_documentfile whose mocd_filepath is this exact path. One file can be referenced
+    /// by more than one record — rare, but real — and deleting it would break every record except
+    /// the one being migrated.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> FindDocumentFilesByPathAsync(string filePath, CancellationToken ct);
+
+    /// <summary>
     /// Metadata of every annotation (note) attached to the document. Null means the query
     /// failed — an empty list is returned as an empty JSON array, so a gap is distinguishable
     /// from "there are none".
@@ -172,6 +179,30 @@ public sealed class CrmReadClient : ICrmReadClient
 
         _catalogueCache[candidate] = name;
         return name;
+    }
+
+    public async Task<IReadOnlyList<Guid>> FindDocumentFilesByPathAsync(string filePath, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(filePath)) return Array.Empty<Guid>();
+
+        // Backslashes and single quotes both need care inside an OData string literal.
+        var escaped = filePath.Replace("'", "''");
+        var url = $"mocd_documentfiles?$select=mocd_documentfileid&$filter=mocd_filepath eq '{Uri.EscapeDataString(escaped)}'";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        using var response = await _http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode) return Array.Empty<Guid>();
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        using var json = JsonDocument.Parse(body);
+
+        if (!json.RootElement.TryGetProperty("value", out var rows)) return Array.Empty<Guid>();
+
+        return rows.EnumerateArray()
+            .Select(r => GuidOrNull(r, "mocd_documentfileid"))
+            .Where(g => g is not null)
+            .Select(g => g!.Value)
+            .ToList();
     }
 
     public async Task<string?> GetRawRecordAsync(string entitySet, Guid id, CancellationToken ct)
