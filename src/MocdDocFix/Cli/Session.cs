@@ -1,0 +1,274 @@
+using MocdDocFix.Clients;
+using MocdDocFix.Commands;
+using MocdDocFix.Config;
+using MocdDocFix.Domain;
+using MocdDocFix.Storage;
+using MocdDocFix.Ui;
+
+namespace MocdDocFix.Cli;
+
+/// <summary>
+/// One environment's worth of wiring: the clients, the stores and the phases, built once and
+/// shared by the wizard and the direct commands so both run exactly the same code.
+/// </summary>
+public sealed class Session : IDisposable
+{
+    private readonly AppConfig _appConfig;
+    private readonly ResolvedEnvironment _env;
+    private readonly string _envName;
+    private readonly IPrompts _prompts;
+    private readonly bool _dryRun;
+
+    private readonly HttpClient _crmHttp;
+    private readonly HttpClient _fileHttp;
+    private readonly CrmReadClient _read;
+    private readonly CrmWriteClient _write;
+    private readonly FileServiceClient _files;
+    private readonly Reporter _reporter;
+    private readonly BackupStore _backups;
+    private readonly StateStore _state;
+    private readonly ScanCommand _scan;
+    private readonly ShellFileOpener _opener = new();
+
+    /// <summary>mocd_hash per scanned row, needed by the backup phase's first check.</summary>
+    private readonly Dictionary<Guid, string?> _hashes = new();
+
+    public Session(AppConfig appConfig, ResolvedEnvironment env, string envName,
+        IPrompts prompts, bool dryRun)
+    {
+        _appConfig = appConfig;
+        _env = env;
+        _envName = envName;
+        _prompts = prompts;
+        _dryRun = dryRun;
+
+        var dataRoot = Path.Combine(appConfig.DataRoot, envName);
+        _reporter = new Reporter(Path.Combine(dataRoot, "reports"));
+        _backups = new BackupStore(Path.Combine(dataRoot, "backup"),
+                                   Path.Combine(dataRoot, "state", "restore-manifest.jsonl"));
+        _state = new StateStore(Path.Combine(dataRoot, "state", $"state-{envName}.jsonl"));
+
+        _crmHttp = CrmHttp.Create(env);
+        _read = new CrmReadClient(_crmHttp, env);
+        _write = new CrmWriteClient(_crmHttp);
+
+        _fileHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        _files = new FileServiceClient(_fileHttp, env);
+
+        _scan = new ScanCommand(_read, _reporter, env.CrmUrl, appConfig.ServiceCatalogues,
+            new GroupedReportWriter(Path.Combine(dataRoot, "reports")));
+    }
+
+    public void Dispose()
+    {
+        _crmHttp.Dispose();
+        _fileHttp.Dispose();
+    }
+
+    private string? HashOf(ScanRow row) => _hashes.TryGetValue(row.DocumentFileId, out var h) ? h : null;
+
+    public async Task<ScanResult> ScanAsync(CancellationToken ct)
+    {
+        var documents = await _read.GetInScopeDocumentsAsync(_appConfig.ServiceCatalogues, ct);
+        foreach (var d in documents) _hashes[d.DocumentFileId] = d.Hash;
+        return await _scan.ClassifyAsync(documents, _envName, writeReports: true, ct);
+    }
+
+    // ---- the wizard's view of each phase ----
+
+    public WizardActions WizardActions(CancellationToken ct) => new(
+        ScanAsync: async () =>
+        {
+            var result = await ScanAsync(ct);
+
+            var details = result.Banner().Split(Environment.NewLine).ToList();
+            details.Add("");
+            details.Add($"grouped report → {result.GroupsPath}");
+            details.Add($"spreadsheet    → {result.ScanPath}");
+            details.Add($"needs a human  → {result.ReviewPath}");
+
+            var fixable = result.Fix
+                .Select(r => new PickableFile(r.Group, r.DocumentId.ToString(), r.FileName,
+                    r.ServiceCatalogueName ?? "(no service)", r.DocumentTypeName))
+                .ToList();
+
+            return new ScanOutcome(
+                $"{result.Fix.Count} to fix, {result.Review.Count} need a human, " +
+                $"{result.Skip.Count} nothing to do, out of {result.TotalInScope}.",
+                details, fixable);
+        },
+
+        BackupAsync: async () =>
+        {
+            var result = await ScanAsync(ct);
+
+            var estimate = result.Fix.Count * 350_000L;
+            var free = BackupStore.FreeSpaceBytes(_appConfig.DataRoot);
+            if (free < estimate * 2)
+                return StepOutcome.Of("Not enough free disk space with margin — nothing was downloaded.",
+                    $"needs roughly {estimate * 2 / 1_048_576:N0} MB, {free / 1_048_576:N0} MB free");
+
+            var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf)
+                .RunAsync(_envName, result.Fix, ct);
+
+            return StepOutcome.Of(
+                $"{summary.Saved} saved, {summary.Quarantined} quarantined, {summary.Skipped} skipped.",
+                $"{summary.TotalBytes / 1_048_576:N0} MB downloaded",
+                $"manifest → {summary.ManifestPath}");
+        },
+
+        MigrateAsync: async () =>
+        {
+            var summary = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
+                _prompts, _opener, _env.CrmUrl).RunAsync(_envName, ct);
+
+            var details = new List<string> { $"report → {summary.ReportPath}" };
+            if (summary.Halted) details.Add($"RUN HALTED: {summary.HaltReason}");
+
+            return new StepOutcome(
+                $"{summary.Migrated} migrated, {summary.Skipped} skipped, {summary.Failed} failed.",
+                details);
+        },
+
+        DeleteAsync: async () =>
+        {
+            var summary = await new DeleteCommand(_files, _write, _backups, _state, _prompts)
+                .RunAsync(_envName, _env.IsProduction, ct);
+
+            var details = new List<string>();
+            if (summary.Aborted) details.Add($"Aborted: {summary.AbortReason}");
+
+            return new StepOutcome(
+                $"{summary.Deleted} deleted, {summary.Refused} refused, {summary.Skipped} skipped.",
+                details);
+        },
+
+        TargetedAsync: async identifiers =>
+        {
+            var summary = await Targeted(identifiers, forceReview: false, ct);
+
+            return StepOutcome.Of(
+                $"{summary.Fixed} fixed, {summary.Reviewed} need a human, {summary.Skipped} already ok.",
+                $"{summary.NotFound} not found, {summary.Ambiguous} name clashes",
+                $"report → {summary.ScanPath}");
+        });
+
+    private Task<TargetedSummary> Targeted(
+        IReadOnlyList<string> identifiers, bool forceReview, CancellationToken ct) =>
+        new TargetedCommand(_read, _scan, _reporter, _prompts, async rows =>
+        {
+            foreach (var row in rows)
+            {
+                var document = (await _read.ResolveIdentifierAsync(row.DocumentId.ToString(), ct))
+                    .FirstOrDefault();
+                if (document is not null) _hashes[document.DocumentFileId] = document.Hash;
+            }
+
+            if (_dryRun) { _prompts.Info("Dry run — stopping before backup."); return 0; }
+
+            await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf)
+                .RunAsync(_envName, rows, ct);
+
+            var migrated = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
+                _prompts, _opener, _env.CrmUrl).RunAsync(_envName, ct);
+
+            if (migrated.Migrated > 0)
+                await new DeleteCommand(_files, _write, _backups, _state, _prompts)
+                    .RunAsync(_envName, _env.IsProduction, ct);
+
+            return migrated.Migrated;
+        }).RunAsync(_envName, identifiers, forceReview, _env.IsProduction, ct);
+
+    // ---- the direct commands, unchanged in behaviour ----
+
+    public async Task<int> RunDirectAsync(CommandLineOptions options, CancellationToken ct)
+    {
+        switch (options.Command)
+        {
+            case "scan":
+            {
+                var result = await ScanAsync(ct);
+                Console.WriteLine(result.Banner());
+                Console.WriteLine();
+                Console.WriteLine($"grouped → {result.GroupsPath}   (what is wrong, and why)");
+                Console.WriteLine($"scan    → {result.ScanPath}     (reason and solution for every row)");
+                Console.WriteLine($"review  → {result.ReviewPath}");
+                return 0;
+            }
+
+            case "backup":
+            {
+                var result = await ScanAsync(ct);
+                Console.WriteLine(result.Banner());
+                Console.WriteLine();
+                Console.WriteLine($"grouped → {result.GroupsPath}");
+                Console.WriteLine($"scan    → {result.ScanPath}");
+                Console.WriteLine();
+
+                var estimate = result.Fix.Count * 350_000L;
+                var free = BackupStore.FreeSpaceBytes(_appConfig.DataRoot);
+                Console.WriteLine($"{result.Fix.Count} files, roughly {estimate / 1_048_576:N0} MB. " +
+                                  $"Free space {free / 1_048_576:N0} MB.");
+                if (free < estimate * 2)
+                {
+                    Console.Error.WriteLine("Not enough free space with margin. Aborting.");
+                    return 1;
+                }
+                if (_dryRun) return 0;
+
+                var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf)
+                    .RunAsync(_envName, result.Fix, ct);
+                Console.WriteLine($"Saved {summary.Saved}, quarantined {summary.Quarantined}, " +
+                                  $"skipped {summary.Skipped}, {summary.TotalBytes / 1_048_576:N0} MB.");
+                Console.WriteLine($"manifest → {summary.ManifestPath}");
+                return summary.Quarantined > 0 ? 1 : 0;
+            }
+
+            case "migrate":
+            {
+                if (_dryRun) { Console.WriteLine("Dry run: migrate writes, so nothing was done."); return 0; }
+
+                var summary = await new MigrateCommand(_files, _read, _write, _backups, _state,
+                    _reporter, _prompts, _opener, _env.CrmUrl).RunAsync(_envName, ct);
+
+                Console.WriteLine($"Migrated {summary.Migrated}, skipped {summary.Skipped}, failed {summary.Failed}.");
+                Console.WriteLine($"report → {summary.ReportPath}");
+                if (summary.Halted) Console.Error.WriteLine($"RUN HALTED: {summary.HaltReason}");
+                return summary.Halted ? 1 : 0;
+            }
+
+            case "delete":
+            {
+                if (_dryRun) { Console.WriteLine("Dry run: delete is irreversible, so nothing was done."); return 0; }
+
+                var summary = await new DeleteCommand(_files, _write, _backups, _state, _prompts)
+                    .RunAsync(_envName, _env.IsProduction, ct);
+
+                Console.WriteLine($"Deleted {summary.Deleted}, refused {summary.Refused}, skipped {summary.Skipped}.");
+                if (summary.Aborted) Console.WriteLine($"Aborted: {summary.AbortReason}");
+                return summary.Refused > 0 ? 1 : 0;
+            }
+
+            case "targeted":
+            {
+                if (options.Identifiers.Count == 0)
+                {
+                    Console.Error.WriteLine("targeted needs --docs or --docs-file.");
+                    return 2;
+                }
+
+                var summary = await Targeted(options.Identifiers, options.ForceReview, ct);
+
+                Console.WriteLine();
+                Console.WriteLine($"Resolved {summary.Resolved}, fixed {summary.Fixed}, " +
+                                  $"needs-a-human {summary.Reviewed}, already-ok {summary.Skipped}, " +
+                                  $"not found {summary.NotFound}, name clashes {summary.Ambiguous}.");
+                return 0;
+            }
+
+            default:
+                Console.Error.WriteLine(CommandLineOptions.Usage);
+                return 2;
+        }
+    }
+}

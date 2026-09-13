@@ -42,7 +42,7 @@ public sealed class Asker
         {
             Show(question, choices, defaultIndex);
 
-            var typed = _prompts.ReadLine("  >").Trim();
+            var typed = _prompts.ReadLine("  Choose").Trim();
 
             if (typed.Length == 0)
             {
@@ -92,7 +92,7 @@ public sealed class Asker
             var c = choices[i];
             var marker = c.Enabled ? " " : "-";
             var isDefault = defaultIndex == i ? "   [default]" : "";
-            _prompts.Info($"   {marker}{i + 1,2}  {c.Label,-14} {c.Description}{isDefault}");
+            _prompts.Info($"   {marker}{i + 1,2}  {c.Label,-18} {c.Description}{isDefault}");
         }
 
         _prompts.Info("");

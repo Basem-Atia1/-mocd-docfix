@@ -42,6 +42,10 @@ The tool works, but three things were wrong for the operator's real task:
 This is configuration, not code: the list lives in `config.json` and `AppConfig.Default()` only
 seeds it. Three of the seven have no documents in dev; that is expected, not an error.
 
+**Because it is configuration, changing the default is not enough on a machine that has already
+run the tool** — `%APPDATA%\mocd-docfix\config.json` wins. That file was edited on 2026-09-13 to
+drop Membership Managment, with the previous version kept beside it as `config.json.bak-20260913`.
+
 **Verified 2026-09-13:** re-filtering the 526-row dev scan against this list leaves 408 rows, and
 the only excluded catalogue is Membership Managment (118 rows). No out-of-scope catalogue appears.
 
@@ -239,6 +243,10 @@ Option 2 is the existing typed-identifier path, unchanged.
 ### 6.4 A gate at every step
 
 The five steps are **scan -> back up -> upload corrected -> verify and repoint -> delete old**.
+Steps 3 and 4 run in one pass, because `MigrateCommand` uploads and then shows the operator both
+files before repointing — so its gate is labelled "Step 3 and 4 of 5" rather than letting the
+counter appear to skip a number.
+
 No step runs into the next. Each finishes by reporting what it did and asking:
 
 ```
@@ -295,8 +303,19 @@ Everything here is testable without a network, because `IPrompts` is already inj
   and each step gate stops when told to stop.
 - `FilePicker` - `1,3,5`, `1-10`, `all`, out-of-range, and empty input.
 
-Live dev verification after implementation: re-scan and confirm 408 rows, 313 to fix, the group
-counts above, and that the `.txt` matches.
+**Live dev verification, 2026-09-13 14:51 — passed.** A real scan against dev CRM returned:
+
+```
+In scope (document types across the configured services) ... 408
+  with a file path ......................................... 380
+    already correct / nothing to do ........................ 88
+    BROKEN — will be fixed ................................. 313
+    AMBIGUOUS — needs a human decision ..................... 7
+  no file path (legacy records, out of scope) .............. 28
+```
+
+and the grouped report's summary matched the table in section 3 exactly: 59 / 57 / 133 / 23 / 41
+fixable, 7 needing a decision, 88 with nothing to do.
 
 ---
 

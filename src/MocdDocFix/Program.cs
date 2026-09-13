@@ -1,9 +1,10 @@
 using MocdDocFix.Cli;
-using MocdDocFix.Clients;
-using MocdDocFix.Commands;
 using MocdDocFix.Config;
-using MocdDocFix.Storage;
 using MocdDocFix.Ui;
+
+// Arabic file names and the dashes in the reports both need this; without it the console
+// substitutes '?' for anything outside the OEM code page.
+try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch (IOException) { /* redirected */ }
 
 var options = CommandLineOptions.Parse(args);
 if (options.Error is not null)
@@ -14,24 +15,24 @@ if (options.Error is not null)
 
 var prompts = new ConsolePrompts();
 var configDir = ConfigStore.DefaultDirectory;
-var secrets = new DpapiSecretStore(Path.Combine(configDir, "secrets.dat"));
-var configStore = new ConfigStore(Path.Combine(configDir, "config.json"), secrets);
-var appConfig = configStore.Load();
+var secretsPath = Path.Combine(configDir, "secrets.dat");
+var configPath = Path.Combine(configDir, "config.json");
+var secrets = new DpapiSecretStore(secretsPath);
+var configStore = new ConfigStore(configPath, secrets);
 
 if (options.Command == "config")
 {
-    var configFile = Path.Combine(configDir, "config.json");
-    if (!File.Exists(configFile))
+    if (!File.Exists(configPath))
     {
-        configStore.Save(appConfig);
-        Console.WriteLine($"Wrote a starter config to {configFile}");
+        configStore.Save(configStore.Load());
+        Console.WriteLine($"Wrote a starter config to {configPath}");
     }
 
-    Console.WriteLine($"Config file:  {configFile}");
-    Console.WriteLine($"Secrets file: {Path.Combine(configDir, "secrets.dat")} (DPAPI, current user only)");
+    Console.WriteLine($"Config file:  {configPath}");
+    Console.WriteLine($"Secrets file: {secretsPath} (DPAPI, current user only)");
     Console.WriteLine();
-    Console.WriteLine("Add an environment by editing the config file, then store its secrets with:");
-    Console.WriteLine("  docfix config --env dev");
+    Console.WriteLine("You no longer need this command: run docfix with no arguments and the");
+    Console.WriteLine("wizard offers to set up any environment that is not configured yet.");
 
     if (options.Environment is { } envToSet)
     {
@@ -46,255 +47,66 @@ if (options.Command == "config")
     return 0;
 }
 
-var envName = EnvironmentSelector.Select(prompts, options.Environment, appConfig, options.ConfirmProduction);
-if (envName is null) return 1;
-
-ResolvedEnvironment env;
-try { env = configStore.Resolve(envName); }
-catch (InvalidOperationException ex)
+var picker = new EnvironmentPicker(prompts, configStore.Load, (name, added) =>
 {
-    Console.Error.WriteLine(ex.Message);
-    return 1;
-}
+    var config = configStore.Load();
+    config.Environments[name] = added.Config;
+    configStore.Save(config);
+    secrets.Set($"{name}:apiKey", added.ApiKey);
+    secrets.Set($"{name}:crmPassword", added.CrmPassword);
+});
 
-Console.WriteLine($"Environment: {envName}{(env.IsProduction ? "   *** PRODUCTION ***" : "")}");
-Console.WriteLine($"CRM:         {env.CrmUrl}");
-Console.WriteLine($"File server: {env.FileServiceBaseUrl}");
-Console.WriteLine($"Data root:   {appConfig.DataRoot}");
-if (options.DryRun) Console.WriteLine("DRY RUN — nothing will be written.");
-Console.WriteLine();
+// The environment question is a loop, not a one-shot: a name that is not configured, or that
+// fails to resolve, comes back here rather than ending the program (spec 2026-09-13 section 6.1).
+var fromArgs = options.Environment;
 
-var dataRoot = Path.Combine(appConfig.DataRoot, envName);
-var reporter = new Reporter(Path.Combine(dataRoot, "reports"));
-var backups = new BackupStore(Path.Combine(dataRoot, "backup"),
-                              Path.Combine(dataRoot, "state", "restore-manifest.jsonl"));
-var state = new StateStore(Path.Combine(dataRoot, "state", $"state-{envName}.jsonl"));
-
-using var crmHttp = CrmHttp.Create(env);
-var read = new CrmReadClient(crmHttp, env);
-var write = new CrmWriteClient(crmHttp);
-
-using var fileHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-var files = new FileServiceClient(fileHttp, env);
-
-var scan = new ScanCommand(read, reporter, env.CrmUrl, appConfig.ServiceCatalogues);
-var opener = new ShellFileOpener();
-
-// mocd_hash for a scanned row, needed by the backup phase's first check.
-var hashes = new Dictionary<Guid, string?>();
-Func<ScanRow, string?> hashLookup = row => hashes.TryGetValue(row.DocumentFileId, out var h) ? h : null;
-
-async Task<ScanResult> ScanAsync()
+while (true)
 {
-    var documents = await read.GetInScopeDocumentsAsync(appConfig.ServiceCatalogues, CancellationToken.None);
-    foreach (var d in documents) hashes[d.DocumentFileId] = d.Hash;
-    return await scan.ClassifyAsync(documents, envName, writeReports: true, CancellationToken.None);
-}
+    var envName = picker.Choose(fromArgs, options.ConfirmProduction);
+    if (envName is null) return 0;
 
-// Each phase as a callable step, so the guided menu and the direct commands run the same code.
-async Task RunScanAsync()
-{
-    var result = await ScanAsync();
-    Console.WriteLine(result.Banner());
-    Console.WriteLine();
-    Console.WriteLine($"scan   → {result.ScanPath}   (reason and solution for every row)");
-    Console.WriteLine($"review → {result.ReviewPath}");
-}
+    fromArgs = null;   // having asked once, never force the same name again
 
-async Task RunBackupAsync()
-{
-    var result = await ScanAsync();
-    Console.WriteLine(result.Banner());
-    Console.WriteLine();
-
-    var estimate = result.Fix.Count * 350_000L;
-    var free = BackupStore.FreeSpaceBytes(appConfig.DataRoot);
-    Console.WriteLine($"{result.Fix.Count} files, roughly {estimate / 1_048_576:N0} MB. " +
-                      $"Free space {free / 1_048_576:N0} MB.");
-    if (free < estimate * 2)
+    ResolvedEnvironment env;
+    try
     {
-        Console.Error.WriteLine("Not enough free space with margin. Aborting.");
-        return;
+        env = configStore.Resolve(envName);
+    }
+    catch (InvalidOperationException ex)
+    {
+        prompts.Info("");
+        prompts.Info(ex.Message);
+        prompts.Info("Nothing has been changed. Choose another environment, or set this one up.");
+        continue;
     }
 
-    var summary = await new BackupCommand(files, read, backups, state, reporter, hashLookup)
-        .RunAsync(envName, result.Fix, CancellationToken.None);
-    Console.WriteLine($"Saved {summary.Saved}, quarantined {summary.Quarantined}, " +
-                      $"skipped {summary.Skipped}, {summary.TotalBytes / 1_048_576:N0} MB.");
-    Console.WriteLine($"manifest → {summary.ManifestPath}");
-}
+    var appConfig = configStore.Load();
+    using var session = new Session(appConfig, env, envName, prompts, options.DryRun);
 
-async Task RunMigrateAsync()
-{
-    var summary = await new MigrateCommand(files, read, write, backups, state, reporter,
-        prompts, opener, env.CrmUrl).RunAsync(envName, CancellationToken.None);
-
-    Console.WriteLine($"Migrated {summary.Migrated}, skipped {summary.Skipped}, failed {summary.Failed}.");
-    Console.WriteLine($"report → {summary.ReportPath}");
-    if (summary.Halted) Console.Error.WriteLine($"RUN HALTED: {summary.HaltReason}");
-}
-
-async Task RunDeleteAsync()
-{
-    var summary = await new DeleteCommand(files, write, backups, state, prompts)
-        .RunAsync(envName, env.IsProduction, CancellationToken.None);
-
-    Console.WriteLine($"Deleted {summary.Deleted}, refused {summary.Refused}, skipped {summary.Skipped}.");
-    if (summary.Aborted) Console.WriteLine($"Aborted: {summary.AbortReason}");
-}
-
-async Task RunTargetedAsync(IReadOnlyList<string> identifiers, bool forceReview)
-{
-    var targeted = new TargetedCommand(read, scan, reporter, prompts, async rows =>
+    if (options.Command != "guided")
     {
-        foreach (var row in rows)
-        {
-            var document = (await read.ResolveIdentifierAsync(row.DocumentId.ToString(),
-                CancellationToken.None)).FirstOrDefault();
-            if (document is not null) hashes[document.DocumentFileId] = document.Hash;
-        }
-
-        if (options.DryRun) { Console.WriteLine("Dry run — stopping before backup."); return 0; }
-
-        await new BackupCommand(files, read, backups, state, reporter, hashLookup)
-            .RunAsync(envName, rows, CancellationToken.None);
-
-        var migrated = await new MigrateCommand(files, read, write, backups, state, reporter,
-            prompts, opener, env.CrmUrl).RunAsync(envName, CancellationToken.None);
-
-        if (migrated.Migrated > 0)
-            await new DeleteCommand(files, write, backups, state, prompts)
-                .RunAsync(envName, env.IsProduction, CancellationToken.None);
-
-        return migrated.Migrated;
-    });
-
-    var summary = await targeted.RunAsync(envName, identifiers, forceReview,
-        env.IsProduction, CancellationToken.None);
-
-    Console.WriteLine();
-    Console.WriteLine($"Resolved {summary.Resolved}, fixed {summary.Fixed}, " +
-                      $"ambiguous-verdict {summary.Reviewed}, already-ok {summary.Skipped}, " +
-                      $"not found {summary.NotFound}, name clashes {summary.Ambiguous}.");
-}
-
-switch (options.Command)
-{
-    case "guided":
-    {
-        await new GuidedMenu(prompts, envName, env.IsProduction, env.CrmUrl, env.FileServiceBaseUrl,
-            new GuidedActions(RunScanAsync, RunBackupAsync, RunMigrateAsync, RunDeleteAsync, RunTargetedAsync))
-            .RunAsync(CancellationToken.None);
-        return 0;
-    }
-
-    case "scan":
-    {
-        var result = await ScanAsync();
-        Console.WriteLine(result.Banner());
-        Console.WriteLine();
-        Console.WriteLine($"scan   → {result.ScanPath}   (reason and solution for every row)");
-        Console.WriteLine($"review → {result.ReviewPath}");
-        return 0;
-    }
-
-    case "backup":
-    {
-        // Stage one then stage two, reported before anything else happens (spec section 5.0).
-        var result = await ScanAsync();
-        Console.WriteLine(result.Banner());
-        Console.WriteLine();
-        Console.WriteLine($"scan   → {result.ScanPath}   (reason and solution for every row)");
-        Console.WriteLine($"review → {result.ReviewPath}");
+        if (options.DryRun) Console.WriteLine("DRY RUN — nothing will be written.");
+        Console.WriteLine($"Environment: {envName}{(env.IsProduction ? "   *** PRODUCTION ***" : "")}");
+        Console.WriteLine($"CRM:         {env.CrmUrl}");
+        Console.WriteLine($"File server: {env.FileServiceBaseUrl}");
         Console.WriteLine();
 
-        var estimate = result.Fix.Count * 350_000L;
-        var free = BackupStore.FreeSpaceBytes(appConfig.DataRoot);
-        Console.WriteLine($"{result.Fix.Count} files, roughly {estimate / 1_048_576:N0} MB. " +
-                          $"Free space {free / 1_048_576:N0} MB.");
-        if (free < estimate * 2)
-        {
-            Console.Error.WriteLine("Not enough free space with margin. Aborting.");
-            return 1;
-        }
-        if (options.DryRun) return 0;
-
-        var summary = await new BackupCommand(files, read, backups, state, reporter, hashLookup)
-            .RunAsync(envName, result.Fix, CancellationToken.None);
-        Console.WriteLine($"Saved {summary.Saved}, quarantined {summary.Quarantined}, " +
-                          $"skipped {summary.Skipped}, {summary.TotalBytes / 1_048_576:N0} MB.");
-        Console.WriteLine($"manifest → {summary.ManifestPath}");
-        return summary.Quarantined > 0 ? 1 : 0;
+        return await session.RunDirectAsync(options, CancellationToken.None);
     }
 
-    case "migrate":
+    var wizard = new Wizard(prompts, envName, env.IsProduction, env.CrmUrl, env.FileServiceBaseUrl,
+        session.WizardActions(CancellationToken.None));
+
+    try
     {
-        if (options.DryRun) { Console.WriteLine("Dry run: migrate writes, so nothing was done."); return 0; }
-
-        var summary = await new MigrateCommand(files, read, write, backups, state, reporter,
-            prompts, opener, env.CrmUrl).RunAsync(envName, CancellationToken.None);
-
-        Console.WriteLine($"Migrated {summary.Migrated}, skipped {summary.Skipped}, failed {summary.Failed}.");
-        Console.WriteLine($"report → {summary.ReportPath}");
-        if (summary.Halted) Console.Error.WriteLine($"RUN HALTED: {summary.HaltReason}");
-        return summary.Halted ? 1 : 0;
+        if (await wizard.RunAsync(CancellationToken.None) == WizardExit.Finished) return 0;
     }
-
-    case "delete":
+    catch (Exception ex)
     {
-        if (options.DryRun) { Console.WriteLine("Dry run: delete is irreversible, so nothing was done."); return 0; }
-
-        var summary = await new DeleteCommand(files, write, backups, state, prompts)
-            .RunAsync(envName, env.IsProduction, CancellationToken.None);
-
-        Console.WriteLine($"Deleted {summary.Deleted}, refused {summary.Refused}, skipped {summary.Skipped}.");
-        if (summary.Aborted) Console.WriteLine($"Aborted: {summary.AbortReason}");
-        return summary.Refused > 0 ? 1 : 0;
+        // A failure mid-run returns to the environment question rather than dumping a stack
+        // trace and exiting. Whatever was already done stays on disk in the state file.
+        prompts.Info("");
+        prompts.Info($"That did not work: {ex.Message}");
+        prompts.Info("Nothing further was run. Anything already completed is recorded on disk.");
     }
-
-    case "targeted":
-    {
-        if (options.Identifiers.Count == 0)
-        {
-            Console.Error.WriteLine("targeted needs --docs or --docs-file.");
-            return 2;
-        }
-
-        var targeted = new TargetedCommand(read, scan, reporter, prompts, async rows =>
-        {
-            foreach (var row in rows)
-            {
-                var document = (await read.ResolveIdentifierAsync(row.DocumentId.ToString(),
-                    CancellationToken.None)).FirstOrDefault();
-                if (document is not null) hashes[document.DocumentFileId] = document.Hash;
-            }
-
-            if (options.DryRun) { Console.WriteLine("Dry run — stopping before backup."); return 0; }
-
-            await new BackupCommand(files, read, backups, state, reporter, hashLookup)
-                .RunAsync(envName, rows, CancellationToken.None);
-
-            var migrated = await new MigrateCommand(files, read, write, backups, state, reporter,
-                prompts, opener, env.CrmUrl).RunAsync(envName, CancellationToken.None);
-
-            if (migrated.Migrated > 0)
-                await new DeleteCommand(files, write, backups, state, prompts)
-                    .RunAsync(envName, env.IsProduction, CancellationToken.None);
-
-            return migrated.Migrated;
-        });
-
-        var summary = await targeted.RunAsync(envName, options.Identifiers,
-            options.ForceReview, env.IsProduction, CancellationToken.None);
-
-        Console.WriteLine();
-        Console.WriteLine($"Resolved {summary.Resolved}, fixed {summary.Fixed}, " +
-                          $"ambiguous-verdict {summary.Reviewed}, already-ok {summary.Skipped}, " +
-                          $"not found {summary.NotFound}, name clashes {summary.Ambiguous}.");
-        return 0;
-    }
-
-    default:
-        Console.Error.WriteLine(CommandLineOptions.Usage);
-        return 2;
 }
