@@ -3,7 +3,12 @@ using MocdDocFix.Verification;
 
 namespace MocdDocFix.Storage;
 
-public sealed record BackupResult(string LocalPath, long Bytes, string OurHash);
+/// <param name="PreviousKeptAs">
+/// Where an earlier backup of the same file was moved to, when this one replaced it and the
+/// bytes had changed. Null when there was nothing to keep — which is the normal case.
+/// </param>
+public sealed record BackupResult(string LocalPath, long Bytes, string OurHash,
+    string? PreviousKeptAs = null);
 
 /// <summary>
 /// Everything needed to rebuild a file AND its CRM records (spec section 8.2). Note this
@@ -74,13 +79,31 @@ public sealed class BackupStore
     /// <summary>The per-document folder holding everything about one document.</summary>
     public DocumentFolder Folder(Guid documentId) => new(_backupDir, documentId);
 
-    /// <summary>Saves the original bytes under the document's own folder, in old\.</summary>
+    /// <summary>
+    /// Saves the original bytes under the document's own folder, in old\.
+    ///
+    /// Backing the same file up again is allowed and expected. If an earlier copy is there and
+    /// its bytes are IDENTICAL it is simply replaced. If they DIFFER, the file on the server has
+    /// changed since last time, so the earlier copy is kept beside the new one rather than
+    /// overwritten — re-running a backup must never destroy the only record of what a file used
+    /// to be.
+    /// </summary>
     public BackupResult Save(Guid documentId, Guid oldFileId, string extension, byte[] bytes)
     {
         var dir = Folder(documentId).EnsureOld();
         var path = Path.Combine(dir, oldFileId + extension);
+
+        string? previousKeptAs = null;
+
+        if (File.Exists(path) && !File.ReadAllBytes(path).AsSpan().SequenceEqual(bytes))
+        {
+            previousKeptAs = Path.Combine(dir,
+                $"{oldFileId}.superseded-{DateTime.Now:yyyyMMdd-HHmmss}{extension}");
+            File.Move(path, previousKeptAs);
+        }
+
         File.WriteAllBytes(path, bytes);
-        return new BackupResult(path, bytes.Length, Verifier.OurHash(bytes));
+        return new BackupResult(path, bytes.Length, Verifier.OurHash(bytes), previousKeptAs);
     }
 
     /// <summary>Saves the corrected copy under the same document folder, in new\.</summary>

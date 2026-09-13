@@ -68,18 +68,15 @@ public sealed class BackupCommand
         {
             ct.ThrowIfCancellationRequested();
 
-            // "Already backed up" is a claim about the disk, so check the disk rather than
-            // believing the state file. If the saved bytes or the CRM image have gone — deleted,
-            // moved, or on a drive that is not mounted — this document is not backed up, whatever
-            // the state says, and silently skipping it would leave migrate to fail on a missing
-            // file later.
+            // A document reaching this loop was asked for, so it is backed up again rather than
+            // skipped on the strength of an earlier run. A backup is a snapshot: taking a fresh
+            // one is the point, and the state file is only a claim about the disk anyway.
             if (_state.IsAtLeast(row.DocumentId, MigrationState.BackedUp))
             {
-                if (BackupIsIntact(row.DocumentId)) { skipped++; continue; }
-
-                _prompts?.Invoke(
-                    $"  {row.FileName}: the state says this was backed up, but the saved copy is " +
-                    "missing. Downloading it again.");
+                _prompts?.Invoke(BackupIsIntact(row.DocumentId)
+                    ? $"  {row.FileName}: backed up before — taking a fresh copy anyway."
+                    : $"  {row.FileName}: the state says this was backed up, but the saved copy " +
+                      "is missing. Downloading it again.");
             }
 
             // The document's folder and its record exist before anything is attempted, so even a
@@ -147,9 +144,20 @@ public sealed class BackupCommand
             var imagePath = _backups.SaveCrmImage(row.DocumentFileId, row.DocumentId, row.OldFilePath,
                 env, documentSnapshot!, fileSnapshot!, annotations!);
 
+            if (result.PreviousKeptAs is not null)
+            {
+                _prompts?.Invoke(
+                    $"  {row.FileName}: WARNING — the file on the server has CHANGED since the " +
+                    "last backup. The earlier copy was kept as " +
+                    $"{Path.GetFileName(result.PreviousKeptAs)}.");
+            }
+
             _backups.Folder(row.DocumentId).AppendSection("THE OLD FILE — backed up", new (string, string?)[]
             {
                 ("Path on server", row.OldFilePath),
+                ("Earlier copy kept", result.PreviousKeptAs is null
+                    ? null
+                    : $"{Path.GetFileName(result.PreviousKeptAs)} — the server's copy had changed"),
                 ("File record", row.DocumentFileId.ToString()),
                 ("Folder it is in", row.CurrentSegment ?? "(none)"),
                 ("Vendor hash", download.Data.Hash),

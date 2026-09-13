@@ -92,17 +92,15 @@ public class BackupCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task Already_backed_up_documents_are_skipped_on_a_re_run()
+    public async Task A_re_run_keeps_one_restore_record_per_document()
     {
         _files.Files[Path1] = (Base64, "VENDORHASH");
         var row = Row(Path1);
         await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
 
-        var second = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
 
-        Assert.Equal(0, second.Saved);
-        Assert.Equal(1, second.Skipped);
-        Assert.Single(Backups().LoadManifest());       // not duplicated
+        Assert.Single(Backups().LoadManifest());       // refreshed, not duplicated
     }
 
     [Fact]
@@ -372,7 +370,7 @@ public class BackupCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task An_intact_backup_is_still_skipped()
+    public async Task Asking_for_a_document_again_backs_it_up_again()
     {
         _files.Files[Path1] = (Base64, "VENDORHASH");
         var row = Row(Path1);
@@ -380,8 +378,61 @@ public class BackupCommandTests : IDisposable
 
         var second = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
 
-        Assert.Equal(0, second.Saved);
-        Assert.Equal(1, second.Skipped);
+        Assert.Equal(1, second.Saved);
+        Assert.Equal(0, second.Skipped);
+    }
+
+    [Fact]
+    public async Task Backing_up_again_replaces_an_identical_copy_without_leaving_clutter()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        var saved = Directory.GetFiles(Backups().Folder(row.DocumentId).OldDir, "*.jpg");
+        Assert.Single(saved);
+        Assert.Equal(Content, File.ReadAllBytes(saved[0]));
+    }
+
+    [Fact]
+    public async Task A_file_that_has_changed_on_the_server_never_overwrites_the_earlier_copy()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        // The server's copy is now different. Its hash moves with it, so check 1 still passes.
+        var changed = Encoding.UTF8.GetBytes("a DIFFERENT certificate");
+        _files.Files[Path1] = (Convert.ToBase64String(changed), "VENDORHASH");
+
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        var oldDir = Backups().Folder(row.DocumentId).OldDir;
+        Assert.Single(Directory.GetFiles(oldDir, "*.superseded-*.jpg"));
+        Assert.Equal(changed, File.ReadAllBytes(Backups().LoadManifest().Single().LocalPath));
+
+        var kept = Directory.GetFiles(oldDir, "*.superseded-*.jpg").Single();
+        Assert.Equal(Content, File.ReadAllBytes(kept));
+    }
+
+    [Fact]
+    public async Task A_changed_file_is_reported_loudly_rather_than_silently()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        var said = new List<string>();
+
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+        _files.Files[Path1] = (Convert.ToBase64String(Encoding.UTF8.GetBytes("different")), "VENDORHASH");
+
+        await new BackupCommand(_files, _read, Backups(), States(),
+                new Reporter(System.IO.Path.Combine(_root, "reports")), _ => "VENDORHASH", said.Add)
+            .RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Contains(said, m => m.Contains("CHANGED", StringComparison.Ordinal));
+        Assert.Contains("superseded", File.ReadAllText(Backups().Folder(row.DocumentId).SummaryPath));
     }
 
     [Fact]
