@@ -496,7 +496,7 @@ prompt per run.
 
 | File | Phase | Contents |
 |---|---|---|
-| `scan-{env}-{timestamp}.csv` | 1 | document id, documentfile id, file name, document type, service, old path, path segment, correct catalogue, verdict, **reason**, **solution**, cross-check source, CRM link |
+| `scan-{env}-{timestamp}.csv` | 1 | document id, documentfile id, file name, document type, service catalogue **id and name**, old path, path segment **and the name of the service it is currently filed under**, correct catalogue, verdict, **reason**, **solution**, cross-check source, CRM link |
 | `backup/{oldFileGuid}.{ext}` | 2 | the original bytes |
 | `restore-manifest-{timestamp}.jsonl` | 2 | one line per file — everything needed to rebuild the file **and its CRM records**, see §8.2 |
 | `state-{env}.jsonl` | 3 | per-document state: `pending → backed-up → uploaded → verified → repointed → deleted`, with timestamps and the new ids |

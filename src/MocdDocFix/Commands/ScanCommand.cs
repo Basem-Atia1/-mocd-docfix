@@ -66,9 +66,16 @@ public sealed class ScanCommand
         {
             var parsed = FilePathParser.Parse(document.FilePath);
 
-            // Resolved live against mocd_servicecatalogue, cached inside the client.
-            var isCatalogue = parsed.CategorySegment is { } segment &&
-                              await _crm.IsServiceCatalogueAsync(segment, ct);
+            // Resolved live against mocd_servicecatalogue, cached inside the client. The name
+            // comes from the same cached lookup, so showing it costs nothing extra.
+            var currentSegmentName = parsed.CategorySegment is { } segment
+                ? await _crm.GetServiceCatalogueNameAsync(segment, ct)
+                : null;
+            var isCatalogue = currentSegmentName is not null;
+
+            var serviceCatalogueName = document.DocTypeCatalogueId is { } catalogueId
+                ? await _crm.GetServiceCatalogueNameAsync(catalogueId.ToString(), ct)
+                : null;
 
             var classification = Classifier.Classify(
                 parsed,
@@ -82,8 +89,10 @@ public sealed class ScanCommand
                 FileName: document.FileName,
                 DocumentTypeName: document.DocumentTypeName,
                 ServiceCatalogueId: document.DocTypeCatalogueId,
+                ServiceCatalogueName: serviceCatalogueName,
                 OldFilePath: document.FilePath,
                 CurrentSegment: classification.CurrentSegment,
+                CurrentSegmentName: currentSegmentName,
                 CorrectCatalogueId: classification.CorrectCatalogueId,
                 Verdict: classification.Verdict.ToString(),
                 Reason: classification.Reason,

@@ -6,14 +6,22 @@ namespace MocdDocFix.Storage;
 
 /// <param name="Reason">Why the file is wrong.</param>
 /// <param name="Solution">What will be done about it — spec section 8.1.</param>
+/// <param name="ServiceCatalogueName">The service the document belongs to, by name.</param>
+/// <param name="CurrentSegmentName">
+/// The service the file is currently filed under, when the path segment is a real catalogue.
+/// Blank when the segment is junk — which is what makes a REVIEW row readable:
+/// "filed under 'Request to Join NPO' but its type belongs to 'Membership Managment'".
+/// </param>
 public sealed record ScanRow(
     Guid DocumentId,
     Guid DocumentFileId,
     string? FileName,
     string DocumentTypeName,
     Guid? ServiceCatalogueId,
+    string? ServiceCatalogueName,
     string? OldFilePath,
     string? CurrentSegment,
+    string? CurrentSegmentName,
     Guid? CorrectCatalogueId,
     string Verdict,
     string Reason,

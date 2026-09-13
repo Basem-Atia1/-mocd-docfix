@@ -192,6 +192,42 @@ public class CrmReadClientTests
     }
 
     [Fact]
+    public async Task The_catalogue_name_is_returned_so_reports_can_show_it()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, """{"mocd_name":"General Assembly Meeting Request"}""");
+
+        var name = await client.GetServiceCatalogueNameAsync(
+            "3ff27d73-653e-f111-b119-005056010908", CancellationToken.None);
+
+        Assert.Equal("General Assembly Meeting Request", name);
+    }
+
+    [Fact]
+    public async Task A_name_lookup_and_an_existence_check_share_one_call()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, """{"mocd_name":"GAM Request"}""");
+
+        await client.GetServiceCatalogueNameAsync("3ff27d73-653e-f111-b119-005056010908", CancellationToken.None);
+        var exists = await client.IsServiceCatalogueAsync("3ff27d73-653e-f111-b119-005056010908", CancellationToken.None);
+
+        Assert.True(exists);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task A_value_that_is_not_a_catalogue_has_no_name()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.NotFound, """{"error":{"message":"Does Not Exist"}}""");
+
+        Assert.Null(await client.GetServiceCatalogueNameAsync(
+            "9b1121f4-e30b-f111-b117-005056010908", CancellationToken.None));
+        Assert.Null(await client.GetServiceCatalogueNameAsync("goodConductCertificate", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ResolveIdentifier_treats_a_document_guid_as_a_document()
     {
         var (client, handler) = Build();

@@ -57,9 +57,22 @@ public class CommandLineOptionsTests
     }
 
     [Fact]
-    public void No_arguments_asks_for_help_rather_than_guessing()
+    public void No_arguments_starts_the_guided_menu_rather_than_erroring()
     {
-        Assert.NotNull(CommandLineOptions.Parse(Array.Empty<string>()).Error);
+        var o = CommandLineOptions.Parse(Array.Empty<string>());
+
+        Assert.Null(o.Error);
+        Assert.Equal("guided", o.Command);
+    }
+
+    [Fact]
+    public void Guided_can_also_be_asked_for_by_name_with_an_environment()
+    {
+        var o = CommandLineOptions.Parse(new[] { "guided", "--env", "dev" });
+
+        Assert.Equal("guided", o.Command);
+        Assert.Equal("dev", o.Environment);
+        Assert.Null(o.Error);
     }
 
     [Fact]

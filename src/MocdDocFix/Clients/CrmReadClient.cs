@@ -9,6 +9,12 @@ public interface ICrmReadClient
     Task<IReadOnlyList<DocumentRow>> GetInScopeDocumentsAsync(IReadOnlyList<Guid> catalogues, CancellationToken ct);
     Task<IReadOnlyList<DocumentRow>> ResolveIdentifierAsync(string identifier, CancellationToken ct);
     Task<bool> IsServiceCatalogueAsync(string candidate, CancellationToken ct);
+
+    /// <summary>
+    /// The service catalogue's display name, or null when the value is not a catalogue at all.
+    /// Shares one cached lookup with <see cref="IsServiceCatalogueAsync"/>.
+    /// </summary>
+    Task<string?> GetServiceCatalogueNameAsync(string candidate, CancellationToken ct);
     Task<DateTimeOffset?> GetDocumentModifiedOnAsync(Guid documentId, CancellationToken ct);
 
     /// <summary>
@@ -45,7 +51,7 @@ public sealed class CrmReadClient : ICrmReadClient
 
     private readonly HttpClient _http;
     private readonly ResolvedEnvironment _env;
-    private readonly Dictionary<string, bool> _catalogueCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string?> _catalogueCache = new(StringComparer.OrdinalIgnoreCase);
 
     public CrmReadClient(HttpClient http, ResolvedEnvironment env)
     {
@@ -145,15 +151,27 @@ public sealed class CrmReadClient : ICrmReadClient
             $"mocd_documents?$select={Select}&$filter=mocd_documentfile/mocd_name eq '{escaped}'&$expand={Expand}", ct);
     }
 
-    public async Task<bool> IsServiceCatalogueAsync(string candidate, CancellationToken ct)
+    public async Task<bool> IsServiceCatalogueAsync(string candidate, CancellationToken ct) =>
+        await GetServiceCatalogueNameAsync(candidate, ct) is not null;
+
+    public async Task<string?> GetServiceCatalogueNameAsync(string candidate, CancellationToken ct)
     {
-        if (!Guid.TryParse(candidate, out var id)) return false;
+        if (!Guid.TryParse(candidate, out var id)) return null;
         if (_catalogueCache.TryGetValue(candidate, out var cached)) return cached;
 
         using var response = await _http.GetAsync($"mocd_servicecatalogues({id})?$select=mocd_name", ct);
-        var exists = response.IsSuccessStatusCode;
-        _catalogueCache[candidate] = exists;
-        return exists;
+
+        string? name = null;
+        if (response.IsSuccessStatusCode)
+        {
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            name = json.RootElement.TryGetProperty("mocd_name", out var v) && v.ValueKind == JsonValueKind.String
+                ? v.GetString()
+                : $"(unnamed catalogue {id})";
+        }
+
+        _catalogueCache[candidate] = name;
+        return name;
     }
 
     public async Task<string?> GetRawRecordAsync(string entitySet, Guid id, CancellationToken ct)

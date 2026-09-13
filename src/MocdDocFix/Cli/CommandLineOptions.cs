@@ -10,10 +10,11 @@ public sealed record CommandLineOptions(
     string? Error)
 {
     private static readonly string[] Commands =
-        { "scan", "backup", "migrate", "delete", "targeted", "config" };
+        { "scan", "backup", "migrate", "delete", "targeted", "config", "guided" };
 
     public const string Usage = """
-        docfix <command> [options]
+        docfix                     start the guided menu (recommended)
+        docfix <command> [options] run one step directly
 
         Commands
           scan       classify every in-scope document (read-only)
@@ -34,7 +35,10 @@ public sealed record CommandLineOptions(
 
     public static CommandLineOptions Parse(string[] args)
     {
-        if (args.Length == 0) return Error_("No command given." + System.Environment.NewLine + Usage);
+        // No arguments is not a mistake — it is the guided menu, which is how most people
+        // should use this tool.
+        if (args.Length == 0)
+            return new CommandLineOptions("guided", null, Array.Empty<string>(), false, false, false, null);
 
         var command = args[0].ToLowerInvariant();
         if (!Commands.Contains(command))

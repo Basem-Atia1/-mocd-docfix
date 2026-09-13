@@ -21,6 +21,16 @@ public sealed class FakeCrmReadClient : ICrmReadClient
     public Task<bool> IsServiceCatalogueAsync(string candidate, CancellationToken ct) =>
         Task.FromResult(KnownCatalogues.Contains(candidate));
 
+    /// <summary>Optional display names; any known catalogue without one gets a generated name.</summary>
+    public Dictionary<string, string> CatalogueNames { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<string?> GetServiceCatalogueNameAsync(string candidate, CancellationToken ct)
+    {
+        if (CatalogueNames.TryGetValue(candidate, out var name)) return Task.FromResult<string?>(name);
+        return Task.FromResult<string?>(
+            KnownCatalogues.Contains(candidate) ? $"Service {candidate[..8]}" : null);
+    }
+
     public Task<DateTimeOffset?> GetDocumentModifiedOnAsync(Guid documentId, CancellationToken ct) =>
         Task.FromResult(ModifiedOn);
 

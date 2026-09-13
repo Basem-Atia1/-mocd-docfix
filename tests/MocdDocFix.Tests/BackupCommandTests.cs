@@ -26,7 +26,7 @@ public class BackupCommandTests : IDisposable
 
     private static ScanRow Row(string path, string fileName = "cert.jpg") => new(
         Guid.NewGuid(), Guid.NewGuid(), fileName, "Certificate of Good Conduct",
-        Guid.NewGuid(), path, "goodConductCertificate",
+        Guid.NewGuid(), "Employee Appointment Request", path, "goodConductCertificate", null,
         Guid.Parse("cd97bf8d-bea8-f011-b116-005056010908"), nameof(Verdict.Fix), "reason", "solution",
         null, "https://crm/x");
 

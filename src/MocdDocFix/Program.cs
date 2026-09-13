@@ -91,8 +91,103 @@ async Task<ScanResult> ScanAsync()
     return await scan.ClassifyAsync(documents, envName, writeReports: true, CancellationToken.None);
 }
 
+// Each phase as a callable step, so the guided menu and the direct commands run the same code.
+async Task RunScanAsync()
+{
+    var result = await ScanAsync();
+    Console.WriteLine(result.Banner());
+    Console.WriteLine();
+    Console.WriteLine($"scan   → {result.ScanPath}   (reason and solution for every row)");
+    Console.WriteLine($"review → {result.ReviewPath}");
+}
+
+async Task RunBackupAsync()
+{
+    var result = await ScanAsync();
+    Console.WriteLine(result.Banner());
+    Console.WriteLine();
+
+    var estimate = result.Fix.Count * 350_000L;
+    var free = BackupStore.FreeSpaceBytes(appConfig.DataRoot);
+    Console.WriteLine($"{result.Fix.Count} files, roughly {estimate / 1_048_576:N0} MB. " +
+                      $"Free space {free / 1_048_576:N0} MB.");
+    if (free < estimate * 2)
+    {
+        Console.Error.WriteLine("Not enough free space with margin. Aborting.");
+        return;
+    }
+
+    var summary = await new BackupCommand(files, read, backups, state, reporter, hashLookup)
+        .RunAsync(envName, result.Fix, CancellationToken.None);
+    Console.WriteLine($"Saved {summary.Saved}, quarantined {summary.Quarantined}, " +
+                      $"skipped {summary.Skipped}, {summary.TotalBytes / 1_048_576:N0} MB.");
+    Console.WriteLine($"manifest → {summary.ManifestPath}");
+}
+
+async Task RunMigrateAsync()
+{
+    var summary = await new MigrateCommand(files, read, write, backups, state, reporter,
+        prompts, opener, env.CrmUrl).RunAsync(envName, CancellationToken.None);
+
+    Console.WriteLine($"Migrated {summary.Migrated}, skipped {summary.Skipped}, failed {summary.Failed}.");
+    Console.WriteLine($"report → {summary.ReportPath}");
+    if (summary.Halted) Console.Error.WriteLine($"RUN HALTED: {summary.HaltReason}");
+}
+
+async Task RunDeleteAsync()
+{
+    var summary = await new DeleteCommand(files, write, backups, state, prompts)
+        .RunAsync(envName, env.IsProduction, CancellationToken.None);
+
+    Console.WriteLine($"Deleted {summary.Deleted}, refused {summary.Refused}, skipped {summary.Skipped}.");
+    if (summary.Aborted) Console.WriteLine($"Aborted: {summary.AbortReason}");
+}
+
+async Task RunTargetedAsync(IReadOnlyList<string> identifiers, bool forceReview)
+{
+    var targeted = new TargetedCommand(read, scan, reporter, prompts, async rows =>
+    {
+        foreach (var row in rows)
+        {
+            var document = (await read.ResolveIdentifierAsync(row.DocumentId.ToString(),
+                CancellationToken.None)).FirstOrDefault();
+            if (document is not null) hashes[document.DocumentFileId] = document.Hash;
+        }
+
+        if (options.DryRun) { Console.WriteLine("Dry run — stopping before backup."); return 0; }
+
+        await new BackupCommand(files, read, backups, state, reporter, hashLookup)
+            .RunAsync(envName, rows, CancellationToken.None);
+
+        var migrated = await new MigrateCommand(files, read, write, backups, state, reporter,
+            prompts, opener, env.CrmUrl).RunAsync(envName, CancellationToken.None);
+
+        if (migrated.Migrated > 0)
+            await new DeleteCommand(files, write, backups, state, prompts)
+                .RunAsync(envName, env.IsProduction, CancellationToken.None);
+
+        return migrated.Migrated;
+    });
+
+    var summary = await targeted.RunAsync(envName, identifiers, forceReview,
+        env.IsProduction, CancellationToken.None);
+
+    Console.WriteLine();
+    Console.WriteLine($"Resolved {summary.Resolved}, fixed {summary.Fixed}, " +
+                      $"ambiguous-verdict {summary.Reviewed}, already-ok {summary.Skipped}, " +
+                      $"not found {summary.NotFound}, name clashes {summary.Ambiguous}.");
+}
+
 switch (options.Command)
 {
+    case "guided":
+    {
+        await new GuidedMenu(prompts, envName, env.IsProduction, env.CrmUrl, env.FileServiceBaseUrl,
+            new GuidedActions(RunScanAsync, RunBackupAsync, RunMigrateAsync, RunDeleteAsync, RunTargetedAsync))
+            .RunAsync(CancellationToken.None);
+        return 0;
+    }
+
     case "scan":
     {
         var result = await ScanAsync();

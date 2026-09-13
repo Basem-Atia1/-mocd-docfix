@@ -29,10 +29,14 @@ public sealed class FakePrompts : IPrompts
         return TypedWordResponse == requiredWord;
     }
 
+    /// <summary>When set, each ReadLine takes the next queued answer instead of ReadLineResponse.</summary>
+    public Queue<string>? ReadLineQueue { get; set; }
+
     public string ReadLine(string question)
     {
         Questions.Add(question);
-        return ReadLineResponse;
+        if (ReadLineQueue is { Count: > 0 }) return ReadLineQueue.Dequeue();
+        return ReadLineQueue is not null ? "0" : ReadLineResponse;
     }
 
     public void Info(string message) => Messages.Add(message);
