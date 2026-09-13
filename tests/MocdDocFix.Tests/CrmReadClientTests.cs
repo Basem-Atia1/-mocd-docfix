@@ -20,6 +20,10 @@ public class CrmReadClientTests
         return (new CrmReadClient(http, Env()), handler);
     }
 
+    /// <summary>The document-type lookup that now precedes every in-scope document query.</summary>
+    private const string OneDocumentType =
+        """{"value":[{"mocd_documenttypeid":"6e79d291-722b-f111-b119-005056010908"}]}""";
+
     private const string OneDocument = """
     {"value":[{
       "mocd_documentid":"2c9d5572-a77b-f111-b10f-00505601095a",
@@ -45,6 +49,7 @@ public class CrmReadClientTests
     public async Task GetInScopeDocuments_maps_a_row_completely()
     {
         var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, OneDocumentType);
         handler.Enqueue(HttpStatusCode.OK, OneDocument);
 
         var rows = await client.GetInScopeDocumentsAsync(
@@ -62,27 +67,64 @@ public class CrmReadClientTests
     }
 
     [Fact]
-    public async Task The_filter_ors_every_catalogue_and_expands_the_cross_checks()
+    public async Task Document_types_are_resolved_first_so_the_document_filter_needs_no_link_entities()
     {
+        // CRM caps a query at 10 link entities. Filtering documents through
+        // mocd_documenttype/_mocd_servicecatalogue_value adds one link PER condition, which with
+        // 8 catalogues plus 5 expands exceeds the cap (0x8004430d, seen on dev 2026-09-13).
         var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[{"mocd_documenttypeid":"11111111-1111-1111-1111-111111111111"},{"mocd_documenttypeid":"22222222-2222-2222-2222-222222222222"}]}""");
         handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
 
         await client.GetInScopeDocumentsAsync(
             new[] { Guid.Parse("cd97bf8d-bea8-f011-b116-005056010908"),
                     Guid.Parse("930f636a-077a-f111-b119-005056010908") }, CancellationToken.None);
 
-        var url = Uri.UnescapeDataString(handler.Requests[0].RequestUri!.ToString());
-        Assert.Contains("mocd_documenttype/_mocd_servicecatalogue_value eq cd97bf8d-bea8-f011-b116-005056010908", url);
-        Assert.Contains(" or ", url);
-        Assert.Contains("mocd_employeeappintmentrequest($select=_mocd_servicecatalogue_value)", url);
-        Assert.Contains("mocd_gamrequest($select=_mocd_servicecatalogue_value)", url);
-        Assert.Contains("mocd_BylawsAmendmentRequestId($select=_mocd_servicecatalogue_value)", url);
+        var typeQuery = Uri.UnescapeDataString(handler.Requests[0].RequestUri!.ToString());
+        Assert.Contains("mocd_documenttypes", typeQuery);
+        Assert.Contains("_mocd_servicecatalogue_value eq cd97bf8d-bea8-f011-b116-005056010908", typeQuery);
+
+        var documentQuery = Uri.UnescapeDataString(handler.Requests[1].RequestUri!.ToString());
+        Assert.Contains("_mocd_documenttype_value eq 11111111-1111-1111-1111-111111111111", documentQuery);
+        Assert.Contains(" or ", documentQuery);
+        Assert.DoesNotContain("mocd_documenttype/", documentQuery);   // no link-entity filter
+        Assert.Contains("mocd_employeeappintmentrequest($select=_mocd_servicecatalogue_value)", documentQuery);
+        Assert.Contains("mocd_gamrequest($select=_mocd_servicecatalogue_value)", documentQuery);
+        Assert.Contains("mocd_BylawsAmendmentRequestId($select=_mocd_servicecatalogue_value)", documentQuery);
+    }
+
+    [Fact]
+    public async Task Many_document_types_are_queried_in_chunks_to_keep_the_url_short()
+    {
+        var (client, handler) = Build();
+        var types = string.Join(",", Enumerable.Range(0, 45)
+            .Select(i => $$"""{"mocd_documenttypeid":"{{Guid.NewGuid()}}"}"""));
+        handler.Enqueue(HttpStatusCode.OK, $$"""{"value":[{{types}}]}""");
+        for (var i = 0; i < 5; i++) handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        await client.GetInScopeDocumentsAsync(new[] { Guid.NewGuid() }, CancellationToken.None);
+
+        // 45 types in chunks of 20 → 3 document queries, after the one type query.
+        Assert.Equal(4, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task No_in_scope_document_types_means_no_document_query_at_all()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        var rows = await client.GetInScopeDocumentsAsync(new[] { Guid.NewGuid() }, CancellationToken.None);
+
+        Assert.Empty(rows);
+        Assert.Single(handler.Requests);
     }
 
     [Fact]
     public async Task Cross_check_catalogue_and_source_are_picked_up_from_whichever_parent_has_one()
     {
         var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, OneDocumentType);
         handler.Enqueue(HttpStatusCode.OK, """
         {"value":[{
           "mocd_documentid":"11111111-1111-1111-1111-111111111111",
@@ -105,6 +147,7 @@ public class CrmReadClientTests
     public async Task Paging_follows_odata_nextLink()
     {
         var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, OneDocumentType);
         handler.Enqueue(HttpStatusCode.OK,
             """{"value":[],"@odata.nextLink":"https://crm/MoCD/api/data/v9.1/mocd_documents?$skiptoken=abc"}""");
         handler.Enqueue(HttpStatusCode.OK, OneDocument);
@@ -112,8 +155,8 @@ public class CrmReadClientTests
         var rows = await client.GetInScopeDocumentsAsync(new[] { Guid.NewGuid() }, CancellationToken.None);
 
         Assert.Single(rows);
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.Contains("$skiptoken=abc", handler.Requests[1].RequestUri!.ToString());
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.Contains("$skiptoken=abc", handler.Requests[2].RequestUri!.ToString());
     }
 
     [Fact]

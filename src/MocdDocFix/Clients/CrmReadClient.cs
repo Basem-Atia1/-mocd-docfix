@@ -53,12 +53,67 @@ public sealed class CrmReadClient : ICrmReadClient
         _env = env;
     }
 
-    public Task<IReadOnlyList<DocumentRow>> GetInScopeDocumentsAsync(
+    /// <summary>
+    /// How many document type ids go into one document query. Keeps the URL well inside IIS's
+    /// default limit; 33 in-scope types on dev fit in two chunks.
+    /// </summary>
+    private const int DocumentTypeChunkSize = 20;
+
+    /// <summary>
+    /// Two stages, deliberately. Filtering documents through
+    /// <c>mocd_documenttype/_mocd_servicecatalogue_value</c> adds one link entity PER condition,
+    /// and CRM caps a query at 10 — with 8 catalogues plus 5 expands the server returns
+    /// 0x8004430d "Number of link entities in query exceeded maximum limit" (dev, 2026-09-13).
+    /// Resolving the document types first lets the document query filter on its own
+    /// <c>_mocd_documenttype_value</c> column, which needs no link at all.
+    /// </summary>
+    public async Task<IReadOnlyList<DocumentRow>> GetInScopeDocumentsAsync(
         IReadOnlyList<Guid> catalogues, CancellationToken ct)
     {
-        var filter = string.Join(" or ",
-            catalogues.Select(c => $"mocd_documenttype/_mocd_servicecatalogue_value eq {c}"));
-        return QueryAsync($"mocd_documents?$select={Select}&$filter={filter}&$expand={Expand}", ct);
+        var documentTypeIds = await GetDocumentTypeIdsAsync(catalogues, ct);
+        if (documentTypeIds.Count == 0) return Array.Empty<DocumentRow>();
+
+        var rows = new List<DocumentRow>();
+        for (var i = 0; i < documentTypeIds.Count; i += DocumentTypeChunkSize)
+        {
+            var chunk = documentTypeIds.Skip(i).Take(DocumentTypeChunkSize);
+            var filter = string.Join(" or ", chunk.Select(id => $"_mocd_documenttype_value eq {id}"));
+            rows.AddRange(await QueryAsync(
+                $"mocd_documents?$select={Select}&$filter={filter}&$expand={Expand}", ct));
+        }
+
+        return rows;
+    }
+
+    /// <summary>Document types belonging to the in-scope catalogues, filtered on their own column.</summary>
+    private async Task<IReadOnlyList<Guid>> GetDocumentTypeIdsAsync(
+        IReadOnlyList<Guid> catalogues, CancellationToken ct)
+    {
+        var filter = string.Join(" or ", catalogues.Select(c => $"_mocd_servicecatalogue_value eq {c}"));
+        var url = $"mocd_documenttypes?$select=mocd_documenttypeid&$filter={filter}";
+
+        var ids = new List<Guid>();
+        string? next = url;
+
+        while (next is not null)
+        {
+            using var response = await _http.GetAsync(next, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    $"Could not list document types against {_env.CrmUrl}: HTTP {(int)response.StatusCode}. {body}");
+
+            using var json = JsonDocument.Parse(body);
+            if (json.RootElement.TryGetProperty("value", out var value))
+                foreach (var element in value.EnumerateArray())
+                    if (GuidOrNull(element, "mocd_documenttypeid") is { } id)
+                        ids.Add(id);
+
+            next = json.RootElement.TryGetProperty("@odata.nextLink", out var link) ? link.GetString() : null;
+        }
+
+        return ids;
     }
 
     public async Task<IReadOnlyList<DocumentRow>> ResolveIdentifierAsync(string identifier, CancellationToken ct)
