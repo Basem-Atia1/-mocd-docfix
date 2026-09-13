@@ -13,7 +13,9 @@ public sealed record MigrateSummary(
     bool Halted,
     string? HaltReason,
     string ReportPath,
-    IReadOnlyList<MigrationRow> Rows);
+    IReadOnlyList<MigrationRow> Rows,
+    /// <summary>Readable list of what was repointed: new file id and its CRM link.</summary>
+    string RepointedPath = "");
 
 /// <summary>
 /// Phase 3. Upload, verify, show the operator, ask, then write CRM — in that order, so the
@@ -31,6 +33,7 @@ public sealed class MigrateCommand
     private readonly IFileOpener _opener;
     private readonly string _crmUrl;
     private readonly Func<Guid, CancellationToken, Task<string?>>? _deleteOldAsync;
+    private readonly RepointedListWriter? _repointed;
 
     /// <param name="deleteOldAsync">
     /// Deletes one document's old file, re-running the full safety check first. Returns null on
@@ -40,7 +43,8 @@ public sealed class MigrateCommand
     public MigrateCommand(IFileServiceClient files, ICrmReadClient read, ICrmWriteClient write,
         BackupStore backups, StateStore state, Reporter reporter, IPrompts prompts,
         IFileOpener opener, string crmUrl,
-        Func<Guid, CancellationToken, Task<string?>>? deleteOldAsync = null)
+        Func<Guid, CancellationToken, Task<string?>>? deleteOldAsync = null,
+        RepointedListWriter? repointed = null)
     {
         _files = files;
         _read = read;
@@ -52,6 +56,7 @@ public sealed class MigrateCommand
         _opener = opener;
         _crmUrl = crmUrl;
         _deleteOldAsync = deleteOldAsync;
+        _repointed = repointed;
     }
 
     public async Task<MigrateSummary> RunAsync(string env, CancellationToken ct)
@@ -196,12 +201,27 @@ public sealed class MigrateCommand
                 entry.FileName, entry.MediaType, entry.CorrectCatalogueId.ToString(), ct);
             await _write.RepointDocumentAsync(entry.DocumentId, newFile.FileId, ct);
 
-            // Check 6 — read back rather than assume.
+            // Check 6 — read back rather than assume: the document points at the new record.
             var linked = await _write.GetDocumentFileLinkAsync(entry.DocumentId, ct);
             var tookIt = Verifier.CrmTookTheChange(newFile.FileId, linked);
             if (!tookIt.Passed)
             {
                 haltReason = $"{tookIt.Name}: {tookIt.Detail}";
+                Fail(entry, haltReason);
+                failed++;
+                break;
+            }
+
+            // Check 7 — and that record points at the new file. Check 6 alone would pass while
+            // mocd_filepath still named the old file, which is invisible until the old file goes.
+            var recordPath = ReadString(
+                await _read.GetRawRecordAsync("mocd_documentfiles", newFile.FileId, ct), "mocd_filepath");
+            var pathStuck = Verifier.FileRecordPointsAtTheNewFile(newFile.FilePath, recordPath);
+            checks.Add(pathStuck);
+
+            if (!pathStuck.Passed)
+            {
+                haltReason = $"{pathStuck.Name}: {pathStuck.Detail}";
                 Fail(entry, haltReason);
                 failed++;
                 break;
@@ -245,12 +265,29 @@ public sealed class MigrateCommand
         }
 
         var reportPath = _reporter.WriteMigration(env, rows);
-        return new MigrateSummary(migrated, skipped, failed, haltReason is not null, haltReason, reportPath, rows);
+        var repointedPath = _repointed?.Write(env, _crmUrl, rows) ?? string.Empty;
+
+        return new MigrateSummary(migrated, skipped, failed, haltReason is not null, haltReason,
+            reportPath, rows, repointedPath);
     }
 
     private void Fail(ManifestEntry entry, string detail) =>
         _state.Append(new StateRecord(entry.DocumentId, MigrationState.Failed,
             DateTimeOffset.UtcNow, null, null, detail));
+
+    /// <summary>Pulls one string attribute out of a raw record snapshot.</summary>
+    private static string? ReadString(string? recordJson, string attribute)
+    {
+        if (string.IsNullOrWhiteSpace(recordJson)) return null;
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(recordJson);
+            return json.RootElement.TryGetProperty(attribute, out var v) &&
+                   v.ValueKind == System.Text.Json.JsonValueKind.String
+                ? v.GetString() : null;
+        }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
 
     /// <summary>
     /// What will be uploaded, where it will land, and what the new path will look like — said
@@ -293,12 +330,15 @@ public sealed class MigrateCommand
         if (_deleteOldAsync is null) return;
 
         _prompts.Info("");
-        _prompts.Info("  CRM now points at the new file. The OLD one is still on the server:");
-        _prompts.Info($"     {entry.OldFilePath}");
-        _prompts.Info("  Deleting it cannot be undone. Saying no leaves it for the delete step,");
-        _prompts.Info("  which can remove them all together once you are satisfied.");
+        _prompts.Info("  CRM now points at the new file. Nothing about the old one has been");
+        _prompts.Info("  touched — its file and its CRM record are both still there:");
+        _prompts.Info($"     file on server    {entry.OldFilePath}");
+        _prompts.Info($"     mocd_documentfile {entry.OldFileId}");
+        _prompts.Info("");
+        _prompts.Info("  Deleting removes BOTH, in that order, and cannot be undone. Saying no");
+        _prompts.Info("  leaves both in place for the delete step, which can do them together.");
 
-        if (_prompts.Confirm("Delete this old file now?") != ConfirmChoice.Yes)
+        if (_prompts.Confirm("Delete the old file AND its CRM record now?") != ConfirmChoice.Yes)
         {
             _prompts.Info("  Left in place.");
             return;

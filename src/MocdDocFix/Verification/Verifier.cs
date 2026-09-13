@@ -111,4 +111,36 @@ public static class Verifier
                  $"expected {expectedFileId}. Stopping.",
             true);
     }
+
+    /// <summary>
+    /// Check 7 — HALTS THE RUN. The new mocd_documentfile record really holds the new path.
+    ///
+    /// Check 6 proves the document points at the right RECORD; this proves that record points at
+    /// the right FILE. Without it, a record whose mocd_filepath still names the old file looks
+    /// perfectly healthy — right up until the old file is deleted and the CRM View button, which
+    /// reads mocd_filepath and nothing else, finds nothing.
+    /// </summary>
+    public static CheckResult FileRecordPointsAtTheNewFile(string expectedPath, string? actualPath)
+    {
+        var ok = !string.IsNullOrWhiteSpace(actualPath) &&
+                 string.Equals(Normalise(expectedPath), Normalise(actualPath!),
+                     StringComparison.OrdinalIgnoreCase);
+
+        return new CheckResult("file-record-path", ok,
+            ok ? "The new documentfile record holds the new path."
+               : $"The new documentfile's mocd_filepath is '{actualPath ?? "null"}', expected " +
+                 $"'{expectedPath}'. The record and the file disagree. Stopping.",
+            true);
+    }
+
+    /// <summary>
+    /// The vendor returns a UNC-rooted path on download and a relative one on upload, so compare
+    /// on the part that identifies the file rather than on the prefix.
+    /// </summary>
+    private static string Normalise(string path)
+    {
+        var trimmed = path.Replace('/', '\\').TrimStart('\\');
+        var at = trimmed.IndexOf(@"DigitalServices\", StringComparison.OrdinalIgnoreCase);
+        return at >= 0 ? trimmed[at..] : trimmed;
+    }
 }

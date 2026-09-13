@@ -47,6 +47,8 @@ public class MigrateCommandTests : IDisposable
         {
             var path = NewPath(NewFileId);
             _files.Files[path] = (Convert.ToBase64String(Content), "VHASH");
+            _read.RawRecords[$"mocd_documentfiles:{NewFileId}"] =
+                "{\"mocd_filepath\":\"" + path.Replace("\\", "\\\\") + "\"}";
             return new ApiResponse<FileData>(true, null,
                 new FileData(NewFileId, path, "VHASH", "cert.jpg", "image/jpeg", null), null);
         };
@@ -210,6 +212,98 @@ public class MigrateCommandTests : IDisposable
         Assert.Contains($"id={DocumentId}", row.OldCrmLink);
     }
 
+    // ---- repointing never deletes anything ----
+
+    [Fact]
+    public async Task Repointing_leaves_the_old_file_and_its_record_alone()
+    {
+        // No per-document deleter is supplied, so the run ends right after the repoint.
+        var summary = await Command(new FakePrompts().Answer(
+                ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+            .RunAsync("dev", CancellationToken.None);
+
+        Assert.Equal(1, summary.Migrated);
+        Assert.Empty(_write.DeletedFiles);                 // the old CRM record is untouched
+        Assert.Empty(_files.Deleted);                      // and so is the old file
+    }
+
+    [Fact]
+    public async Task Declining_the_delete_removes_neither_the_file_nor_the_record()
+    {
+        var prompts = new FakePrompts().Answer(
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+
+        await Command(prompts, (_, _) => Task.FromResult<string?>(null))
+            .RunAsync("dev", CancellationToken.None);
+
+        Assert.Empty(_write.DeletedFiles);
+        Assert.Empty(_files.Deleted);
+    }
+
+    [Fact]
+    public async Task The_delete_question_says_it_removes_the_crm_record_too()
+    {
+        var prompts = new FakePrompts().Answer(
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+
+        await Command(prompts, (_, _) => Task.FromResult<string?>(null))
+            .RunAsync("dev", CancellationToken.None);
+
+        var said = string.Join("\n", prompts.Messages);
+        Assert.Contains("mocd_documentfile", said);
+        Assert.Contains("both still there", said, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(prompts.Questions, q => q.Contains("AND its CRM record", StringComparison.Ordinal));
+    }
+
+    // ---- the new file is written down where you can find it ----
+
+    [Fact]
+    public async Task A_repointed_list_names_the_new_documentfile_and_links_to_it()
+    {
+        var summary = await new MigrateCommand(_files, _read, _write, Backups(), States(),
+                new Reporter(Path.Combine(_root, "reports")),
+                new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes),
+                _opener, "https://crm/MoCD", null,
+                new RepointedListWriter(Path.Combine(_root, "reports")))
+            .RunAsync("dev", CancellationToken.None);
+
+        Assert.True(File.Exists(summary.RepointedPath), summary.RepointedPath);
+
+        var text = File.ReadAllText(summary.RepointedPath);
+
+        Assert.Contains(NewFileId.ToString(), text);            // the new documentfile id
+        Assert.Contains("etn=mocd_documentfile", text);         // a link straight to it
+        Assert.Contains($"id={NewFileId}", text);
+        Assert.Contains(DocumentId.ToString(), text);           // and to the document
+        Assert.Contains(NewPath(NewFileId), text);
+        Assert.Contains("still in CRM", text);                  // the old side is still there
+    }
+
+    // ---- check 7: the record must point at the new file ----
+
+    [Fact]
+    public async Task A_documentfile_left_pointing_at_the_old_path_halts_the_run()
+    {
+        _files.UploadResponder = _ =>
+        {
+            var path = NewPath(NewFileId);
+            _files.Files[path] = (Convert.ToBase64String(Content), "VHASH");
+            // CRM ends up holding the OLD path on the new record.
+            _read.RawRecords[$"mocd_documentfiles:{NewFileId}"] =
+                "{\"mocd_filepath\":\"" + OldPath.Replace("\\", "\\\\") + "\"}";
+            return new ApiResponse<FileData>(true, null,
+                new FileData(NewFileId, path, "VHASH", "cert.jpg", "image/jpeg", null), null);
+        };
+
+        var summary = await Command(new FakePrompts().Answer(
+                ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+            .RunAsync("dev", CancellationToken.None);
+
+        Assert.True(summary.Halted);
+        Assert.Contains("file-record-path", summary.HaltReason!);
+        Assert.Empty(_files.Deleted);              // and nothing was deleted
+    }
+
     // ---- one question per decision ----
 
     [Fact]
@@ -287,7 +381,7 @@ public class MigrateCommandTests : IDisposable
             .RunAsync("dev", CancellationToken.None);
 
         Assert.Contains(prompts.Questions,
-            q => q.Contains("Delete this old file", StringComparison.OrdinalIgnoreCase));
+            q => q.Contains("Delete the old file AND its CRM record", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(new[] { DocumentId }, deleted);
     }
 
@@ -330,6 +424,6 @@ public class MigrateCommandTests : IDisposable
         await Command(prompts).RunAsync("dev", CancellationToken.None);
 
         Assert.DoesNotContain(prompts.Questions,
-            q => q.Contains("Delete this old file", StringComparison.OrdinalIgnoreCase));
+            q => q.Contains("Delete the old file AND its CRM record", StringComparison.OrdinalIgnoreCase));
     }
 }

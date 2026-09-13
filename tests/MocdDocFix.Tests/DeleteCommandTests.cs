@@ -22,6 +22,7 @@ public class DeleteCommandTests : IDisposable
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), "docfix-del-" + Guid.NewGuid());
     private readonly FakeFileServiceClient _files = new();
+    private readonly FakeCrmReadClient _read = new();
     private readonly FakeCrmWriteClient _write = new();
 
     private BackupStore Backups() => new(Path.Combine(_root, "backup"));
@@ -43,12 +44,16 @@ public class DeleteCommandTests : IDisposable
         _files.Files[OldPath] = (Convert.ToBase64String(Content), "VHASH");
         _files.Files[NewPath] = (Convert.ToBase64String(Content), "VHASH");
         _write.Links[DocumentId] = NewFileId;
+
+        // The new documentfile record, as CRM would return it after the repoint.
+        _read.RawRecords[$"mocd_documentfiles:{NewFileId}"] =
+            "{\"mocd_filepath\":\"" + NewPath.Replace("\\", "\\\\") + "\"}";
     }
 
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 
     private DeleteCommand Command(FakePrompts prompts) =>
-        new(_files, _write, Backups(), States(), prompts);
+        new(_files, _read, _write, Backups(), States(), prompts);
 
     private static FakePrompts Confirmed() => new() { TypedWordResponse = "DELETE" };
 

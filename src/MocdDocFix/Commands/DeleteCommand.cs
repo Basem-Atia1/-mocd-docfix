@@ -17,15 +17,17 @@ public sealed record DeleteSummary(int Deleted, int Skipped, int Refused, bool A
 public sealed class DeleteCommand
 {
     private readonly IFileServiceClient _files;
+    private readonly ICrmReadClient _read;
     private readonly ICrmWriteClient _write;
     private readonly BackupStore _backups;
     private readonly StateStore _state;
     private readonly IPrompts _prompts;
 
-    public DeleteCommand(IFileServiceClient files, ICrmWriteClient write, BackupStore backups,
-        StateStore state, IPrompts prompts)
+    public DeleteCommand(IFileServiceClient files, ICrmReadClient read, ICrmWriteClient write,
+        BackupStore backups, StateStore state, IPrompts prompts)
     {
         _files = files;
+        _read = read;
         _write = write;
         _backups = backups;
         _state = state;
@@ -166,6 +168,28 @@ public sealed class DeleteCommand
         if (linked != candidate.NewFileId)
             return $"the document points at '{linked?.ToString() ?? "null"}', not the new file";
 
+        // And the record it points at must itself name the new file. Without this, a record whose
+        // mocd_filepath still holds the old path passes every other check — and deleting the old
+        // file then leaves the document pointing at something that no longer exists.
+        var recordPath = ReadFilePath(
+            await _read.GetRawRecordAsync("mocd_documentfiles", candidate.NewFileId.Value, ct));
+
+        var pathCheck = Verifier.FileRecordPointsAtTheNewFile(candidate.NewFilePath!, recordPath);
+        if (!pathCheck.Passed) return pathCheck.Detail;
+
         return null;
+    }
+
+    private static string? ReadFilePath(string? recordJson)
+    {
+        if (string.IsNullOrWhiteSpace(recordJson)) return null;
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(recordJson);
+            return json.RootElement.TryGetProperty("mocd_filepath", out var v) &&
+                   v.ValueKind == System.Text.Json.JsonValueKind.String
+                ? v.GetString() : null;
+        }
+        catch (System.Text.Json.JsonException) { return null; }
     }
 }
