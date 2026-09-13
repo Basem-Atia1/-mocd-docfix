@@ -36,7 +36,7 @@ public class MigrateCommandTests : IDisposable
 
         // A backed-up document, ready to migrate.
         var backups = Backups();
-        var saved = backups.Save(OldFileId, ".jpg", Content);
+        var saved = backups.Save(DocumentId, OldFileId, ".jpg", Content);
         backups.AppendManifest(new ManifestEntry(DocumentId, OldFileId, OldPath, "VHASH", "cert.jpg",
             "image/jpeg", ".jpg", "goodConductCertificate", Correct, saved.LocalPath,
             saved.Bytes, saved.OurHash, DateTimeOffset.UtcNow));

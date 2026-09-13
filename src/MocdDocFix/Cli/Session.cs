@@ -50,9 +50,13 @@ public sealed class Session : IDisposable
         _dryRun = dryRun;
 
         var dataRoot = Path.Combine(appConfig.DataRoot, envName);
+
+        // Backups live under their own root, one folder per environment and then one per
+        // document: <DataRoot>\backup\<env>\<documentId>\{document.txt, old\, new\}
+        var backupRoot = Path.Combine(appConfig.DataRoot, "backup", envName);
+
         _reporter = new Reporter(Path.Combine(dataRoot, "reports"));
-        _backups = new BackupStore(Path.Combine(dataRoot, "backup"),
-                                   Path.Combine(dataRoot, "state", "restore-manifest.jsonl"));
+        _backups = new BackupStore(backupRoot, Path.Combine(backupRoot, "restore-manifest.jsonl"));
         _state = new StateStore(Path.Combine(dataRoot, "state", $"state-{envName}.jsonl"));
 
         _crmHttp = CrmHttp.Create(env);
@@ -118,13 +122,21 @@ public sealed class Session : IDisposable
                 var document = (await _read.ResolveIdentifierAsync(row.DocumentId.ToString(), ct))
                     .FirstOrDefault();
                 if (document is not null) _hashes[document.DocumentFileId] = document.Hash;
+
+                // Each document gets its own folder and its own readable record from step 1,
+                // and everything about it lands there as the later steps run.
+                DocumentRecord.WriteHeader(_backups, row);
             }
+
+            var details = new List<string>();
+            foreach (var row in _pending.Take(10))
+                details.Add($"{row.FileName}  →  {_backups.Folder(row.DocumentId).SummaryPath}");
+            if (_pending.Count > 10) details.Add($"… and {_pending.Count - 10} more");
 
             return new ScanOutcome(
                 $"{_pending.Count} to fix, {summary.Reviewed} need a human, " +
                 $"{summary.Skipped} already correct, {summary.NotFound} not found.",
-                new[] { $"report → {summary.ScanPath}" },
-                Pickable(_pending));
+                details, Pickable(_pending));
         },
 
         BackupAsync: async () =>

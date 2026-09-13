@@ -22,7 +22,7 @@ public class BackupStoreTests : IDisposable
     {
         var id = Guid.Parse("5b05398a-b0bc-4c26-a6a6-40b7e0ece187");
 
-        var result = Store().Save(id, ".jpg", Bytes);
+        var result = Store().Save(Guid.NewGuid(), id, ".jpg", Bytes);
 
         Assert.True(File.Exists(result.LocalPath));
         Assert.EndsWith("5b05398a-b0bc-4c26-a6a6-40b7e0ece187.jpg", result.LocalPath);
@@ -34,7 +34,7 @@ public class BackupStoreTests : IDisposable
     [Fact]
     public void Save_creates_the_directory_if_it_is_missing()
     {
-        var result = Store().Save(Guid.NewGuid(), ".pdf", Bytes);
+        var result = Store().Save(Guid.NewGuid(), Guid.NewGuid(), ".pdf", Bytes);
 
         Assert.True(Directory.Exists(Path.GetDirectoryName(result.LocalPath)));
     }
@@ -42,7 +42,7 @@ public class BackupStoreTests : IDisposable
     [Fact]
     public void Save_tolerates_a_missing_extension()
     {
-        var result = Store().Save(Guid.NewGuid(), "", Bytes);
+        var result = Store().Save(Guid.NewGuid(), Guid.NewGuid(), "", Bytes);
 
         Assert.True(File.Exists(result.LocalPath));
     }
@@ -51,7 +51,7 @@ public class BackupStoreTests : IDisposable
     public void Read_returns_exactly_what_was_saved()
     {
         var store = Store();
-        var result = store.Save(Guid.NewGuid(), ".jpg", Bytes);
+        var result = store.Save(Guid.NewGuid(), Guid.NewGuid(), ".jpg", Bytes);
 
         Assert.Equal(Bytes, store.Read(result.LocalPath));
     }

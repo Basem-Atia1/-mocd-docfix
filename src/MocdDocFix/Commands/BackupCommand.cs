@@ -53,6 +53,10 @@ public sealed class BackupCommand
 
             if (_state.IsAtLeast(row.DocumentId, MigrationState.BackedUp)) { skipped++; continue; }
 
+            // The document's folder and its record exist before anything is attempted, so even a
+            // failure leaves a readable account of what was tried and why it did not work.
+            DocumentRecord.EnsureHeader(_backups, row);
+
             if (string.IsNullOrWhiteSpace(row.OldFilePath))
             {
                 Quarantine(row, "No file path.");
@@ -109,10 +113,23 @@ public sealed class BackupCommand
             }
 
             var extension = Path.GetExtension(row.FileName ?? string.Empty);
-            var result = _backups.Save(row.DocumentFileId, extension, bytes);
+            var result = _backups.Save(row.DocumentId, row.DocumentFileId, extension, bytes);
 
             var imagePath = _backups.SaveCrmImage(row.DocumentFileId, row.DocumentId, row.OldFilePath,
                 env, documentSnapshot!, fileSnapshot!, annotations!);
+
+            _backups.Folder(row.DocumentId).AppendSection("THE OLD FILE — backed up", new (string, string?)[]
+            {
+                ("Path on server", row.OldFilePath),
+                ("File record", row.DocumentFileId.ToString()),
+                ("Folder it is in", row.CurrentSegment ?? "(none)"),
+                ("Vendor hash", download.Data.Hash),
+                ("Saved as", Path.Combine("old", Path.GetFileName(result.LocalPath))),
+                ("Size", $"{result.Bytes:N0} bytes"),
+                ("SHA-256 (ours)", result.OurHash),
+                ("CRM records", Path.Combine("old", "crm.json")),
+                ("Downloaded at", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss"))
+            });
 
             _backups.AppendManifest(new ManifestEntry(
                 DocumentId: row.DocumentId,
@@ -148,9 +165,24 @@ public sealed class BackupCommand
             _backups.ManifestPath, quarantined);
     }
 
-    private void Quarantine(ScanRow row, string detail) =>
+    /// <summary>
+    /// Records why a file was not backed up, in the document's own folder as well as the state
+    /// file. The reason used to live only in state-&lt;env&gt;.jsonl, so the quarantine report showed
+    /// the classification reason and nothing about the actual failure.
+    /// </summary>
+    private void Quarantine(ScanRow row, string detail)
+    {
         _state.Append(new StateRecord(row.DocumentId, MigrationState.Quarantined,
             DateTimeOffset.UtcNow, null, null, detail));
+
+        _backups.Folder(row.DocumentId).AppendSection("NOT BACKED UP", new (string, string?)[]
+        {
+            ("What happened", detail),
+            ("What was saved", "nothing — a partial backup is worse than none"),
+            ("At", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss")),
+            ("What to do", "Fix the cause, then run the check and backup again for this document.")
+        });
+    }
 
     /// <summary>Pulls one string attribute out of a raw record snapshot.</summary>
     private static string? ReadString(string? snapshotJson, string attribute)

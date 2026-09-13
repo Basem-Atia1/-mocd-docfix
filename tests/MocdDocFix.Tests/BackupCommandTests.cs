@@ -233,4 +233,88 @@ public class BackupCommandTests : IDisposable
 
         Assert.Equal(1, summary.Saved);
     }
+
+    // ---- one folder per document ----
+
+    [Fact]
+    public async Task Everything_for_a_document_lands_in_its_own_folder()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        var folder = Backups().Folder(row.DocumentId);
+
+        Assert.True(File.Exists(folder.SummaryPath), "document.txt");
+        Assert.True(Directory.Exists(folder.OldDir), "old\\");
+        Assert.True(File.Exists(System.IO.Path.Combine(folder.OldDir, "crm.json")), "old\\crm.json");
+
+        var bytes = Directory.GetFiles(folder.OldDir).Single(f => f.EndsWith(".jpg", StringComparison.Ordinal));
+        Assert.Equal(Content, File.ReadAllBytes(bytes));
+        Assert.Contains(row.DocumentFileId.ToString(), bytes);
+    }
+
+    [Fact]
+    public async Task The_document_record_explains_the_file_and_what_was_saved()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        var text = File.ReadAllText(Backups().Folder(row.DocumentId).SummaryPath);
+
+        Assert.Contains(row.DocumentId.ToString(), text);
+        Assert.Contains("cert.jpg", text);
+        Assert.Contains("THE OLD FILE", text);
+        Assert.Contains("VENDORHASH", text);
+        Assert.Contains(Path1, text);
+        Assert.Contains("bytes", text);
+    }
+
+    [Fact]
+    public async Task Two_documents_do_not_share_a_folder()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var a = Row(Path1);
+        var b = Row(Path1, "other.jpg");
+
+        await Command().RunAsync("dev", new[] { a, b }, CancellationToken.None);
+
+        Assert.NotEqual(Backups().Folder(a.DocumentId).Root, Backups().Folder(b.DocumentId).Root);
+        Assert.True(File.Exists(Backups().Folder(a.DocumentId).SummaryPath));
+        Assert.True(File.Exists(Backups().Folder(b.DocumentId).SummaryPath));
+    }
+
+    // ---- a failure has to say why ----
+
+    [Fact]
+    public async Task A_quarantined_document_records_why_in_its_own_folder()
+    {
+        // No entry in _files.Files, so the download fails.
+        var row = Row(Path1);
+
+        var summary = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(1, summary.Quarantined);
+
+        var text = File.ReadAllText(Backups().Folder(row.DocumentId).SummaryPath);
+
+        Assert.Contains("NOT BACKED UP", text);
+        Assert.Contains("Download failed", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("nothing", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task A_quarantined_document_leaves_no_half_saved_bytes_behind()
+    {
+        var row = Row(Path1);
+
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        var folder = Backups().Folder(row.DocumentId);
+        Assert.True(File.Exists(folder.SummaryPath));
+        Assert.False(Directory.Exists(folder.OldDir));
+    }
 }

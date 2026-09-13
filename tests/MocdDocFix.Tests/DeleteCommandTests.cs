@@ -32,7 +32,7 @@ public class DeleteCommandTests : IDisposable
         Directory.CreateDirectory(_root);
 
         var backups = Backups();
-        var saved = backups.Save(OldFileId, ".jpg", Content);
+        var saved = backups.Save(DocumentId, OldFileId, ".jpg", Content);
         backups.AppendManifest(new ManifestEntry(DocumentId, OldFileId, OldPath, "VHASH", "cert.jpg",
             "image/jpeg", ".jpg", "goodConductCertificate", Correct, saved.LocalPath,
             saved.Bytes, Verifier.OurHash(Content), DateTimeOffset.UtcNow));

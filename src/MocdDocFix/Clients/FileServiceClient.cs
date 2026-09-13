@@ -13,6 +13,14 @@ public interface IFileServiceClient
 
 public sealed class FileServiceClient : IFileServiceClient
 {
+    /// <summary>
+    /// Case-insensitive on purpose. Production reads these same responses with Newtonsoft, which
+    /// matches property names case-insensitively; System.Text.Json does not by default, and a
+    /// camelCase body parsed silently into all-defaults — so a good download looked like a
+    /// failure with no message at all.
+    /// </summary>
+    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+
     private readonly HttpClient _http;
     private readonly ResolvedEnvironment _env;
 
@@ -22,8 +30,19 @@ public sealed class FileServiceClient : IFileServiceClient
         _env = env;
     }
 
-    public Task<ApiResponse<FileData>> DownloadAsync(string filePath, CancellationToken ct) =>
-        SendAsync<FileData>(HttpMethod.Get, _env.DownloadUrlPrefix + filePath, content: null, ct);
+    public async Task<ApiResponse<FileData>> DownloadAsync(string filePath, CancellationToken ct)
+    {
+        var response = await SendAsync<FileData>(
+            HttpMethod.Get, _env.DownloadUrlPrefix + filePath, content: null, ct);
+
+        // A download carrying no bytes is a failure however the vendor labelled it. Saying so
+        // here spares every caller from distinguishing "failed" from "succeeded but empty".
+        if (response.Success && string.IsNullOrEmpty(response.Data?.File))
+            return ApiResponse<FileData>.Fail(
+                $"The file server reported success but returned no file content for '{filePath}'.");
+
+        return response;
+    }
 
     public Task<ApiResponse<bool>> DeleteAsync(string filePath, CancellationToken ct) =>
         // GET, deliberately — that is what the vendor exposes (spec section 3.4).
@@ -52,10 +71,32 @@ public sealed class FileServiceClient : IFileServiceClient
             if (!response.IsSuccessStatusCode)
                 return ApiResponse<T>.Fail($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {Truncate(text)}");
 
+            if (string.IsNullOrWhiteSpace(text))
+                return ApiResponse<T>.Fail(
+                    $"HTTP {(int)response.StatusCode} with an empty body — nothing to read.");
+
             try
             {
-                var parsed = JsonSerializer.Deserialize<ApiResponse<T>>(text);
-                return parsed ?? ApiResponse<T>.Fail("Could not parse the response body (null).");
+                var parsed = JsonSerializer.Deserialize<ApiResponse<T>>(text, Json);
+                if (parsed is null)
+                    return ApiResponse<T>.Fail("Could not parse the response body (null).");
+
+                // A failure the vendor did not explain is still a failure we have to explain.
+                // Without this the caller gets "Download failed: " and no way to tell why.
+                if (!parsed.Success && string.IsNullOrWhiteSpace(parsed.Message))
+                {
+                    var errors = parsed.Errors is { Count: > 0 }
+                        ? " " + string.Join("; ", parsed.Errors)
+                        : string.Empty;
+
+                    return parsed with
+                    {
+                        Message = $"The file server returned HTTP {(int)response.StatusCode} but " +
+                                  $"reported failure with no message.{errors} Body: {Truncate(text)}"
+                    };
+                }
+
+                return parsed;
             }
             catch (JsonException ex)
             {

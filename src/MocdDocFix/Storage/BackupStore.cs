@@ -71,10 +71,23 @@ public sealed class BackupStore
 
     public string ManifestPath => _manifestPath;
 
-    public BackupResult Save(Guid oldFileId, string extension, byte[] bytes)
+    /// <summary>The per-document folder holding everything about one document.</summary>
+    public DocumentFolder Folder(Guid documentId) => new(_backupDir, documentId);
+
+    /// <summary>Saves the original bytes under the document's own folder, in old\.</summary>
+    public BackupResult Save(Guid documentId, Guid oldFileId, string extension, byte[] bytes)
     {
-        Directory.CreateDirectory(_backupDir);
-        var path = Path.Combine(_backupDir, oldFileId + extension);
+        var dir = Folder(documentId).EnsureOld();
+        var path = Path.Combine(dir, oldFileId + extension);
+        File.WriteAllBytes(path, bytes);
+        return new BackupResult(path, bytes.Length, Verifier.OurHash(bytes));
+    }
+
+    /// <summary>Saves the corrected copy under the same document folder, in new\.</summary>
+    public BackupResult SaveNew(Guid documentId, Guid newFileId, string extension, byte[] bytes)
+    {
+        var dir = Folder(documentId).EnsureNew();
+        var path = Path.Combine(dir, newFileId + extension);
         File.WriteAllBytes(path, bytes);
         return new BackupResult(path, bytes.Length, Verifier.OurHash(bytes));
     }
@@ -89,8 +102,7 @@ public sealed class BackupStore
     public string SaveCrmImage(Guid oldFileId, Guid documentId, string oldFilePath, string environment,
         string documentRaw, string documentFileRaw, string annotationsRaw)
     {
-        Directory.CreateDirectory(_backupDir);
-        var path = Path.Combine(_backupDir, $"{oldFileId}.crm.json");
+        var path = Path.Combine(Folder(documentId).EnsureOld(), "crm.json");
 
         var image = new CrmImage(
             DocumentId: documentId,

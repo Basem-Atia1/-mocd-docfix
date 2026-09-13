@@ -139,10 +139,10 @@ public sealed class MigrateCommand
             _state.Append(new StateRecord(entry.DocumentId, MigrationState.Verified,
                 DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath, null));
 
-            // Stage the new copy next to the backup so the operator can open both.
-            var stagedPath = Path.Combine(
-                Path.GetDirectoryName(entry.LocalPath)!, $"NEW-{newFile.FileId}{entry.Extension}");
-            File.WriteAllBytes(stagedPath, oldBytes);
+            // Stage the new copy in the document's own new\ folder, beside old\, so everything
+            // about this document stays together and the operator can open both.
+            var staged = _backups.SaveNew(entry.DocumentId, newFile.FileId, entry.Extension, oldBytes);
+            var stagedPath = staged.LocalPath;
 
             _prompts.Info(BuildSummary(i + 1, manifest.Count, entry, newFile, oldBytes.Length, checks));
             _opener.Open(entry.LocalPath);
@@ -169,6 +169,20 @@ public sealed class MigrateCommand
 
             _state.Append(new StateRecord(entry.DocumentId, MigrationState.Repointed,
                 DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath, null));
+
+            _backups.Folder(entry.DocumentId).AppendSection("THE NEW FILE — uploaded and repointed",
+                new (string, string?)[]
+                {
+                    ("New path", newFile.FilePath),
+                    ("New file record", newFile.FileId.ToString()),
+                    ("Filed under", entry.CorrectCatalogueId.ToString()),
+                    ("Vendor hash", newFile.Hash),
+                    ("Saved as", Path.Combine("new", Path.GetFileName(stagedPath))),
+                    ("Checks passed", string.Join(", ", checks.Select(c => c.Name))),
+                    ("CRM now points at", newFile.FileId.ToString()),
+                    ("Repointed at", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss")),
+                    ("The old file", "still on the server, untouched until the delete step")
+                });
 
             rows.Add(new MigrationRow(
                 DocumentId: entry.DocumentId,
