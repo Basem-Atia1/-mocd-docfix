@@ -10,7 +10,7 @@ public sealed record BackupSummary(
     int Quarantined,
     int Skipped,
     long TotalBytes,
-    string ManifestPath,
+    string BackupRoot,
     IReadOnlyList<ScanRow> QuarantinedRows);
 
 /// <summary>
@@ -162,7 +162,7 @@ public sealed class BackupCommand
         if (quarantined.Count > 0) _reporter.WriteQuarantine(env, quarantined);
 
         return new BackupSummary(saved, quarantined.Count, skipped, totalBytes,
-            _backups.ManifestPath, quarantined);
+            _backups.Root, quarantined);
     }
 
     /// <summary>

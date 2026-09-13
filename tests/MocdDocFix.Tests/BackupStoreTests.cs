@@ -9,8 +9,7 @@ public class BackupStoreTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "docfix-backup-" + Guid.NewGuid());
 
-    private BackupStore Store() =>
-        new(Path.Combine(_root, "backup"), Path.Combine(_root, "restore-manifest.jsonl"));
+    private BackupStore Store() => new(Path.Combine(_root, "backup"));
 
     public BackupStoreTests() => Directory.CreateDirectory(_root);
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
@@ -89,6 +88,123 @@ public class BackupStoreTests : IDisposable
     [Fact]
     public void LoadManifest_is_empty_before_anything_is_written()
         => Assert.Empty(Store().LoadManifest());
+
+    // ---- the restore record lives with its document ----
+
+    [Fact]
+    public void The_restore_record_is_written_inside_the_document_folder()
+    {
+        var store = Store();
+        var documentId = Guid.NewGuid();
+
+        store.AppendManifest(Entry(documentId));
+
+        var expected = Path.Combine(store.Folder(documentId).Root, "restore.json");
+        Assert.True(File.Exists(expected), expected);
+    }
+
+    [Fact]
+    public void Nothing_is_written_beside_the_document_folders()
+    {
+        var store = Store();
+        store.AppendManifest(Entry(Guid.NewGuid()));
+
+        // Only per-document folders at the root — no shared manifest file alongside them.
+        Assert.Empty(Directory.GetFiles(store.Root));
+    }
+
+    [Fact]
+    public void Each_document_keeps_its_own_record()
+    {
+        var store = Store();
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+
+        store.AppendManifest(Entry(a));
+        store.AppendManifest(Entry(b));
+
+        Assert.Equal(2, store.LoadManifest().Count);
+        Assert.True(File.Exists(Path.Combine(store.Folder(a).Root, "restore.json")));
+        Assert.True(File.Exists(Path.Combine(store.Folder(b).Root, "restore.json")));
+    }
+
+    [Fact]
+    public void Backing_the_same_document_up_again_replaces_its_record_rather_than_adding_one()
+    {
+        var store = Store();
+        var documentId = Guid.NewGuid();
+
+        store.AppendManifest(Entry(documentId) with { Bytes = 1 });
+        store.AppendManifest(Entry(documentId) with { Bytes = 2 });
+
+        var loaded = Assert.Single(store.LoadManifest());
+        Assert.Equal(2, loaded.Bytes);
+    }
+
+    [Fact]
+    public void The_record_is_readable_rather_than_one_long_line()
+    {
+        var store = Store();
+        var documentId = Guid.NewGuid();
+        store.AppendManifest(Entry(documentId));
+
+        var text = File.ReadAllText(Path.Combine(store.Folder(documentId).Root, "restore.json"));
+
+        Assert.Contains(Environment.NewLine, text);
+        Assert.Contains("\"OldFilePath\"", text);
+    }
+
+    [Fact]
+    public void A_folder_with_no_restore_record_is_skipped_rather_than_failing_the_load()
+    {
+        var store = Store();
+        store.AppendManifest(Entry(Guid.NewGuid()));
+        Directory.CreateDirectory(Path.Combine(store.Root, Guid.NewGuid().ToString()));
+
+        Assert.Single(store.LoadManifest());
+    }
+
+    [Fact]
+    public void A_torn_restore_record_is_skipped_rather_than_aborting_the_run()
+    {
+        var store = Store();
+        store.AppendManifest(Entry(Guid.NewGuid()));
+
+        var broken = Path.Combine(store.Root, Guid.NewGuid().ToString());
+        Directory.CreateDirectory(broken);
+        File.WriteAllText(Path.Combine(broken, "restore.json"), "{ not json");
+
+        Assert.Single(store.LoadManifest());
+    }
+
+    [Fact]
+    public void Records_come_back_in_the_order_they_were_written()
+    {
+        var store = Store();
+        var first = Entry(Guid.NewGuid()) with { At = DateTimeOffset.UtcNow.AddMinutes(-5) };
+        var second = Entry(Guid.NewGuid()) with { At = DateTimeOffset.UtcNow };
+
+        store.AppendManifest(second);
+        store.AppendManifest(first);
+
+        Assert.Equal(new[] { first.DocumentId, second.DocumentId },
+            store.LoadManifest().Select(m => m.DocumentId));
+    }
+
+    private static ManifestEntry Entry(Guid documentId) => new(
+        DocumentId: documentId,
+        OldFileId: Guid.NewGuid(),
+        OldFilePath: @"DigitalServices\cat\20260330\a.jpg",
+        OldVendorHash: "h",
+        FileName: "cert.jpg",
+        MediaType: "image/jpeg",
+        Extension: ".jpg",
+        OldCategory: "cat",
+        CorrectCatalogueId: Guid.NewGuid(),
+        LocalPath: @"C:\tmp\a.jpg",
+        Bytes: 10,
+        OurHash: "abc",
+        At: DateTimeOffset.UtcNow);
 
     [Fact]
     public void Backslashes_in_the_stored_path_survive_json_round_tripping()

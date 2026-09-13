@@ -105,6 +105,46 @@ public sealed class DeleteCommand
         return new DeleteSummary(deleted, skipped, refused, false, null);
     }
 
+    /// <summary>
+    /// Deletes one document's old file, re-running the same safety checks as the bulk step.
+    /// Used by the migrate step when the operator chooses to remove a file straight after
+    /// repointing it, so there is one implementation of "is this safe to delete", not two.
+    /// </summary>
+    /// <returns>Null when it was deleted, otherwise the reason it was refused.</returns>
+    public async Task<string?> DeleteOneAsync(Guid documentId, CancellationToken ct)
+    {
+        if (_state.IsAtLeast(documentId, MigrationState.Deleted)) return null;
+
+        var entry = _backups.LoadManifest().FirstOrDefault(m => m.DocumentId == documentId);
+        if (entry is null) return "no backup record for this document";
+
+        if (!_state.LoadLatest().TryGetValue(documentId, out var candidate) ||
+            candidate.State != MigrationState.Repointed)
+        {
+            return "the document is not in the repointed state";
+        }
+
+        var refusal = await WhyNotSafeAsync(candidate, entry, ct);
+        if (refusal is not null)
+        {
+            _state.Append(new StateRecord(documentId, MigrationState.Failed,
+                DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
+                $"Delete refused: {refusal}"));
+            return refusal;
+        }
+
+        var fileDelete = await _files.DeleteAsync(entry.OldFilePath, ct);
+        if (!fileDelete.Success) return $"the file server refused: {fileDelete.Message}";
+
+        await _write.DeleteDocumentFileAsync(entry.OldFileId, ct);
+
+        _state.Append(new StateRecord(documentId, MigrationState.Deleted,
+            DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
+            $"Deleted {entry.OldFilePath} and documentfile {entry.OldFileId}."));
+
+        return null;
+    }
+
     /// <summary>Re-runs the safety checks against live state. Null means safe to delete.</summary>
     private async Task<string?> WhyNotSafeAsync(StateRecord candidate, ManifestEntry entry, CancellationToken ct)
     {

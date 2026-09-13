@@ -13,8 +13,7 @@ public class BackupCommandTests : IDisposable
     private readonly FakeFileServiceClient _files = new();
     private readonly FakeCrmReadClient _read = new();
 
-    private BackupStore Backups() =>
-        new(Path.Combine(_root, "backup"), Path.Combine(_root, "restore-manifest.jsonl"));
+    private BackupStore Backups() => new(Path.Combine(_root, "backup"));
     private StateStore States() => new(Path.Combine(_root, "state.jsonl"));
 
     public BackupCommandTests() => Directory.CreateDirectory(_root);

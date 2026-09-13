@@ -56,7 +56,7 @@ public sealed class Session : IDisposable
         var backupRoot = Path.Combine(appConfig.DataRoot, "backup", envName);
 
         _reporter = new Reporter(Path.Combine(dataRoot, "reports"));
-        _backups = new BackupStore(backupRoot, Path.Combine(backupRoot, "restore-manifest.jsonl"));
+        _backups = new BackupStore(backupRoot);
         _state = new StateStore(Path.Combine(dataRoot, "state", $"state-{envName}.jsonl"));
 
         _crmHttp = CrmHttp.Create(env);
@@ -78,6 +78,14 @@ public sealed class Session : IDisposable
     }
 
     private string? HashOf(ScanRow row) => _hashes.TryGetValue(row.DocumentFileId, out var h) ? h : null;
+
+    /// <summary>
+    /// Deletes one document's old file, using the delete step's own safety checks. Passed to
+    /// the migrate step so the operator can remove a file right after repointing it, without a
+    /// second implementation of what "safe to delete" means.
+    /// </summary>
+    private Task<string?> DeleteOneAsync(Guid documentId, CancellationToken ct) =>
+        new DeleteCommand(_files, _write, _backups, _state, _prompts).DeleteOneAsync(documentId, ct);
 
     public async Task<ScanResult> ScanAsync(CancellationToken ct)
     {
@@ -156,14 +164,13 @@ public sealed class Session : IDisposable
             return StepOutcome.Of(
                 $"{summary.Saved} saved, {summary.Quarantined} quarantined, {summary.Skipped} skipped.",
                 $"{summary.TotalBytes / 1_048_576:N0} MB downloaded",
-                $"backups  → {Path.Combine(_appConfig.DataRoot, _envName, "backup")}",
-                $"manifest → {summary.ManifestPath}");
+                $"one folder per document under {summary.BackupRoot}");
         },
 
         MigrateAsync: async () =>
         {
             var summary = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
-                _prompts, _opener, _env.CrmUrl).RunAsync(_envName, ct);
+                _prompts, _opener, _env.CrmUrl, DeleteOneAsync).RunAsync(_envName, ct);
 
             var details = new List<string> { $"report → {summary.ReportPath}" };
             if (summary.Halted) details.Add($"RUN HALTED: {summary.HaltReason}");
@@ -223,12 +230,12 @@ public sealed class Session : IDisposable
 
             if (!gate.Ask("2", "Backup",
                     $"{backup.Saved} saved, {backup.Quarantined} quarantined, {backup.Skipped} skipped.",
-                    new[] { $"manifest → {backup.ManifestPath}" },
+                    new[] { $"one folder per document under {backup.BackupRoot}" },
                     "upload the corrected copies — the first step that WRITES"))
                 return 0;
 
             var migrated = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
-                _prompts, _opener, _env.CrmUrl).RunAsync(_envName, ct);
+                _prompts, _opener, _env.CrmUrl, DeleteOneAsync).RunAsync(_envName, ct);
 
             if (migrated.Migrated == 0) return 0;
 
@@ -287,7 +294,7 @@ public sealed class Session : IDisposable
                     .RunAsync(_envName, result.Fix, ct);
                 Console.WriteLine($"Saved {summary.Saved}, quarantined {summary.Quarantined}, " +
                                   $"skipped {summary.Skipped}, {summary.TotalBytes / 1_048_576:N0} MB.");
-                Console.WriteLine($"manifest → {summary.ManifestPath}");
+                Console.WriteLine($"one folder per document under {summary.BackupRoot}");
                 return summary.Quarantined > 0 ? 1 : 0;
             }
 
@@ -296,7 +303,7 @@ public sealed class Session : IDisposable
                 if (_dryRun) { Console.WriteLine("Dry run: migrate writes, so nothing was done."); return 0; }
 
                 var summary = await new MigrateCommand(_files, _read, _write, _backups, _state,
-                    _reporter, _prompts, _opener, _env.CrmUrl).RunAsync(_envName, ct);
+                    _reporter, _prompts, _opener, _env.CrmUrl, DeleteOneAsync).RunAsync(_envName, ct);
 
                 Console.WriteLine($"Migrated {summary.Migrated}, skipped {summary.Skipped}, failed {summary.Failed}.");
                 Console.WriteLine($"report → {summary.ReportPath}");

@@ -59,17 +59,17 @@ public sealed record CrmImage(
 public sealed class BackupStore
 {
     private static readonly JsonSerializerOptions Json = new();
+    private static readonly JsonSerializerOptions Readable = new() { WriteIndented = true };
+
+    private const string RestoreFile = "restore.json";
 
     private readonly string _backupDir;
-    private readonly string _manifestPath;
 
-    public BackupStore(string backupDir, string manifestPath)
-    {
-        _backupDir = backupDir;
-        _manifestPath = manifestPath;
-    }
+    /// <param name="backupDir">&lt;DataRoot&gt;\backup\&lt;env&gt; — one folder per document beneath it.</param>
+    public BackupStore(string backupDir) => _backupDir = backupDir;
 
-    public string ManifestPath => _manifestPath;
+    /// <summary>The folder holding one folder per document.</summary>
+    public string Root => _backupDir;
 
     /// <summary>The per-document folder holding everything about one document.</summary>
     public DocumentFolder Folder(Guid documentId) => new(_backupDir, documentId);
@@ -127,29 +127,39 @@ public sealed class BackupStore
         catch (JsonException) { return null; }
     }
 
+    /// <summary>
+    /// Writes the document's restore record into its own folder, replacing any earlier one.
+    /// It used to be appended to a single restore-manifest.jsonl beside the document folders,
+    /// which left one file that belonged to no document; keeping it with its document means a
+    /// folder can be copied, moved or inspected on its own and still be complete.
+    /// </summary>
     public void AppendManifest(ManifestEntry entry)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_manifestPath)!);
-        File.AppendAllText(_manifestPath, JsonSerializer.Serialize(entry, Json) + Environment.NewLine);
+        var path = Path.Combine(Folder(entry.DocumentId).EnsureRoot(), RestoreFile);
+        File.WriteAllText(path, JsonSerializer.Serialize(entry, Readable));
     }
 
+    /// <summary>Every restore record under this environment, oldest first.</summary>
     public IReadOnlyList<ManifestEntry> LoadManifest()
     {
         var entries = new List<ManifestEntry>();
-        if (!File.Exists(_manifestPath)) return entries;
+        if (!Directory.Exists(_backupDir)) return entries;
 
-        foreach (var line in File.ReadLines(_manifestPath))
+        foreach (var folder in Directory.EnumerateDirectories(_backupDir))
         {
-            if (string.IsNullOrWhiteSpace(line)) continue;
+            var path = Path.Combine(folder, RestoreFile);
+            if (!File.Exists(path)) continue;
+
             try
             {
-                var entry = JsonSerializer.Deserialize<ManifestEntry>(line, Json);
+                var entry = JsonSerializer.Deserialize<ManifestEntry>(File.ReadAllText(path), Json);
                 if (entry is not null) entries.Add(entry);
             }
-            catch (JsonException) { /* skip a torn line rather than abort */ }
+            catch (JsonException) { /* skip a torn record rather than abort the run */ }
+            catch (IOException) { /* likewise for a file we cannot read right now */ }
         }
 
-        return entries;
+        return entries.OrderBy(e => e.At).ThenBy(e => e.DocumentId).ToList();
     }
 
     public static long FreeSpaceBytes(string anyPathOnTheDrive)

@@ -30,10 +30,17 @@ public sealed class MigrateCommand
     private readonly IPrompts _prompts;
     private readonly IFileOpener _opener;
     private readonly string _crmUrl;
+    private readonly Func<Guid, CancellationToken, Task<string?>>? _deleteOldAsync;
 
+    /// <param name="deleteOldAsync">
+    /// Deletes one document's old file, re-running the full safety check first. Returns null on
+    /// success or the reason it refused. Optional: when it is not supplied the operator is not
+    /// offered a per-document delete and the separate delete step handles them all.
+    /// </param>
     public MigrateCommand(IFileServiceClient files, ICrmReadClient read, ICrmWriteClient write,
         BackupStore backups, StateStore state, Reporter reporter, IPrompts prompts,
-        IFileOpener opener, string crmUrl)
+        IFileOpener opener, string crmUrl,
+        Func<Guid, CancellationToken, Task<string?>>? deleteOldAsync = null)
     {
         _files = files;
         _read = read;
@@ -44,6 +51,7 @@ public sealed class MigrateCommand
         _prompts = prompts;
         _opener = opener;
         _crmUrl = crmUrl;
+        _deleteOldAsync = deleteOldAsync;
     }
 
     public async Task<MigrateSummary> RunAsync(string env, CancellationToken ct)
@@ -74,6 +82,22 @@ public sealed class MigrateCommand
             }
 
             var oldBytes = _backups.Read(entry.LocalPath);
+
+            // Say what is about to happen, in the operator's terms, BEFORE uploading: which
+            // catalogue the new copy will be filed under, and what the new path will look like.
+            var catalogueName = await _read.GetServiceCatalogueNameAsync(
+                entry.CorrectCatalogueId.ToString(), ct);
+
+            _prompts.Info(BuildUploadBriefing(i + 1, manifest.Count, entry, catalogueName, oldBytes.Length));
+
+            var goAhead = _prompts.Confirm("Upload this corrected copy now?");
+            if (goAhead == ConfirmChoice.Quit) break;
+            if (goAhead is ConfirmChoice.No or ConfirmChoice.Skip)
+            {
+                _prompts.Info("  Not uploaded. Nothing was changed for this document.");
+                skipped++;
+                continue;
+            }
 
             var upload = await _files.UploadAsync(new UploadRequest(
                 Category: entry.CorrectCatalogueId.ToString(),
@@ -148,7 +172,23 @@ public sealed class MigrateCommand
             _opener.Open(entry.LocalPath);
             _opener.Open(stagedPath);
 
-            var choice = _prompts.Confirm("Repoint document to the new file?");
+            // Two separate questions, deliberately. The first asks only whether the operator's
+            // own eyes agree with the checks above; the second asks whether to write to CRM.
+            var looksRight = _prompts.Confirm("Do the two files look the same to you?");
+            if (looksRight == ConfirmChoice.Quit) break;
+            if (looksRight is ConfirmChoice.No or ConfirmChoice.Skip)
+            {
+                _prompts.Info("  Left alone. CRM still points at the old file, and the old file is");
+                _prompts.Info("  untouched. The new copy stays on the server for you to inspect:");
+                _prompts.Info($"     {newFile.FilePath}");
+                _state.Append(new StateRecord(entry.DocumentId, MigrationState.Uploaded,
+                    DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath,
+                    "Operator did not confirm the two files match."));
+                skipped++;
+                continue;
+            }
+
+            var choice = _prompts.Confirm("Repoint the document to the new file?");
             if (choice == ConfirmChoice.Quit) break;
             if (choice is ConfirmChoice.No or ConfirmChoice.Skip) { skipped++; continue; }
 
@@ -184,6 +224,8 @@ public sealed class MigrateCommand
                     ("The old file", "still on the server, untouched until the delete step")
                 });
 
+            await OfferToDeleteOldAsync(entry, ct);
+
             rows.Add(new MigrationRow(
                 DocumentId: entry.DocumentId,
                 OldFileId: entry.OldFileId,
@@ -210,20 +252,107 @@ public sealed class MigrateCommand
         _state.Append(new StateRecord(entry.DocumentId, MigrationState.Failed,
             DateTimeOffset.UtcNow, null, null, detail));
 
+    /// <summary>
+    /// What will be uploaded, where it will land, and what the new path will look like — said
+    /// before the upload happens, so the answer is an informed one.
+    /// </summary>
+    private static string BuildUploadBriefing(int index, int total, ManifestEntry entry,
+        string? catalogueName, int bytes)
+    {
+        var parts = FilePathParser.Parse(entry.OldFilePath);
+        var extension = string.IsNullOrEmpty(entry.Extension) ? "" : entry.Extension;
+
+        return string.Join(Environment.NewLine,
+            "",
+            "──────────────────────────────────────────────────────────────────────",
+            $"  File {index} of {total}   {entry.FileName}",
+            $"  Document       {entry.DocumentId}",
+            $"  Document type  {entry.DocumentTypeName}",
+            $"  Size           {bytes:N0} bytes",
+            "",
+            $"  Filed under now   {parts.CategorySegment ?? "(nothing)"}",
+            $"  Should be under   {entry.CorrectCatalogueId}",
+            $"                    {catalogueName ?? "(name not available)"}",
+            "",
+            "  Uploading creates a NEW file. The vendor assigns its id and its date",
+            "  folder, so the new path will look like this:",
+            "",
+            $"      DigitalServices\\{entry.CorrectCatalogueId}\\{DateTime.Now:yyyyMMdd}\\<new-file-id>{extension}",
+            "",
+            "  The old file is not touched. Nothing is written to CRM yet — you will",
+            "  see both files and be asked again before anything is repointed.",
+            "");
+    }
+
+    /// <summary>
+    /// Offers to remove this document's old file straight away, rather than leaving every
+    /// deletion to the end. Declining is always safe: the separate delete step can still do it.
+    /// </summary>
+    private async Task OfferToDeleteOldAsync(ManifestEntry entry, CancellationToken ct)
+    {
+        if (_deleteOldAsync is null) return;
+
+        _prompts.Info("");
+        _prompts.Info("  CRM now points at the new file. The OLD one is still on the server:");
+        _prompts.Info($"     {entry.OldFilePath}");
+        _prompts.Info("  Deleting it cannot be undone. Saying no leaves it for the delete step,");
+        _prompts.Info("  which can remove them all together once you are satisfied.");
+
+        if (_prompts.Confirm("Delete this old file now?") != ConfirmChoice.Yes)
+        {
+            _prompts.Info("  Left in place.");
+            return;
+        }
+
+        var refusal = await _deleteOldAsync(entry.DocumentId, ct);
+
+        if (refusal is null)
+        {
+            _prompts.Info("  Deleted.");
+            _backups.Folder(entry.DocumentId).AppendSection("THE OLD FILE — deleted",
+                new (string, string?)[]
+                {
+                    ("Deleted from", entry.OldFilePath),
+                    ("At", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss")),
+                    ("Recoverable", "the bytes are in old\\, but a restore lands on a new path")
+                });
+        }
+        else
+        {
+            _prompts.Info($"  REFUSED — {refusal}");
+            _prompts.Info("  The old file is still there. Nothing was lost.");
+        }
+    }
+
     private static string BuildSummary(int index, int total, ManifestEntry entry, FileData newFile,
         int bytes, IReadOnlyList<CheckResult> checks)
     {
         var lines = new List<string>
         {
             "",
-            $"[{index} / {total}]  {entry.FileName}",
-            $"  document  {entry.DocumentId}",
+            $"  UPLOADED — file {index} of {total}   {entry.FileName}",
+            "",
             $"  OLD  {entry.OldFilePath}",
             $"  NEW  {newFile.FilePath}",
+            "",
+            "  MY COMPARISON",
+            $"    size              {bytes:N0} bytes",
+            $"    SHA-256 of backup {entry.OurHash}",
+            $"    vendor hash old   {entry.OldVendorHash}",
+            $"    vendor hash new   {newFile.Hash}",
             ""
         };
-        lines.AddRange(checks.Select(c => $"  {c.Name,-18} {(c.Passed ? "OK" : "FAILED")}  {c.Detail}"));
-        lines.Add($"  bytes              {bytes:N0}");
+
+        lines.AddRange(checks.Select(c =>
+            $"    {(c.Passed ? "PASS" : "FAIL")}  {c.Name,-16} {c.Detail}"));
+
+        lines.Add("");
+        lines.Add(checks.All(c => c.Passed)
+            ? "    Every check passed. As far as I can tell the two files are identical."
+            : "    SOMETHING DID NOT PASS — read the lines above before answering.");
+        lines.Add("");
+        lines.Add("  I have opened both files for you. Compare them yourself as well.");
+
         return string.Join(Environment.NewLine, lines);
     }
 }

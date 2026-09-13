@@ -24,7 +24,7 @@ public class DeleteCommandTests : IDisposable
     private readonly FakeFileServiceClient _files = new();
     private readonly FakeCrmWriteClient _write = new();
 
-    private BackupStore Backups() => new(Path.Combine(_root, "backup"), Path.Combine(_root, "manifest.jsonl"));
+    private BackupStore Backups() => new(Path.Combine(_root, "backup"));
     private StateStore States() => new(Path.Combine(_root, "state.jsonl"));
 
     public DeleteCommandTests()
