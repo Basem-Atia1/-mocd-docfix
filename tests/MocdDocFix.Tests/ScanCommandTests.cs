@@ -19,7 +19,7 @@ public class ScanCommandTests : IDisposable
 
     private ScanCommand Command() =>
         new(_crm, new Reporter(_dir), "https://crm/MoCD", new[] { EmployeeAppointment, GamRequest },
-            new GroupedReportWriter(_dir));
+            new GroupedReportWriter(_dir), new GuidListWriter(_dir));
 
     private static DocumentRow Doc(string? path, Guid? docTypeCat, Guid? crossCheck = null,
         string name = "cert.jpg") =>
@@ -71,6 +71,28 @@ public class ScanCommandTests : IDisposable
         Assert.Contains("GROUP 3", text);
         Assert.Contains("GROUP 5", text);
         Assert.Contains("2  TOTAL to fix (groups 1-5)", text);
+    }
+
+    [Fact]
+    public async Task A_scan_writes_the_guid_list_and_it_can_be_fed_straight_back_in()
+    {
+        _crm.KnownCatalogues.Add(GamRequest.ToString());
+        var broken = Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment);
+        var conflict = Doc(@"DigitalServices\boardDecision\20260330\b.jpg", EmployeeAppointment, GamRequest);
+        _crm.Documents.AddRange(new[] { broken, conflict });
+
+        var result = await Command().RunAsync("dev", CancellationToken.None);
+
+        Assert.True(File.Exists(result.GuidsPath), result.GuidsPath);
+
+        // What --docs-file would read back: the fixable one only, never the conflict.
+        var usable = File.ReadAllLines(result.GuidsPath)
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0 && !l.StartsWith('#'))
+            .ToList();
+
+        Assert.Equal(new[] { broken.DocumentId.ToString() }, usable);
+        Assert.Contains(conflict.DocumentId.ToString(), File.ReadAllText(result.GuidsPath));
     }
 
     [Fact]

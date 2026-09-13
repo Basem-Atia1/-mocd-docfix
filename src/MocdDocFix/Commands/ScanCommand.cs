@@ -10,6 +10,10 @@ namespace MocdDocFix.Commands;
 /// population (spec section 5.0).
 /// </param>
 /// <param name="GroupsPath">The readable grouped report — spec 2026-09-13 section 5.</param>
+/// <param name="GuidsPath">
+/// The document GUIDs of each group, one per line under '#' headers — readable, and usable
+/// directly as --docs-file.
+/// </param>
 public sealed record ScanResult(
     int TotalInScope,
     IReadOnlyList<ScanRow> All,
@@ -18,7 +22,8 @@ public sealed record ScanResult(
     IReadOnlyList<ScanRow> Skip,
     string ScanPath,
     string ReviewPath,
-    string GroupsPath = "")
+    string GroupsPath = "",
+    string GuidsPath = "")
 {
     /// <summary>How many of each group were found, for the wizard's group picker.</summary>
     public IReadOnlyDictionary<int, int> CountByGroup =>
@@ -50,15 +55,18 @@ public sealed class ScanCommand
     private readonly string _crmUrl;
     private readonly IReadOnlyList<Guid> _catalogues;
     private readonly GroupedReportWriter? _grouped;
+    private readonly GuidListWriter? _guids;
 
     public ScanCommand(ICrmReadClient crm, Reporter reporter, string crmUrl,
-        IReadOnlyList<Guid> catalogues, GroupedReportWriter? grouped = null)
+        IReadOnlyList<Guid> catalogues,
+        GroupedReportWriter? grouped = null, GuidListWriter? guids = null)
     {
         _crm = crm;
         _reporter = reporter;
         _crmUrl = crmUrl;
         _catalogues = catalogues;
         _grouped = grouped;
+        _guids = guids;
     }
 
     public async Task<ScanResult> RunAsync(string env, CancellationToken ct)
@@ -122,7 +130,11 @@ public sealed class ScanCommand
         var groupsPath = writeReports && _grouped is not null
             ? _grouped.Write(env, rows, _catalogues.Count)
             : string.Empty;
+        var guidsPath = writeReports && _guids is not null
+            ? _guids.Write(env, rows)
+            : string.Empty;
 
-        return new ScanResult(documents.Count, rows, fix, review, skip, scanPath, reviewPath, groupsPath);
+        return new ScanResult(documents.Count, rows, fix, review, skip,
+            scanPath, reviewPath, groupsPath, guidsPath);
     }
 }

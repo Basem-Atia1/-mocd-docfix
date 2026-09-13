@@ -56,7 +56,8 @@ public sealed class Session : IDisposable
         _files = new FileServiceClient(_fileHttp, env);
 
         _scan = new ScanCommand(_read, _reporter, env.CrmUrl, appConfig.ServiceCatalogues,
-            new GroupedReportWriter(Path.Combine(dataRoot, "reports")));
+            new GroupedReportWriter(Path.Combine(dataRoot, "reports")),
+            new GuidListWriter(Path.Combine(dataRoot, "reports")));
     }
 
     public void Dispose()
@@ -84,6 +85,7 @@ public sealed class Session : IDisposable
             var details = result.Banner().Split(Environment.NewLine).ToList();
             details.Add("");
             details.Add($"grouped report → {result.GroupsPath}");
+            details.Add($"GUIDs by group → {result.GuidsPath}");
             details.Add($"spreadsheet    → {result.ScanPath}");
             details.Add($"needs a human  → {result.ReviewPath}");
 
@@ -191,6 +193,7 @@ public sealed class Session : IDisposable
                 Console.WriteLine(result.Banner());
                 Console.WriteLine();
                 Console.WriteLine($"grouped → {result.GroupsPath}   (what is wrong, and why)");
+                Console.WriteLine($"guids   → {result.GuidsPath}      (document GUIDs of each group)");
                 Console.WriteLine($"scan    → {result.ScanPath}     (reason and solution for every row)");
                 Console.WriteLine($"review  → {result.ReviewPath}");
                 return 0;
@@ -202,6 +205,7 @@ public sealed class Session : IDisposable
                 Console.WriteLine(result.Banner());
                 Console.WriteLine();
                 Console.WriteLine($"grouped → {result.GroupsPath}");
+                Console.WriteLine($"guids   → {result.GuidsPath}");
                 Console.WriteLine($"scan    → {result.ScanPath}");
                 Console.WriteLine();
 
