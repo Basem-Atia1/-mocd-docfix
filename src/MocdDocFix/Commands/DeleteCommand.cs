@@ -88,15 +88,17 @@ public sealed class DeleteCommand
                 continue;
             }
 
-            var fileDelete = await _files.DeleteAsync(entry.OldFilePath, ct);
-            if (!fileDelete.Success)
+            var outcome = await RemoveOldAsync(entry, ct);
+            foreach (var line in outcome.Log) _prompts.Info(line);
+
+            if (!outcome.Removed)
             {
-                _prompts.Info($"  FAILED to delete {entry.OldFilePath} — {fileDelete.Message}");
+                _state.Append(new StateRecord(candidate.DocumentId, MigrationState.Failed,
+                    DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
+                    $"Delete failed: {outcome.Reason}"));
                 refused++;
                 continue;
             }
-
-            await _write.DeleteDocumentFileAsync(entry.OldFileId, ct);
 
             _state.Append(new StateRecord(candidate.DocumentId, MigrationState.Deleted,
                 DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
@@ -105,6 +107,70 @@ public sealed class DeleteCommand
         }
 
         return new DeleteSummary(deleted, skipped, refused, false, null);
+    }
+
+    /// <param name="Removed">True when the file is gone from the server AND the CRM row is gone.</param>
+    /// <param name="Log">What happened, line by line, for the operator to read.</param>
+    private sealed record RemovalOutcome(bool Removed, string? Reason, IReadOnlyList<string> Log);
+
+    /// <summary>
+    /// Looks before and after. A delete endpoint answering "success" is not evidence that the
+    /// file has gone, so the file is checked first, deleted, then checked again. The CRM record
+    /// is removed only once the file is confirmed absent, so the two can never disagree.
+    /// </summary>
+    private async Task<RemovalOutcome> RemoveOldAsync(ManifestEntry entry, CancellationToken ct)
+    {
+        var log = new List<string>
+        {
+            "",
+            $"  {entry.FileName}",
+            $"    path        {entry.OldFilePath}",
+            $"    CRM record  {entry.OldFileId}"
+        };
+
+        var before = await _files.DownloadAsync(entry.OldFilePath, ct);
+        var wasThere = before.Success && !string.IsNullOrEmpty(before.Data?.File);
+
+        log.Add(wasThere
+            ? $"    before      found on the server, {Bytes(before.Data!.File!):N0} bytes"
+            : "    before      NOT on the server — nothing there to delete");
+
+        if (wasThere)
+        {
+            var call = await _files.DeleteAsync(entry.OldFilePath, ct);
+            log.Add(call.Success
+                ? "    delete      the file server accepted the request"
+                : $"    delete      the file server refused: {call.Message}");
+
+            if (!call.Success)
+            {
+                log.Add("    RESULT      NOT deleted. The CRM record was left alone.");
+                return new RemovalOutcome(false, call.Message ?? "the file server refused", log);
+            }
+
+            // The only proof that counts.
+            var after = await _files.DownloadAsync(entry.OldFilePath, ct);
+            if (after.Success && !string.IsNullOrEmpty(after.Data?.File))
+            {
+                log.Add("    after       STILL ON THE SERVER — the delete did not take effect");
+                log.Add("    RESULT      NOT deleted. The CRM record was left alone.");
+                return new RemovalOutcome(false, "the file is still on the server after the delete", log);
+            }
+
+            log.Add("    after       confirmed gone from the server");
+        }
+
+        await _write.DeleteDocumentFileAsync(entry.OldFileId, ct);
+        log.Add($"    CRM         mocd_documentfile {entry.OldFileId} deleted");
+        log.Add("    RESULT      done — file and CRM record both removed");
+
+        return new RemovalOutcome(true, null, log);
+    }
+
+    private static int Bytes(string base64)
+    {
+        try { return Convert.FromBase64String(base64).Length; }
+        catch (FormatException) { return 0; }
     }
 
     /// <summary>
@@ -135,10 +201,24 @@ public sealed class DeleteCommand
             return refusal;
         }
 
-        var fileDelete = await _files.DeleteAsync(entry.OldFilePath, ct);
-        if (!fileDelete.Success) return $"the file server refused: {fileDelete.Message}";
+        var outcome = await RemoveOldAsync(entry, ct);
+        foreach (var line in outcome.Log) _prompts.Info(line);
 
-        await _write.DeleteDocumentFileAsync(entry.OldFileId, ct);
+        // The log goes into the document's own folder too, so the record of what happened
+        // survives the terminal scrolling away.
+        _backups.Folder(documentId).AppendSection("THE OLD FILE — delete attempted",
+            outcome.Log
+                .Where(l => l.Contains("    ", StringComparison.Ordinal))
+                .Select(l => (l.Trim().Split("  ", 2)[0], (string?)l.Trim().Split("  ", 2).Last()))
+                .ToList());
+
+        if (!outcome.Removed)
+        {
+            _state.Append(new StateRecord(documentId, MigrationState.Failed,
+                DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
+                $"Delete failed: {outcome.Reason}"));
+            return outcome.Reason;
+        }
 
         _state.Append(new StateRecord(documentId, MigrationState.Deleted,
             DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,

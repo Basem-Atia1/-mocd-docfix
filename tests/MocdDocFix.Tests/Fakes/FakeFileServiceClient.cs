@@ -26,10 +26,23 @@ public sealed class FakeFileServiceClient : IFileServiceClient
             ?? ApiResponse<FileData>.Fail("no upload responder configured"));
     }
 
+    /// <summary>
+    /// When set, the delete reports success but the file is left in place — the way a server
+    /// that lies about deleting would behave.
+    /// </summary>
+    public bool PretendToDelete { get; set; }
+
+    /// <summary>When set, the delete call itself fails.</summary>
+    public string? DeleteRefusal { get; set; }
+
     public Task<ApiResponse<bool>> DeleteAsync(string filePath, CancellationToken ct)
     {
         Deleted.Add(filePath);
-        Files.Remove(filePath);
+
+        if (DeleteRefusal is not null)
+            return Task.FromResult(ApiResponse<bool>.Fail(DeleteRefusal));
+
+        if (!PretendToDelete) Files.Remove(filePath);
         return Task.FromResult(new ApiResponse<bool>(true, null, true, null));
     }
 }

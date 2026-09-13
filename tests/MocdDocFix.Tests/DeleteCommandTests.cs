@@ -165,4 +165,61 @@ public class DeleteCommandTests : IDisposable
         Assert.Equal(0, summary.Deleted);
         Assert.Empty(prompts.Questions);
     }
+
+    // ---- the delete step shows its working ----
+
+    [Fact]
+    public async Task The_log_says_the_file_was_found_before_it_was_deleted()
+    {
+        var prompts = Confirmed();
+
+        await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        var log = string.Join("|", prompts.Messages);
+        Assert.Contains("before      found on the server", log);
+        Assert.Contains("delete      the file server accepted", log);
+        Assert.Contains("after       confirmed gone from the server", log);
+        Assert.Contains("CRM         mocd_documentfile", log);
+        Assert.Contains("RESULT      done", log);
+    }
+
+    [Fact]
+    public async Task A_file_already_absent_is_said_so_and_the_crm_record_still_goes()
+    {
+        _files.Files.Remove(OldPath);
+        var prompts = Confirmed();
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Contains("before      NOT on the server", string.Join("|", prompts.Messages));
+        Assert.Contains(OldFileId, _write.DeletedFiles);
+        Assert.Equal(1, summary.Deleted);
+    }
+
+    [Fact]
+    public async Task A_server_that_says_deleted_but_keeps_the_file_is_caught()
+    {
+        _files.PretendToDelete = true;
+        var prompts = Confirmed();
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Equal(1, summary.Refused);
+        Assert.Contains("STILL ON THE SERVER", string.Join("|", prompts.Messages));
+        Assert.Empty(_write.DeletedFiles);      // the CRM record is kept, so the two agree
+    }
+
+    [Fact]
+    public async Task A_refused_delete_leaves_the_crm_record_in_place()
+    {
+        _files.DeleteRefusal = "access denied";
+        var prompts = Confirmed();
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Contains("the file server refused: access denied", string.Join("|", prompts.Messages));
+        Assert.Empty(_write.DeletedFiles);
+    }
 }
