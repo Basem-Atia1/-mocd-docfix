@@ -5,8 +5,14 @@ namespace MocdDocFix.Clients;
 
 public interface ICrmWriteClient
 {
-    Task CreateDocumentFileAsync(Guid fileId, string filePath, string? hash, string? name,
-        string? mediaType, string? category, CancellationToken ct);
+    /// <param name="explicitId">
+    /// The key to create the row with, or null to let CRM generate one. The portal sets it to the
+    /// vendor's FileId; the plugin lets CRM choose. Keeping whichever the old record used is what
+    /// stops a migration from quietly changing a document's shape.
+    /// </param>
+    /// <returns>The id of the row that was created.</returns>
+    Task<Guid> CreateDocumentFileAsync(Guid? explicitId,
+        IReadOnlyDictionary<string, object?> attributes, CancellationToken ct);
     Task RepointDocumentAsync(Guid documentId, Guid newFileId, CancellationToken ct);
     Task<Guid?> GetDocumentFileLinkAsync(Guid documentId, CancellationToken ct);
     Task DeleteDocumentFileAsync(Guid fileId, CancellationToken ct);
@@ -18,24 +24,47 @@ public sealed class CrmWriteClient : ICrmWriteClient
 
     public CrmWriteClient(HttpClient http) => _http = http;
 
-    /// <summary>
-    /// Creates the row with the vendor's FileId as its primary key, preserving the invariant
-    /// mocd_documentfileid == vendor FileId == the path's file stem (spec section 4.1).
-    /// </summary>
-    public Task CreateDocumentFileAsync(Guid fileId, string filePath, string? hash, string? name,
-        string? mediaType, string? category, CancellationToken ct)
+    public async Task<Guid> CreateDocumentFileAsync(Guid? explicitId,
+        IReadOnlyDictionary<string, object?> attributes, CancellationToken ct)
     {
-        var payload = new Dictionary<string, object?>
-        {
-            ["mocd_documentfileid"] = fileId,
-            ["mocd_filepath"] = filePath,
-            ["mocd_hash"] = hash,
-            ["mocd_name"] = name,
-            ["mocd_mediatype"] = mediaType,
-            ["mocd_category"] = category
-        };
+        var payload = new Dictionary<string, object?>(attributes);
+        if (explicitId is { } id) payload["mocd_documentfileid"] = id;
 
-        return SendAsync(HttpMethod.Post, "mocd_documentfiles", payload, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "mocd_documentfiles");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+        using var response = await _http.SendAsync(request, ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync(ct);
+            throw new InvalidOperationException(
+                $"CRM POST mocd_documentfiles failed: HTTP {(int)response.StatusCode}. {error}");
+        }
+
+        if (explicitId is { } chosen) return chosen;
+
+        // CRM generated the key, so read it back out of the OData-EntityId header — the only
+        // place a create response carries it.
+        return IdFromEntityHeader(response)
+            ?? throw new InvalidOperationException(
+                "CRM created the documentfile but did not return its id, so it cannot be linked. " +
+                "Stopping rather than guessing.");
+    }
+
+    private static Guid? IdFromEntityHeader(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("OData-EntityId", out var values)) return null;
+
+        var location = values.FirstOrDefault();
+        if (location is null) return null;
+
+        var open = location.LastIndexOf('(');
+        var close = location.LastIndexOf(')');
+        if (open < 0 || close <= open) return null;
+
+        return Guid.TryParse(location[(open + 1)..close], out var id) ? id : null;
     }
 
     public Task RepointDocumentAsync(Guid documentId, Guid newFileId, CancellationToken ct)

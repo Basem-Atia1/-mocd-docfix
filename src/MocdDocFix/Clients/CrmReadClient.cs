@@ -143,14 +143,20 @@ public sealed class CrmReadClient : ICrmReadClient
                 $"mocd_documents?$select={Select}&$filter=_mocd_documentfile_value eq {id}&$expand={Expand}", ct);
         }
 
-        // A file name. The path's file stem is the documentfile id (spec section 4.1), so strip
-        // any extension and try that as a GUID first; otherwise match mocd_name.
+        // A file name. For a portal-created record the path's file stem IS the documentfile id,
+        // so try that first. For a plugin-created one it is not — the vendor's id lives in
+        // mocd_fileid instead — so that is tried next. Verified across dev and pre-prod: between
+        // them the two cover every record that has a path.
         var stem = Path.GetFileNameWithoutExtension(identifier);
         if (Guid.TryParse(stem, out var stemId))
         {
             var byStem = await QueryAsync(
                 $"mocd_documents?$select={Select}&$filter=_mocd_documentfile_value eq {stemId}&$expand={Expand}", ct);
             if (byStem.Count > 0) return byStem;
+
+            var byVendorId = await QueryAsync(
+                $"mocd_documents?$select={Select}&$filter=mocd_documentfile/mocd_fileid eq '{stemId}'&$expand={Expand}", ct);
+            if (byVendorId.Count > 0) return byVendorId;
         }
 
         var escaped = identifier.Replace("'", "''");

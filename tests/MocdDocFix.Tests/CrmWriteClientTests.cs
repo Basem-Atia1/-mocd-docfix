@@ -17,18 +17,23 @@ public class CrmWriteClientTests
         return (new CrmWriteClient(http), handler);
     }
 
+    private static readonly Dictionary<string, object?> Attributes = new()
+    {
+        ["mocd_filepath"] = @"DigitalServices\cd97bf8d-bea8-f011-b116-005056010908\20260910\a41c0b77.jpg",
+        ["mocd_hash"] = "e57d1555e2197c964daa9fd57e197b7b",
+        ["mocd_mediatype"] = "image/jpeg",
+        ["mocd_name"] = "cert.jpg"
+    };
+
     [Fact]
-    public async Task CreateDocumentFile_posts_the_vendor_FileId_as_the_primary_key()
+    public async Task CreateDocumentFile_posts_the_chosen_key_when_one_is_given()
     {
         var (client, handler) = Build();
         handler.Enqueue(HttpStatusCode.NoContent, "");
 
-        await client.CreateDocumentFileAsync(
-            NewFileId,
-            @"DigitalServices\cd97bf8d-bea8-f011-b116-005056010908\20260910\a41c0b77-1111-2222-3333-444444444444.jpg",
-            "e57d1555e2197c964daa9fd57e197b7b", "cert.jpg", "image/jpeg",
-            "cd97bf8d-bea8-f011-b116-005056010908", CancellationToken.None);
+        var id = await client.CreateDocumentFileAsync(NewFileId, Attributes, CancellationToken.None);
 
+        Assert.Equal(NewFileId, id);
         Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
         Assert.Contains("mocd_documentfiles", handler.Requests[0].RequestUri!.ToString());
 
@@ -36,6 +41,32 @@ public class CrmWriteClientTests
         Assert.Contains("\"mocd_documentfileid\":\"a41c0b77-1111-2222-3333-444444444444\"", body);
         Assert.Contains("\"mocd_hash\":\"e57d1555e2197c964daa9fd57e197b7b\"", body);
         Assert.Contains("\"mocd_mediatype\":\"image/jpeg\"", body);
+    }
+
+    [Fact]
+    public async Task CreateDocumentFile_sends_no_key_when_crm_should_generate_one()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.NoContent, "");
+        handler.ResponseHeaders["OData-EntityId"] =
+            "https://crm/MoCD/api/data/v9.1/mocd_documentfiles(7d8e2c11-aaaa-bbbb-cccc-999999999999)";
+
+        var id = await client.CreateDocumentFileAsync(null, Attributes, CancellationToken.None);
+
+        Assert.Equal(Guid.Parse("7d8e2c11-aaaa-bbbb-cccc-999999999999"), id);
+        Assert.DoesNotContain("mocd_documentfileid", handler.RequestBodies[0]);
+    }
+
+    [Fact]
+    public async Task A_generated_key_that_never_comes_back_stops_the_run()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.NoContent, "");     // no OData-EntityId header
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.CreateDocumentFileAsync(null, Attributes, CancellationToken.None));
+
+        Assert.Contains("did not return its id", ex.Message);
     }
 
     [Fact]

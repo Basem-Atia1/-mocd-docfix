@@ -4,7 +4,15 @@ namespace MocdDocFix.Tests.Fakes;
 
 public sealed class FakeCrmWriteClient : ICrmWriteClient
 {
-    public record Created(Guid FileId, string FilePath, string? Hash, string? Name, string? MediaType, string? Category);
+    /// <param name="ExplicitId">Null when CRM was left to generate the key, as the plugin does.</param>
+    public record Created(Guid? ExplicitId, Guid FileId, IReadOnlyDictionary<string, object?> Attributes)
+    {
+        public string? FilePath => Attributes.TryGetValue("mocd_filepath", out var v) ? v as string : null;
+        public string? Hash => Attributes.TryGetValue("mocd_hash", out var v) ? v as string : null;
+        public string? Name => Attributes.TryGetValue("mocd_name", out var v) ? v as string : null;
+        public string? MediaType => Attributes.TryGetValue("mocd_mediatype", out var v) ? v as string : null;
+        public string? Category => Attributes.TryGetValue("mocd_category", out var v) ? v as string : null;
+    }
 
     public List<Created> CreatedFiles { get; } = new();
     public Dictionary<Guid, Guid> Links { get; } = new();
@@ -13,11 +21,15 @@ public sealed class FakeCrmWriteClient : ICrmWriteClient
     /// <summary>When set, the read-back returns this instead of what was written.</summary>
     public Guid? ForceLinkReadback { get; set; }
 
-    public Task CreateDocumentFileAsync(Guid fileId, string filePath, string? hash, string? name,
-        string? mediaType, string? category, CancellationToken ct)
+    /// <summary>The key CRM invents when none is supplied. Set it to control what comes back.</summary>
+    public Guid GeneratedId { get; set; } = Guid.Parse("11111111-2222-3333-4444-555555555555");
+
+    public Task<Guid> CreateDocumentFileAsync(Guid? explicitId,
+        IReadOnlyDictionary<string, object?> attributes, CancellationToken ct)
     {
-        CreatedFiles.Add(new Created(fileId, filePath, hash, name, mediaType, category));
-        return Task.CompletedTask;
+        var id = explicitId ?? GeneratedId;
+        CreatedFiles.Add(new Created(explicitId, id, attributes));
+        return Task.FromResult(id);
     }
 
     public Task RepointDocumentAsync(Guid documentId, Guid newFileId, CancellationToken ct)

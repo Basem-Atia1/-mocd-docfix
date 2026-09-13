@@ -212,6 +212,87 @@ public class MigrateCommandTests : IDisposable
         Assert.Contains($"id={DocumentId}", row.OldCrmLink);
     }
 
+    // ---- a plugin-created record stays plugin-shaped ----
+
+    private const string PluginRecordJson = """
+        {"mocd_documentfileid":"5b05398a-b0bc-4c26-a6a6-40b7e0ece187",
+         "mocd_name":"cert.jpg",
+         "mocd_fileid":"5b05398a-b0bc-4c26-a6a6-40b7e0ece187",
+         "mocd_filename":"5b05398a.jpg",
+         "mocd_mediatype":"image/jpeg",
+         "mocd_extension":"jpg",
+         "mocd_applicationid":"2c9d5572-a77b-f111-b10f-00505601095a",
+         "mocd_filesize":"4684",
+         "mocd_hash":"VHASH",
+         "mocd_ismigrated":false}
+        """;
+
+    private void BackedUpAsPluginRecord()
+    {
+        var backups = Backups();
+        var saved = backups.Save(DocumentId, OldFileId, ".jpg", Content);
+        backups.AppendManifest(new ManifestEntry(DocumentId, OldFileId, OldPath, "VHASH", "cert.jpg",
+            "image/jpeg", ".jpg", "goodConductCertificate", Correct, saved.LocalPath,
+            saved.Bytes, saved.OurHash, DateTimeOffset.UtcNow,
+            DocumentFileSnapshotJson: PluginRecordJson));
+    }
+
+    [Fact]
+    public async Task A_plugin_created_record_keeps_every_column_it_had()
+    {
+        BackedUpAsPluginRecord();
+
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+            .RunAsync("dev", CancellationToken.None);
+
+        var created = Assert.Single(_write.CreatedFiles);
+        Assert.Equal("cert.jpg", created.Attributes["mocd_name"]);
+        Assert.Equal("jpg", created.Attributes["mocd_extension"]);
+        Assert.Equal("4684", created.Attributes["mocd_filesize"]);
+        Assert.Equal("2c9d5572-a77b-f111-b10f-00505601095a", created.Attributes["mocd_applicationid"]);
+        Assert.Equal(false, created.Attributes["mocd_ismigrated"]);
+    }
+
+    [Fact]
+    public async Task A_plugin_created_record_lets_crm_choose_the_key_and_stores_the_vendor_id()
+    {
+        BackedUpAsPluginRecord();
+
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+            .RunAsync("dev", CancellationToken.None);
+
+        var created = Assert.Single(_write.CreatedFiles);
+        Assert.Null(created.ExplicitId);                                  // CRM generates it
+        Assert.Equal(NewFileId.ToString(), created.Attributes["mocd_fileid"]);
+        Assert.Equal(_write.GeneratedId, _write.Links[DocumentId]);        // and that key is linked
+    }
+
+    [Fact]
+    public async Task A_plugin_created_record_uploads_with_the_document_id_and_a_dotless_extension()
+    {
+        BackedUpAsPluginRecord();
+
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+            .RunAsync("dev", CancellationToken.None);
+
+        var upload = Assert.Single(_files.Uploads);
+        Assert.Equal("jpg", upload.Extension);
+        Assert.Equal(DocumentId, upload.ApplicationId);
+    }
+
+    [Fact]
+    public async Task A_portal_created_record_still_uses_the_vendor_id_as_its_key()
+    {
+        // The default setup has no snapshot at all, which reads as the portal shape.
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+            .RunAsync("dev", CancellationToken.None);
+
+        var created = Assert.Single(_write.CreatedFiles);
+        Assert.Equal(NewFileId, created.ExplicitId);
+        Assert.False(created.Attributes.ContainsKey("mocd_fileid"));
+        Assert.Equal(Guid.Empty, Assert.Single(_files.Uploads).ApplicationId);
+    }
+
     // ---- repointing never deletes anything ----
 
     [Fact]

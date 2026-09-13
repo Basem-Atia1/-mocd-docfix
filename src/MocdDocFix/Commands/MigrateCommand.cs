@@ -106,13 +106,17 @@ public sealed class MigrateCommand
                 continue;
             }
 
+            // Upload the way this record was originally uploaded: the plugin sends a dotless
+            // extension and the document's own id as applicationId, the portal sends neither.
+            var style = FileRecordCopier.StyleOf(entry.DocumentFileSnapshotJson);
+
             var upload = await _files.UploadAsync(new UploadRequest(
                 Category: entry.CorrectCatalogueId.ToString(),
                 FileName: entry.FileName ?? $"{entry.OldFileId}{entry.Extension}",
                 File: Convert.ToBase64String(oldBytes),
                 MediaType: entry.MediaType ?? "application/octet-stream",
-                Extension: entry.Extension,
-                ApplicationId: Guid.Empty), ct);
+                Extension: FileRecordCopier.ExtensionFor(entry.DocumentFileSnapshotJson, entry.Extension),
+                ApplicationId: FileRecordCopier.ApplicationIdFor(style, entry.DocumentId)), ct);
 
             if (!upload.Success || upload.Data is null)
             {
@@ -199,13 +203,21 @@ public sealed class MigrateCommand
             if (choice == ConfirmChoice.Quit) break;
             if (choice is ConfirmChoice.No or ConfirmChoice.Skip) { skipped++; continue; }
 
-            await _write.CreateDocumentFileAsync(newFile.FileId, newFile.FilePath, newFile.Hash,
-                entry.FileName, entry.MediaType, entry.CorrectCatalogueId.ToString(), ct);
-            await _write.RepointDocumentAsync(entry.DocumentId, newFile.FileId, ct);
+            // The new record is the old one with only the file's whereabouts replaced, created
+            // with the same key convention. Anything the original code path filled in — and
+            // anything we have not thought of — comes across untouched.
+            var payload = FileRecordCopier.BuildPayload(
+                entry.DocumentFileSnapshotJson, newFile.FileId, newFile.FilePath, newFile.Hash,
+                entry.CorrectCatalogueId, newFile.FileName);
+
+            var newRecordId = await _write.CreateDocumentFileAsync(
+                FileRecordCopier.NewRecordId(style, newFile.FileId), payload, ct);
+
+            await _write.RepointDocumentAsync(entry.DocumentId, newRecordId, ct);
 
             // Check 6 — read back rather than assume: the document points at the new record.
             var linked = await _write.GetDocumentFileLinkAsync(entry.DocumentId, ct);
-            var tookIt = Verifier.CrmTookTheChange(newFile.FileId, linked);
+            var tookIt = Verifier.CrmTookTheChange(newRecordId, linked);
             if (!tookIt.Passed)
             {
                 haltReason = $"{tookIt.Name}: {tookIt.Detail}";

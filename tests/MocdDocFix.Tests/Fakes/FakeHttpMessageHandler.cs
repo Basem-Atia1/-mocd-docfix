@@ -10,6 +10,9 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
     public List<HttpRequestMessage> Requests { get; } = new();
     public List<string> RequestBodies { get; } = new();
 
+    /// <summary>Headers put on every queued response — CRM returns a new key in one of them.</summary>
+    public Dictionary<string, string> ResponseHeaders { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public FakeHttpMessageHandler Enqueue(HttpStatusCode status, string json)
     {
         _responses.Enqueue(new HttpResponseMessage(status)
@@ -25,9 +28,13 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
         Requests.Add(request);
         RequestBodies.Add(request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken));
 
-        return _responses.Count > 0
+        var response = _responses.Count > 0
             ? _responses.Dequeue()
             : new HttpResponseMessage(HttpStatusCode.InternalServerError)
               { Content = new StringContent("no response queued") };
+
+        foreach (var (name, value) in ResponseHeaders) response.Headers.TryAddWithoutValidation(name, value);
+
+        return response;
     }
 }
