@@ -27,7 +27,8 @@ public class BackupCommandTests : IDisposable
     private static ScanRow Row(string path, string fileName = "cert.jpg") => new(
         Guid.NewGuid(), Guid.NewGuid(), fileName, "Certificate of Good Conduct",
         Guid.NewGuid(), "Employee Appointment Request", path, "goodConductCertificate", null,
-        Guid.Parse("cd97bf8d-bea8-f011-b116-005056010908"), nameof(Verdict.Fix), "reason", "solution",
+        Guid.Parse("cd97bf8d-bea8-f011-b116-005056010908"), nameof(Verdict.Fix),
+        3, "path holds a name instead of an id", "reason", "solution",
         null, "https://crm/x");
 
     private BackupCommand Command(Reporter? reporter = null) =>

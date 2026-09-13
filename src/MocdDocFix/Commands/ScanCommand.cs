@@ -5,10 +5,11 @@ using MocdDocFix.Storage;
 namespace MocdDocFix.Commands;
 
 /// <param name="TotalInScope">
-/// Stage-one count: every document under the eight services, before classification. Reported
-/// alongside the corrupted subset so the problem is always sized against the population
-/// (spec section 5.0).
+/// Stage-one count: every document under the configured services, before classification.
+/// Reported alongside the corrupted subset so the problem is always sized against the
+/// population (spec section 5.0).
 /// </param>
+/// <param name="GroupsPath">The readable grouped report — spec 2026-09-13 section 5.</param>
 public sealed record ScanResult(
     int TotalInScope,
     IReadOnlyList<ScanRow> All,
@@ -16,8 +17,14 @@ public sealed record ScanResult(
     IReadOnlyList<ScanRow> Review,
     IReadOnlyList<ScanRow> Skip,
     string ScanPath,
-    string ReviewPath)
+    string ReviewPath,
+    string GroupsPath = "")
 {
+    /// <summary>How many of each group were found, for the wizard's group picker.</summary>
+    public IReadOnlyDictionary<int, int> CountByGroup =>
+        All.GroupBy(r => r.Group).ToDictionary(g => g.Key, g => g.Count());
+
+
     public int WithFilePath => All.Count(r => !string.IsNullOrWhiteSpace(r.OldFilePath));
     public int WithoutFilePath => All.Count(r => string.IsNullOrWhiteSpace(r.OldFilePath));
 
@@ -42,13 +49,16 @@ public sealed class ScanCommand
     private readonly Reporter _reporter;
     private readonly string _crmUrl;
     private readonly IReadOnlyList<Guid> _catalogues;
+    private readonly GroupedReportWriter? _grouped;
 
-    public ScanCommand(ICrmReadClient crm, Reporter reporter, string crmUrl, IReadOnlyList<Guid> catalogues)
+    public ScanCommand(ICrmReadClient crm, Reporter reporter, string crmUrl,
+        IReadOnlyList<Guid> catalogues, GroupedReportWriter? grouped = null)
     {
         _crm = crm;
         _reporter = reporter;
         _crmUrl = crmUrl;
         _catalogues = catalogues;
+        _grouped = grouped;
     }
 
     public async Task<ScanResult> RunAsync(string env, CancellationToken ct)
@@ -95,6 +105,8 @@ public sealed class ScanCommand
                 CurrentSegmentName: currentSegmentName,
                 CorrectCatalogueId: classification.CorrectCatalogueId,
                 Verdict: classification.Verdict.ToString(),
+                Group: classification.Group,
+                GroupLabel: DocumentGroups.Get(classification.Group).ShortLabel,
                 Reason: classification.Reason,
                 Solution: classification.Solution,
                 CrossCheckSource: document.CrossCheckSource,
@@ -107,7 +119,10 @@ public sealed class ScanCommand
 
         var scanPath = writeReports ? _reporter.WriteScan(env, rows) : string.Empty;
         var reviewPath = writeReports ? _reporter.WriteReview(env, review) : string.Empty;
+        var groupsPath = writeReports && _grouped is not null
+            ? _grouped.Write(env, rows, _catalogues.Count)
+            : string.Empty;
 
-        return new ScanResult(documents.Count, rows, fix, review, skip, scanPath, reviewPath);
+        return new ScanResult(documents.Count, rows, fix, review, skip, scanPath, reviewPath, groupsPath);
     }
 }

@@ -24,6 +24,8 @@ public sealed record ScanRow(
     string? CurrentSegmentName,
     Guid? CorrectCatalogueId,
     string Verdict,
+    int Group,
+    string GroupLabel,
     string Reason,
     string Solution,
     string? CrossCheckSource,

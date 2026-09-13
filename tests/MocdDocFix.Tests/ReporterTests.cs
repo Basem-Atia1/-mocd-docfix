@@ -23,6 +23,8 @@ public class ReporterTests : IDisposable
         CurrentSegmentName: null,
         CorrectCatalogueId: Guid.Parse("cd97bf8d-bea8-f011-b116-005056010908"),
         Verdict: verdict.ToString(),
+        Group: 3,
+        GroupLabel: "path holds a name instead of an id",
         Reason: "path segment is a document type name",
         Solution: "Re-upload with Category = cd97bf8d-…, repoint, then delete the old file.",
         CrossCheckSource: "mocd_employeeappintmentrequest",

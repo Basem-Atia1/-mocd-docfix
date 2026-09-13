@@ -18,7 +18,8 @@ public class ScanCommandTests : IDisposable
     public void Dispose() { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); }
 
     private ScanCommand Command() =>
-        new(_crm, new Reporter(_dir), "https://crm/MoCD", new[] { EmployeeAppointment, GamRequest });
+        new(_crm, new Reporter(_dir), "https://crm/MoCD", new[] { EmployeeAppointment, GamRequest },
+            new GroupedReportWriter(_dir));
 
     private static DocumentRow Doc(string? path, Guid? docTypeCat, Guid? crossCheck = null,
         string name = "cert.jpg") =>
@@ -50,6 +51,43 @@ public class ScanCommandTests : IDisposable
         Assert.Single(result.Review);
         Assert.Equal(3, result.Skip.Count);
         Assert.Equal(7, result.All.Count);
+    }
+
+    [Fact]
+    public async Task A_scan_writes_the_grouped_report_when_one_is_configured()
+    {
+        _crm.KnownCatalogues.Add(GamRequest.ToString());
+        _crm.Documents.AddRange(new[]
+        {
+            Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment),
+            Doc($@"DigitalServices\{GamRequest}\20260518\c.pdf", EmployeeAppointment),
+        });
+
+        var result = await Command().RunAsync("dev", CancellationToken.None);
+
+        Assert.True(File.Exists(result.GroupsPath), result.GroupsPath);
+
+        var text = File.ReadAllText(result.GroupsPath);
+        Assert.Contains("GROUP 3", text);
+        Assert.Contains("GROUP 5", text);
+        Assert.Contains("2  TOTAL to fix (groups 1-5)", text);
+    }
+
+    [Fact]
+    public async Task The_group_counts_are_available_without_re_reading_the_file()
+    {
+        _crm.KnownCatalogues.Add(GamRequest.ToString());
+        _crm.Documents.AddRange(new[]
+        {
+            Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment),
+            Doc(@"DigitalServices\boardDecision\20260330\b.jpg", EmployeeAppointment),
+            Doc($@"DigitalServices\{GamRequest}\20260518\c.pdf", EmployeeAppointment),
+        });
+
+        var result = await Command().RunAsync("dev", CancellationToken.None);
+
+        Assert.Equal(2, result.CountByGroup[3]);
+        Assert.Equal(1, result.CountByGroup[5]);
     }
 
     [Fact]
