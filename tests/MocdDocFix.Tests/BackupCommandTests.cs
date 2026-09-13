@@ -305,6 +305,85 @@ public class BackupCommandTests : IDisposable
         Assert.Contains("nothing", text, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ---- the state file is a claim about the disk, not the truth ----
+
+    [Fact]
+    public async Task A_backup_whose_bytes_have_gone_is_downloaded_again_rather_than_skipped()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        // Someone deletes the saved copy. The state file still says BackedUp.
+        File.Delete(Backups().LoadManifest().Single().LocalPath);
+        Assert.True(States().IsAtLeast(row.DocumentId, MigrationState.BackedUp));
+
+        var second = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(1, second.Saved);
+        Assert.Equal(0, second.Skipped);
+        Assert.True(File.Exists(Backups().LoadManifest().Single().LocalPath));
+    }
+
+    [Fact]
+    public async Task A_backup_whose_crm_image_has_gone_is_downloaded_again()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        File.Delete(Backups().LoadManifest().Single().CrmImagePath!);
+
+        var second = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(1, second.Saved);
+    }
+
+    [Fact]
+    public async Task A_backup_whose_restore_record_has_gone_is_downloaded_again()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        File.Delete(System.IO.Path.Combine(Backups().Folder(row.DocumentId).Root, "restore.json"));
+
+        var second = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(1, second.Saved);
+    }
+
+    [Fact]
+    public async Task Re_downloading_a_lost_backup_says_so_rather_than_doing_it_silently()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        var said = new List<string>();
+
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+        File.Delete(Backups().LoadManifest().Single().LocalPath);
+
+        await new BackupCommand(_files, _read, Backups(), States(),
+                new Reporter(System.IO.Path.Combine(_root, "reports")),
+                _ => "VENDORHASH", said.Add)
+            .RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Contains(said, m => m.Contains("missing", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task An_intact_backup_is_still_skipped()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        var second = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(0, second.Saved);
+        Assert.Equal(1, second.Skipped);
+    }
+
     [Fact]
     public async Task A_quarantined_document_leaves_no_half_saved_bytes_behind()
     {

@@ -26,12 +26,15 @@ public sealed class BackupCommand
     private readonly StateStore _state;
     private readonly Reporter _reporter;
     private readonly Func<ScanRow, string?> _hashLookup;
+    private readonly Action<string>? _prompts;
 
     /// <param name="hashLookup">
     /// Supplies the mocd_hash CRM holds for a row. Injected because ScanRow does not carry it.
     /// </param>
+    /// <param name="say">Optional progress line, for things the operator should know about.</param>
     public BackupCommand(IFileServiceClient files, ICrmReadClient read, BackupStore backups,
-        StateStore state, Reporter reporter, Func<ScanRow, string?> hashLookup)
+        StateStore state, Reporter reporter, Func<ScanRow, string?> hashLookup,
+        Action<string>? say = null)
     {
         _files = files;
         _read = read;
@@ -39,6 +42,20 @@ public sealed class BackupCommand
         _state = state;
         _reporter = reporter;
         _hashLookup = hashLookup;
+        _prompts = say;
+    }
+
+    /// <summary>
+    /// True when what the state claims is actually on disk: the restore record, the saved bytes
+    /// it names, and the CRM image beside them.
+    /// </summary>
+    private bool BackupIsIntact(Guid documentId)
+    {
+        var entry = _backups.LoadManifest().FirstOrDefault(m => m.DocumentId == documentId);
+        if (entry is null) return false;
+        if (!File.Exists(entry.LocalPath)) return false;
+
+        return string.IsNullOrWhiteSpace(entry.CrmImagePath) || File.Exists(entry.CrmImagePath);
     }
 
     public async Task<BackupSummary> RunAsync(string env, IReadOnlyList<ScanRow> fixRows, CancellationToken ct)
@@ -51,7 +68,19 @@ public sealed class BackupCommand
         {
             ct.ThrowIfCancellationRequested();
 
-            if (_state.IsAtLeast(row.DocumentId, MigrationState.BackedUp)) { skipped++; continue; }
+            // "Already backed up" is a claim about the disk, so check the disk rather than
+            // believing the state file. If the saved bytes or the CRM image have gone — deleted,
+            // moved, or on a drive that is not mounted — this document is not backed up, whatever
+            // the state says, and silently skipping it would leave migrate to fail on a missing
+            // file later.
+            if (_state.IsAtLeast(row.DocumentId, MigrationState.BackedUp))
+            {
+                if (BackupIsIntact(row.DocumentId)) { skipped++; continue; }
+
+                _prompts?.Invoke(
+                    $"  {row.FileName}: the state says this was backed up, but the saved copy is " +
+                    "missing. Downloading it again.");
+            }
 
             // The document's folder and its record exist before anything is attempted, so even a
             // failure leaves a readable account of what was tried and why it did not work.
