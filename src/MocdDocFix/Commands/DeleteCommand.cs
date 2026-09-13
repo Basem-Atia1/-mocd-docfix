@@ -22,9 +22,10 @@ public sealed class DeleteCommand
     private readonly BackupStore _backups;
     private readonly StateStore _state;
     private readonly IPrompts _prompts;
+    private readonly DocumentReportStore? _reports;
 
     public DeleteCommand(IFileServiceClient files, ICrmReadClient read, ICrmWriteClient write,
-        BackupStore backups, StateStore state, IPrompts prompts)
+        BackupStore backups, StateStore state, IPrompts prompts, DocumentReportStore? reports = null)
     {
         _files = files;
         _read = read;
@@ -32,6 +33,7 @@ public sealed class DeleteCommand
         _backups = backups;
         _state = state;
         _prompts = prompts;
+        _reports = reports;
     }
 
     public async Task<DeleteSummary> RunAsync(string env, bool isProduction, CancellationToken ct)
@@ -90,6 +92,7 @@ public sealed class DeleteCommand
 
             var outcome = await RemoveOldAsync(entry, ct);
             foreach (var line in outcome.Log) _prompts.Info(line);
+            WriteDeleteReport(entry, outcome);
 
             if (!outcome.Removed)
             {
@@ -173,6 +176,24 @@ public sealed class DeleteCommand
         catch (FormatException) { return 0; }
     }
 
+    /// <summary>The same log, kept in the document's own reports folder.</summary>
+    private void WriteDeleteReport(ManifestEntry entry, RemovalOutcome outcome)
+    {
+        _reports?.Write(entry.DocumentId, entry.FileName, "04-delete",
+            outcome.Removed
+                ? "STEP 5 — DELETE: the old file and its CRM record were removed"
+                : "STEP 5 — DELETE: NOT DONE",
+            new (string, string?)[]
+            {
+                ("Old path", entry.OldFilePath),
+                ("Old CRM record", entry.OldFileId.ToString()),
+                ("Result", outcome.Removed ? "deleted" : $"not deleted — {outcome.Reason}"),
+                ("Your backup", "the bytes are still in the backup folder, under old\\"),
+                ("At", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss"))
+            },
+            outcome.Log.Where(l => l.Trim().Length > 0));
+    }
+
     /// <summary>
     /// Deletes one document's old file, re-running the same safety checks as the bulk step.
     /// Used by the migrate step when the operator chooses to remove a file straight after
@@ -203,10 +224,11 @@ public sealed class DeleteCommand
 
         var outcome = await RemoveOldAsync(entry, ct);
         foreach (var line in outcome.Log) _prompts.Info(line);
+        WriteDeleteReport(entry, outcome);
 
         // The log goes into the document's own folder too, so the record of what happened
         // survives the terminal scrolling away.
-        _backups.Folder(documentId).AppendSection("THE OLD FILE — delete attempted",
+        _backups.Folder(documentId, entry.FileName).AppendSection("THE OLD FILE — delete attempted",
             outcome.Log
                 .Where(l => l.Contains("    ", StringComparison.Ordinal))
                 .Select(l => (l.Trim().Split("  ", 2)[0], (string?)l.Trim().Split("  ", 2).Last()))

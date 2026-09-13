@@ -11,25 +11,75 @@ public class DocumentFolderTests : IDisposable
     public DocumentFolderTests() => Directory.CreateDirectory(_root);
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 
-    private DocumentFolder Folder() => new(_root, _id);
+    private DocumentFolder Folder(string? fileName = null) => new(_root, _id, fileName);
 
     [Fact]
     public void Everything_for_one_document_sits_under_a_folder_named_for_it()
     {
-        var folder = Folder();
+        var folder = Folder("Application Summary.png");
 
-        Assert.Equal(Path.Combine(_root, _id.ToString()), folder.Root);
+        Assert.Equal(Path.Combine(_root, $"Application Summary__{_id}"), folder.Root);
         Assert.Equal(Path.Combine(folder.Root, "old"), folder.OldDir);
         Assert.Equal(Path.Combine(folder.Root, "new"), folder.NewDir);
         Assert.Equal(Path.Combine(folder.Root, "document.txt"), folder.SummaryPath);
     }
 
     [Fact]
+    public void Without_a_name_the_folder_still_carries_the_id()
+    {
+        Assert.EndsWith($"__{_id}", Folder().Root);
+    }
+
+    [Fact]
+    public void The_same_document_always_resolves_to_the_same_folder_whatever_name_is_given()
+    {
+        // The first call creates it; a later call that knows a different name must not make a
+        // second folder for the same document.
+        var first = Folder("Application Summary.png");
+        Directory.CreateDirectory(first.Root);
+
+        Assert.Equal(first.Root, Folder("something else entirely.pdf").Root);
+        Assert.Equal(first.Root, Folder().Root);
+        Assert.Single(Directory.GetDirectories(_root));
+    }
+
+    [Fact]
+    public void A_folder_created_before_names_were_used_is_still_found()
+    {
+        var old = Path.Combine(_root, _id.ToString());
+        Directory.CreateDirectory(old);
+
+        Assert.Equal(old, Folder("Application Summary.png").Root);
+    }
+
+    [Theory]
+    [InlineData(@"bad\/name:with*chars?.png")]
+    [InlineData("   .png")]
+    [InlineData("")]
+    public void A_name_that_cannot_be_a_folder_is_cleaned_up(string fileName)
+    {
+        var folder = Folder(fileName);
+
+        Assert.EndsWith($"__{_id}", folder.Root);
+        Directory.CreateDirectory(folder.Root);           // the real test: it is creatable
+        Assert.True(Directory.Exists(folder.Root));
+    }
+
+    [Fact]
+    public void A_very_long_name_is_trimmed_so_the_path_stays_usable()
+    {
+        var folder = Folder(new string('x', 300) + ".png");
+
+        Assert.True(Path.GetFileName(folder.Root).Length < 120);
+        Assert.EndsWith($"__{_id}", folder.Root);
+    }
+
+    [Fact]
     public void Nothing_is_created_until_it_is_needed()
     {
-        Folder();
+        Folder("a.png");
 
-        Assert.False(Directory.Exists(Path.Combine(_root, _id.ToString())));
+        Assert.Empty(Directory.GetDirectories(_root));
     }
 
     [Fact]
@@ -50,7 +100,7 @@ public class DocumentFolderTests : IDisposable
             ("Document type", "A Medical Examination Certificate")
         });
 
-        var text = File.ReadAllText(Path.Combine(_root, _id.ToString(), "document.txt"));
+        var text = File.ReadAllText(Folder().SummaryPath);
 
         Assert.Contains("DOCUMENT  " + _id, text);
         Assert.Contains("File name", text);
@@ -63,7 +113,7 @@ public class DocumentFolderTests : IDisposable
     {
         Folder().WriteHeader("T", new (string, string?)[] { ("Short", "111"), ("A longer label", "222") });
 
-        var lines = File.ReadAllLines(Path.Combine(_root, _id.ToString(), "document.txt"));
+        var lines = File.ReadAllLines(Folder().SummaryPath);
         var first = lines.Single(l => l.Contains("111", StringComparison.Ordinal));
         var second = lines.Single(l => l.Contains("222", StringComparison.Ordinal));
 
@@ -79,7 +129,7 @@ public class DocumentFolderTests : IDisposable
             ("Present", "yes"), ("Absent", null), ("Empty", "   ")
         });
 
-        var text = File.ReadAllText(Path.Combine(_root, _id.ToString(), "document.txt"));
+        var text = File.ReadAllText(Folder().SummaryPath);
 
         Assert.Contains("Present", text);
         Assert.DoesNotContain("Absent", text);
@@ -92,7 +142,7 @@ public class DocumentFolderTests : IDisposable
         var sentence = string.Join(" ", Enumerable.Repeat("word", 40));
         Folder().WriteHeader("T", new (string, string?)[] { ("Reason", sentence) });
 
-        var lines = File.ReadAllLines(Path.Combine(_root, _id.ToString(), "document.txt"));
+        var lines = File.ReadAllLines(Folder().SummaryPath);
 
         Assert.All(lines, l => Assert.True(l.Length <= 80, $"{l.Length} chars: {l}"));
         Assert.True(lines.Count(l => l.Contains("word", StringComparison.Ordinal)) > 1);
@@ -104,7 +154,7 @@ public class DocumentFolderTests : IDisposable
         var path = @"DigitalServices\9b1121f4-e30b-f111-b117-005056010908\20260312\00350015-6c00-4a1e-933a-0a00164627cf.png";
         Folder().WriteHeader("T", new (string, string?)[] { ("Path", path) });
 
-        Assert.Contains(path, File.ReadAllText(Path.Combine(_root, _id.ToString(), "document.txt")));
+        Assert.Contains(path, File.ReadAllText(Folder().SummaryPath));
     }
 
     [Fact]

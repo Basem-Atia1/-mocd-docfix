@@ -40,9 +40,11 @@ public sealed class VerifyCommand
     private readonly StateStore _state;
     private readonly string _crmUrl;
     private readonly string _reportsDir;
+    private readonly DocumentReportStore? _perDocument;
 
     public VerifyCommand(IFileServiceClient files, ICrmReadClient read, ICrmWriteClient write,
-        BackupStore backups, StateStore state, string crmUrl, string reportsDir)
+        BackupStore backups, StateStore state, string crmUrl, string reportsDir,
+        DocumentReportStore? perDocument = null)
     {
         _files = files;
         _read = read;
@@ -51,6 +53,7 @@ public sealed class VerifyCommand
         _state = state;
         _crmUrl = crmUrl;
         _reportsDir = reportsDir;
+        _perDocument = perDocument;
     }
 
     public async Task<VerifySummary> RunAsync(string env, CancellationToken ct)
@@ -65,7 +68,24 @@ public sealed class VerifyCommand
             if (!latest.TryGetValue(entry.DocumentId, out var record)) continue;
             if (record.State is not (MigrationState.Repointed or MigrationState.Deleted)) continue;
 
-            verdicts.Add(await VerifyOneAsync(entry, record, ct));
+            var verdict = await VerifyOneAsync(entry, record, ct);
+            verdicts.Add(verdict);
+
+            _perDocument?.Write(verdict.DocumentId, verdict.FileName, "05-final-check",
+                verdict.Ok ? "FINAL CHECK — everything is where it should be"
+                           : "FINAL CHECK — SOMETHING IS WRONG",
+                new (string, string?)[]
+                {
+                    ("State", verdict.State.ToString()),
+                    ("Old file on server", verdict.OldFileOnServer ? "yes" : "no"),
+                    ("Old record in CRM", verdict.OldRecordInCrm ? "yes" : "no"),
+                    ("New file on server", verdict.NewFileOnServer ? "yes" : "no"),
+                    ("New record in CRM", verdict.NewRecordInCrm ? "yes" : "no"),
+                    ("Record's path", verdict.NewRecordPath),
+                    ("Document points at", verdict.DocumentPointsAt?.ToString()),
+                    ("Open in CRM", Reporter.CrmLink(_crmUrl, verdict.DocumentId))
+                },
+                verdict.Problems.Select(p => "  PROBLEM  " + p));
         }
 
         var reportPath = Write(env, verdicts);
@@ -139,7 +159,7 @@ public sealed class VerifyCommand
     private string Write(string env, IReadOnlyList<DocumentVerdict> verdicts)
     {
         Directory.CreateDirectory(_reportsDir);
-        var path = Path.Combine(_reportsDir, $"verify-{env}-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+        var path = Path.Combine(_reportsDir, $"verify-index-{env}-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
 
         var text = new StringBuilder();
         text.AppendLine($"Final check — {env} — {DateTime.Now:yyyy-MM-dd HH:mm}");
@@ -152,25 +172,22 @@ public sealed class VerifyCommand
         text.AppendLine($"  {verdicts.Count(v => !v.Ok)} with a problem");
         text.AppendLine();
 
+        text.AppendLine("An index. Each document's own result is in its folder, in 05-final-check.txt.");
+        text.AppendLine();
+
         foreach (var v in verdicts)
         {
             text.AppendLine(new string('-', 78));
             text.AppendLine($"{(v.Ok ? "OK   " : "WRONG")}  {v.FileName}   ({v.State})");
-            text.AppendLine($"       document        {v.DocumentId}");
-            text.AppendLine($"       open it         {Reporter.CrmLink(_crmUrl, v.DocumentId)}");
-            text.AppendLine();
-            text.AppendLine($"       old file on server   {YesNo(v.OldFileOnServer)}");
-            text.AppendLine($"       old record in CRM    {YesNo(v.OldRecordInCrm)}");
-            text.AppendLine($"       new file on server   {YesNo(v.NewFileOnServer)}");
-            text.AppendLine($"       new record in CRM    {YesNo(v.NewRecordInCrm)}");
-            text.AppendLine($"       record's path        {v.NewRecordPath ?? "(none)"}");
-            text.AppendLine($"       document points at   {v.DocumentPointsAt?.ToString() ?? "(nothing)"}");
+            text.AppendLine($"       document     {v.DocumentId}");
 
-            if (!v.Ok)
-            {
-                text.AppendLine();
-                foreach (var p in v.Problems) text.AppendLine($"       PROBLEM  {p}");
-            }
+            if (_perDocument is not null)
+                text.AppendLine($"       full detail  " +
+                    Path.Combine(_perDocument.FolderFor(v.DocumentId, v.FileName), "05-final-check.txt"));
+
+            // Problems are repeated here on purpose: a run that went wrong should say so without
+            // the reader having to open anything.
+            foreach (var p in v.Problems) text.AppendLine($"       PROBLEM  {p}");
 
             text.AppendLine();
         }

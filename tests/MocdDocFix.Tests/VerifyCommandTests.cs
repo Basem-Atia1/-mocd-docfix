@@ -192,19 +192,57 @@ public class VerifyCommandTests : IDisposable
     // ---- the report ----
 
     [Fact]
-    public async Task The_report_says_yes_or_no_for_each_side_and_links_to_the_document()
+    public async Task The_run_level_file_is_only_an_index()
     {
         var summary = await Command().RunAsync("dev", CancellationToken.None);
 
         Assert.True(File.Exists(summary.ReportPath));
+        Assert.Contains("verify-index-", Path.GetFileName(summary.ReportPath));
+
         var text = File.ReadAllText(summary.ReportPath);
 
-        Assert.Contains("old file on server", text);
-        Assert.Contains("old record in CRM", text);
-        Assert.Contains("new file on server", text);
-        Assert.Contains("new record in CRM", text);
-        Assert.Contains($"id={DocumentId}", text);
+        Assert.Contains("An index", text);
+        Assert.Contains(DocumentId.ToString(), text);
         Assert.Contains("OK", text);
+
+        // The per-document detail is NOT duplicated here.
+        Assert.DoesNotContain("old file on server", text);
+        Assert.DoesNotContain("Record's path", text);
+    }
+
+    [Fact]
+    public async Task Each_document_gets_its_own_result_in_its_own_folder()
+    {
+        var reports = new DocumentReportStore(Path.Combine(_root, "per-doc"));
+
+        await new VerifyCommand(_files, _read, _write, Backups(), States(), "https://crm/MoCD",
+                Path.Combine(_root, "reports"), reports)
+            .RunAsync("dev", CancellationToken.None);
+
+        var path = Path.Combine(reports.FolderFor(DocumentId, "cert.jpg"), "05-final-check.txt");
+        Assert.True(File.Exists(path), path);
+
+        var text = File.ReadAllText(path);
+        Assert.Contains("Old file on server", text);
+        Assert.Contains("New record in CRM", text);
+        Assert.Contains("Record's path", text);
+        Assert.Contains(DocumentId.ToString(), text);
+    }
+
+    [Fact]
+    public async Task A_problem_appears_in_the_index_as_well_as_the_folder()
+    {
+        var reports = new DocumentReportStore(Path.Combine(_root, "per-doc"));
+        _write.Links[DocumentId] = OldFileId;
+
+        var summary = await new VerifyCommand(_files, _read, _write, Backups(), States(),
+                "https://crm/MoCD", Path.Combine(_root, "reports"), reports)
+            .RunAsync("dev", CancellationToken.None);
+
+        // A run that went wrong says so without the reader opening anything.
+        Assert.Contains("PROBLEM", File.ReadAllText(summary.ReportPath));
+        Assert.Contains("PROBLEM",
+            File.ReadAllText(Path.Combine(reports.FolderFor(DocumentId, "cert.jpg"), "05-final-check.txt")));
     }
 
     [Fact]

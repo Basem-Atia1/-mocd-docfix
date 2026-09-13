@@ -27,6 +27,7 @@ public sealed class BackupCommand
     private readonly Reporter _reporter;
     private readonly Func<ScanRow, string?> _hashLookup;
     private readonly Action<string>? _prompts;
+    private readonly DocumentReportStore? _reports;
 
     /// <param name="hashLookup">
     /// Supplies the mocd_hash CRM holds for a row. Injected because ScanRow does not carry it.
@@ -34,7 +35,7 @@ public sealed class BackupCommand
     /// <param name="say">Optional progress line, for things the operator should know about.</param>
     public BackupCommand(IFileServiceClient files, ICrmReadClient read, BackupStore backups,
         StateStore state, Reporter reporter, Func<ScanRow, string?> hashLookup,
-        Action<string>? say = null)
+        Action<string>? say = null, DocumentReportStore? reports = null)
     {
         _files = files;
         _read = read;
@@ -43,6 +44,7 @@ public sealed class BackupCommand
         _reporter = reporter;
         _hashLookup = hashLookup;
         _prompts = say;
+        _reports = reports;
     }
 
     /// <summary>
@@ -81,7 +83,7 @@ public sealed class BackupCommand
 
             // The document's folder and its record exist before anything is attempted, so even a
             // failure leaves a readable account of what was tried and why it did not work.
-            DocumentRecord.EnsureHeader(_backups, row);
+            DocumentRecord.EnsureHeader(_backups, row, _reports);
 
             if (string.IsNullOrWhiteSpace(row.OldFilePath))
             {
@@ -139,7 +141,7 @@ public sealed class BackupCommand
             }
 
             var extension = Path.GetExtension(row.FileName ?? string.Empty);
-            var result = _backups.Save(row.DocumentId, row.DocumentFileId, extension, bytes);
+            var result = _backups.Save(row.DocumentId, row.DocumentFileId, extension, bytes, row.FileName);
 
             var imagePath = _backups.SaveCrmImage(row.DocumentFileId, row.DocumentId, row.OldFilePath,
                 env, documentSnapshot!, fileSnapshot!, annotations!);
@@ -152,7 +154,7 @@ public sealed class BackupCommand
                     $"{Path.GetFileName(result.PreviousKeptAs)}.");
             }
 
-            _backups.Folder(row.DocumentId).AppendSection("THE OLD FILE — backed up", new (string, string?)[]
+            var backedUp = new (string, string?)[]
             {
                 ("Path on server", row.OldFilePath),
                 ("Earlier copy kept", result.PreviousKeptAs is null
@@ -166,7 +168,13 @@ public sealed class BackupCommand
                 ("SHA-256 (ours)", result.OurHash),
                 ("CRM records", Path.Combine("old", "crm.json")),
                 ("Downloaded at", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss"))
-            });
+            };
+
+            _backups.Folder(row.DocumentId, row.FileName)
+                .AppendSection("THE OLD FILE — backed up", backedUp);
+
+            _reports?.Write(row.DocumentId, row.FileName, "02-backup",
+                "STEP 2 — BACKUP: what was downloaded and saved", backedUp);
 
             _backups.AppendManifest(new ManifestEntry(
                 DocumentId: row.DocumentId,
@@ -212,13 +220,18 @@ public sealed class BackupCommand
         _state.Append(new StateRecord(row.DocumentId, MigrationState.Quarantined,
             DateTimeOffset.UtcNow, null, null, detail));
 
-        _backups.Folder(row.DocumentId).AppendSection("NOT BACKED UP", new (string, string?)[]
+        var failure = new (string, string?)[]
         {
             ("What happened", detail),
             ("What was saved", "nothing — a partial backup is worse than none"),
             ("At", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss")),
             ("What to do", "Fix the cause, then run the check and backup again for this document.")
-        });
+        };
+
+        _backups.Folder(row.DocumentId, row.FileName).AppendSection("NOT BACKED UP", failure);
+
+        _reports?.Write(row.DocumentId, row.FileName, "02-backup",
+            "STEP 2 — BACKUP: NOT DONE", failure);
     }
 
     /// <summary>Pulls one string attribute out of a raw record snapshot.</summary>

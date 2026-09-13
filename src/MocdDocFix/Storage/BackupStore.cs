@@ -77,7 +77,8 @@ public sealed class BackupStore
     public string Root => _backupDir;
 
     /// <summary>The per-document folder holding everything about one document.</summary>
-    public DocumentFolder Folder(Guid documentId) => new(_backupDir, documentId);
+    public DocumentFolder Folder(Guid documentId, string? fileName = null) =>
+        new(_backupDir, documentId, fileName);
 
     /// <summary>
     /// Saves the original bytes under the document's own folder, in old\.
@@ -88,9 +89,10 @@ public sealed class BackupStore
     /// overwritten — re-running a backup must never destroy the only record of what a file used
     /// to be.
     /// </summary>
-    public BackupResult Save(Guid documentId, Guid oldFileId, string extension, byte[] bytes)
+    public BackupResult Save(Guid documentId, Guid oldFileId, string extension, byte[] bytes,
+        string? fileName = null)
     {
-        var dir = Folder(documentId).EnsureOld();
+        var dir = Folder(documentId, fileName).EnsureOld();
         var path = Path.Combine(dir, oldFileId + extension);
 
         string? previousKeptAs = null;
@@ -158,7 +160,7 @@ public sealed class BackupStore
     /// </summary>
     public void AppendManifest(ManifestEntry entry)
     {
-        var path = Path.Combine(Folder(entry.DocumentId).EnsureRoot(), RestoreFile);
+        var path = Path.Combine(Folder(entry.DocumentId, entry.FileName).EnsureRoot(), RestoreFile);
         File.WriteAllText(path, JsonSerializer.Serialize(entry, Readable));
     }
 

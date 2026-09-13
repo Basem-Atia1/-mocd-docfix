@@ -258,25 +258,47 @@ public class MigrateCommandTests : IDisposable
     // ---- the new file is written down where you can find it ----
 
     [Fact]
-    public async Task A_repointed_list_names_the_new_documentfile_and_links_to_it()
+    public async Task The_run_level_repointed_file_is_only_an_index()
     {
+        var reports = new DocumentReportStore(Path.Combine(_root, "per-doc"));
+
         var summary = await new MigrateCommand(_files, _read, _write, Backups(), States(),
                 new Reporter(Path.Combine(_root, "reports")),
                 new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes),
                 _opener, "https://crm/MoCD", null,
-                new RepointedListWriter(Path.Combine(_root, "reports")))
+                new RepointedListWriter(Path.Combine(_root, "reports")), reports)
             .RunAsync("dev", CancellationToken.None);
 
         Assert.True(File.Exists(summary.RepointedPath), summary.RepointedPath);
+        Assert.Contains("repointed-index-", Path.GetFileName(summary.RepointedPath));
 
         var text = File.ReadAllText(summary.RepointedPath);
 
+        Assert.Contains("An index", text);
         Assert.Contains(NewFileId.ToString(), text);            // the new documentfile id
         Assert.Contains("etn=mocd_documentfile", text);         // a link straight to it
-        Assert.Contains($"id={NewFileId}", text);
-        Assert.Contains(DocumentId.ToString(), text);           // and to the document
+        Assert.Contains(DocumentId.ToString(), text);
+        Assert.Contains("03-upload-repoint.txt", text);         // and where the rest of it lives
+    }
+
+    [Fact]
+    public async Task The_upload_detail_lives_in_the_documents_own_folder()
+    {
+        var reports = new DocumentReportStore(Path.Combine(_root, "per-doc"));
+
+        await new MigrateCommand(_files, _read, _write, Backups(), States(),
+                new Reporter(Path.Combine(_root, "reports")),
+                new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes),
+                _opener, "https://crm/MoCD", null, null, reports)
+            .RunAsync("dev", CancellationToken.None);
+
+        var path = Path.Combine(reports.FolderFor(DocumentId, "cert.jpg"), "03-upload-repoint.txt");
+        Assert.True(File.Exists(path), path);
+
+        var text = File.ReadAllText(path);
         Assert.Contains(NewPath(NewFileId), text);
-        Assert.Contains("still in CRM", text);                  // the old side is still there
+        Assert.Contains(NewFileId.ToString(), text);
+        Assert.Contains("still on the server", text);           // the old side is still there
     }
 
     // ---- check 7: the record must point at the new file ----

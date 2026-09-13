@@ -9,18 +9,27 @@ namespace MocdDocFix.Storage;
 /// </summary>
 public static class DocumentRecord
 {
-    public static void EnsureHeader(BackupStore backups, ScanRow row)
+    public static void EnsureHeader(BackupStore backups, ScanRow row, DocumentReportStore? reports = null)
     {
-        var folder = backups.Folder(row.DocumentId);
+        var folder = backups.Folder(row.DocumentId, row.FileName);
         if (File.Exists(folder.SummaryPath)) return;
-        WriteHeader(backups, row);
+        WriteHeader(backups, row, reports);
     }
 
-    public static void WriteHeader(BackupStore backups, ScanRow row)
+    public static void WriteHeader(BackupStore backups, ScanRow row, DocumentReportStore? reports = null)
     {
         var group = DocumentGroups.Get(row.Group);
+        var points = Points(row, group);
 
-        backups.Folder(row.DocumentId).WriteHeader($"DOCUMENT  {row.DocumentId}", new (string, string?)[]
+        backups.Folder(row.DocumentId, row.FileName).WriteHeader($"DOCUMENT  {row.DocumentId}", points);
+
+        // The same account, as step 1 of this document's own reports.
+        reports?.Write(row.DocumentId, row.FileName, "01-check",
+            "STEP 1 — CHECK: what is wrong with this document", points);
+    }
+
+    private static (string, string?)[] Points(ScanRow row, DocumentGroup group) =>
+        new (string, string?)[]
         {
             ("File name", row.FileName),
             ("Document type", row.DocumentTypeName),
@@ -42,6 +51,5 @@ public static class DocumentRecord
                 : row.CurrentSegment + (row.CurrentSegmentName is { } n ? $"  = {n}" : "")),
             ("Should be under", row.CorrectCatalogueId?.ToString()),
             ("Checked at", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss"))
-        });
-    }
+        };
 }

@@ -34,6 +34,7 @@ public sealed class MigrateCommand
     private readonly string _crmUrl;
     private readonly Func<Guid, CancellationToken, Task<string?>>? _deleteOldAsync;
     private readonly RepointedListWriter? _repointed;
+    private readonly DocumentReportStore? _reports;
 
     /// <param name="deleteOldAsync">
     /// Deletes one document's old file, re-running the full safety check first. Returns null on
@@ -44,7 +45,7 @@ public sealed class MigrateCommand
         BackupStore backups, StateStore state, Reporter reporter, IPrompts prompts,
         IFileOpener opener, string crmUrl,
         Func<Guid, CancellationToken, Task<string?>>? deleteOldAsync = null,
-        RepointedListWriter? repointed = null)
+        RepointedListWriter? repointed = null, DocumentReportStore? reports = null)
     {
         _files = files;
         _read = read;
@@ -57,6 +58,7 @@ public sealed class MigrateCommand
         _crmUrl = crmUrl;
         _deleteOldAsync = deleteOldAsync;
         _repointed = repointed;
+        _reports = reports;
     }
 
     public async Task<MigrateSummary> RunAsync(string env, CancellationToken ct)
@@ -230,8 +232,7 @@ public sealed class MigrateCommand
             _state.Append(new StateRecord(entry.DocumentId, MigrationState.Repointed,
                 DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath, null));
 
-            _backups.Folder(entry.DocumentId).AppendSection("THE NEW FILE — uploaded and repointed",
-                new (string, string?)[]
+            var repointedPoints = new (string, string?)[]
                 {
                     ("New path", newFile.FilePath),
                     ("New file record", newFile.FileId.ToString()),
@@ -242,7 +243,13 @@ public sealed class MigrateCommand
                     ("CRM now points at", newFile.FileId.ToString()),
                     ("Repointed at", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss")),
                     ("The old file", "still on the server, untouched until the delete step")
-                });
+                };
+
+            _backups.Folder(entry.DocumentId, entry.FileName)
+                .AppendSection("THE NEW FILE — uploaded and repointed", repointedPoints);
+
+            _reports?.Write(entry.DocumentId, entry.FileName, "03-upload-repoint",
+                "STEP 3 and 4 — UPLOAD, VERIFY and REPOINT", repointedPoints);
 
             // There is no way to view the new file from inside this tool, so hand over the links
             // that do let it be seen — the document, and the file record behind it. The View
@@ -275,7 +282,8 @@ public sealed class MigrateCommand
         }
 
         var reportPath = _reporter.WriteMigration(env, rows);
-        var repointedPath = _repointed?.Write(env, _crmUrl, rows) ?? string.Empty;
+        var repointedPath = _repointed?.Write(env, _crmUrl, rows,
+            _reports is null ? null : id => _reports.FolderFor(id)) ?? string.Empty;
 
         return new MigrateSummary(migrated, skipped, failed, haltReason is not null, haltReason,
             reportPath, rows, repointedPath);

@@ -19,11 +19,50 @@ public sealed class DocumentFolder
 {
     private readonly string _root;
 
-    /// <param name="backupRoot">&lt;DataRoot&gt;\backup\&lt;env&gt;</param>
-    public DocumentFolder(string backupRoot, Guid documentId)
+    /// <param name="parentRoot">&lt;DataRoot&gt;\backup\&lt;env&gt; or &lt;DataRoot&gt;\reports\&lt;env&gt;</param>
+    /// <param name="fileName">
+    /// Used to name the folder, so it can be recognised without opening it. The id is what
+    /// identifies it, so the folder is always found by id whatever the name turns out to be.
+    /// </param>
+    public DocumentFolder(string parentRoot, Guid documentId, string? fileName = null)
     {
-        _root = Path.Combine(backupRoot, documentId.ToString());
+        _root = Resolve(parentRoot, documentId, fileName);
         DocumentId = documentId;
+    }
+
+    /// <summary>
+    /// A folder is named "&lt;file name&gt;__&lt;document id&gt;". The id is the part that matters, so an
+    /// existing folder for this document is reused whatever name it was given — otherwise a run
+    /// that learns the name later would create a second folder for the same document.
+    /// </summary>
+    private static string Resolve(string parentRoot, Guid documentId, string? fileName)
+    {
+        var suffix = "__" + documentId;
+
+        if (Directory.Exists(parentRoot))
+        {
+            var existing = Directory.EnumerateDirectories(parentRoot)
+                .FirstOrDefault(d => Path.GetFileName(d).EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+                                  || Path.GetFileName(d).Equals(documentId.ToString(), StringComparison.OrdinalIgnoreCase));
+
+            if (existing is not null) return existing;
+        }
+
+        return Path.Combine(parentRoot, Safe(fileName) + suffix);
+    }
+
+    /// <summary>Trims a file name down to something a folder can be called on any filesystem.</summary>
+    private static string Safe(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName)) return "document";
+
+        var stem = Path.GetFileNameWithoutExtension(fileName.Trim());
+        var cleaned = new string(stem.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '-' : c).ToArray())
+            .Replace('.', '-')
+            .Trim('-', ' ');
+
+        if (cleaned.Length == 0) return "document";
+        return cleaned.Length <= 60 ? cleaned : cleaned[..60].TrimEnd('-', ' ');
     }
 
     public Guid DocumentId { get; }

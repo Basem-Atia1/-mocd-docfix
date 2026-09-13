@@ -30,6 +30,8 @@ public sealed class Session : IDisposable
     private readonly ScanCommand _scan;
     private readonly ShellFileOpener _opener = new();
     private readonly RepointedListWriter _repointedList;
+    private readonly DocumentReportStore _docReports;
+    private readonly string _reportsRoot;
 
     /// <summary>mocd_hash per scanned row, needed by the backup phase's first check.</summary>
     private readonly Dictionary<Guid, string?> _hashes = new();
@@ -52,12 +54,16 @@ public sealed class Session : IDisposable
 
         var dataRoot = Path.Combine(appConfig.DataRoot, envName);
 
-        // Backups live under their own root, one folder per environment and then one per
-        // document: <DataRoot>\backup\<env>\<documentId>\{document.txt, old\, new\}
+        // Two roots, kept apart on purpose. The backup root holds the files and everything
+        // needed to restore them; the reports root holds only the account of what happened.
+        // Both are laid out the same way: <root>\<env>\<file name>__<document id>\
         var backupRoot = Path.Combine(appConfig.DataRoot, "backup", envName);
+        var reportsRoot = Path.Combine(appConfig.DataRoot, "reports", envName);
 
-        _reporter = new Reporter(Path.Combine(dataRoot, "reports"));
-        _repointedList = new RepointedListWriter(Path.Combine(dataRoot, "reports"));
+        _reporter = new Reporter(reportsRoot);
+        _repointedList = new RepointedListWriter(reportsRoot);
+        _docReports = new DocumentReportStore(reportsRoot);
+        _reportsRoot = reportsRoot;
         _backups = new BackupStore(backupRoot);
         _state = new StateStore(Path.Combine(dataRoot, "state", $"state-{envName}.jsonl"));
 
@@ -69,8 +75,8 @@ public sealed class Session : IDisposable
         _files = new FileServiceClient(_fileHttp, env);
 
         _scan = new ScanCommand(_read, _reporter, env.CrmUrl, appConfig.ServiceCatalogues,
-            new GroupedReportWriter(Path.Combine(dataRoot, "reports")),
-            new GuidListWriter(Path.Combine(dataRoot, "reports")));
+            new GroupedReportWriter(reportsRoot),
+            new GuidListWriter(reportsRoot));
     }
 
     public void Dispose()
@@ -87,7 +93,7 @@ public sealed class Session : IDisposable
     /// second implementation of what "safe to delete" means.
     /// </summary>
     private Task<string?> DeleteOneAsync(Guid documentId, CancellationToken ct) =>
-        new DeleteCommand(_files, _read, _write, _backups, _state, _prompts).DeleteOneAsync(documentId, ct);
+        new DeleteCommand(_files, _read, _write, _backups, _state, _prompts, _docReports).DeleteOneAsync(documentId, ct);
 
     public async Task<ScanResult> ScanAsync(CancellationToken ct)
     {
@@ -135,12 +141,12 @@ public sealed class Session : IDisposable
 
                 // Each document gets its own folder and its own readable record from step 1,
                 // and everything about it lands there as the later steps run.
-                DocumentRecord.WriteHeader(_backups, row);
+                DocumentRecord.WriteHeader(_backups, row, _docReports);
             }
 
             var details = new List<string>();
             foreach (var row in _pending.Take(10))
-                details.Add($"{row.FileName}  →  {_backups.Folder(row.DocumentId).SummaryPath}");
+                details.Add($"{row.FileName}  →  {_docReports.FolderFor(row.DocumentId, row.FileName)}");
             if (_pending.Count > 10) details.Add($"… and {_pending.Count - 10} more");
 
             return new ScanOutcome(
@@ -160,7 +166,7 @@ public sealed class Session : IDisposable
                 return StepOutcome.Of("Not enough free disk space with margin — nothing was downloaded.",
                     $"needs roughly {estimate * 2 / 1_048_576:N0} MB, {free / 1_048_576:N0} MB free");
 
-            var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, _prompts.Info)
+            var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, _prompts.Info, _docReports)
                 .RunAsync(_envName, _pending, ct);
 
             return StepOutcome.Of(
@@ -172,7 +178,7 @@ public sealed class Session : IDisposable
         MigrateAsync: async () =>
         {
             var summary = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
-                _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList).RunAsync(_envName, ct);
+                _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports).RunAsync(_envName, ct);
 
             var details = new List<string>
             {
@@ -189,7 +195,7 @@ public sealed class Session : IDisposable
 
         DeleteAsync: async () =>
         {
-            var summary = await new DeleteCommand(_files, _read, _write, _backups, _state, _prompts)
+            var summary = await new DeleteCommand(_files, _read, _write, _backups, _state, _prompts, _docReports)
                 .RunAsync(_envName, _env.IsProduction, ct);
 
             var details = new List<string>();
@@ -203,7 +209,7 @@ public sealed class Session : IDisposable
         VerifyAsync: async () =>
         {
             var summary = await new VerifyCommand(_files, _read, _write, _backups, _state,
-                _env.CrmUrl, Path.Combine(_appConfig.DataRoot, _envName, "reports"))
+                _env.CrmUrl, _reportsRoot, _docReports)
                 .RunAsync(_envName, ct);
 
             var details = new List<string> { $"report → {summary.ReportPath}" };
@@ -252,7 +258,7 @@ public sealed class Session : IDisposable
                 != ConfirmChoice.Yes)
                 return 0;
 
-            var backup = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, _prompts.Info)
+            var backup = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, _prompts.Info, _docReports)
                 .RunAsync(_envName, rows, ct);
 
             if (!gate.Ask("2", "Backup",
@@ -262,7 +268,7 @@ public sealed class Session : IDisposable
                 return 0;
 
             var migrated = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
-                _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList).RunAsync(_envName, ct);
+                _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports).RunAsync(_envName, ct);
 
             if (migrated.Migrated == 0) return 0;
 
@@ -272,7 +278,7 @@ public sealed class Session : IDisposable
                     "delete the old files — IRREVERSIBLE"))
                 return migrated.Migrated;
 
-            await new DeleteCommand(_files, _read, _write, _backups, _state, _prompts)
+            await new DeleteCommand(_files, _read, _write, _backups, _state, _prompts, _docReports)
                 .RunAsync(_envName, _env.IsProduction, ct);
 
             return migrated.Migrated;
@@ -317,7 +323,7 @@ public sealed class Session : IDisposable
                 }
                 if (_dryRun) return 0;
 
-                var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, _prompts.Info)
+                var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, _prompts.Info, _docReports)
                     .RunAsync(_envName, result.Fix, ct);
                 Console.WriteLine($"Saved {summary.Saved}, quarantined {summary.Quarantined}, " +
                                   $"skipped {summary.Skipped}, {summary.TotalBytes / 1_048_576:N0} MB.");
@@ -330,7 +336,7 @@ public sealed class Session : IDisposable
                 if (_dryRun) { Console.WriteLine("Dry run: migrate writes, so nothing was done."); return 0; }
 
                 var summary = await new MigrateCommand(_files, _read, _write, _backups, _state,
-                    _reporter, _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList).RunAsync(_envName, ct);
+                    _reporter, _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports).RunAsync(_envName, ct);
 
                 Console.WriteLine($"Migrated {summary.Migrated}, skipped {summary.Skipped}, failed {summary.Failed}.");
                 Console.WriteLine($"report → {summary.ReportPath}");
@@ -342,7 +348,7 @@ public sealed class Session : IDisposable
             {
                 if (_dryRun) { Console.WriteLine("Dry run: delete is irreversible, so nothing was done."); return 0; }
 
-                var summary = await new DeleteCommand(_files, _read, _write, _backups, _state, _prompts)
+                var summary = await new DeleteCommand(_files, _read, _write, _backups, _state, _prompts, _docReports)
                     .RunAsync(_envName, _env.IsProduction, ct);
 
                 Console.WriteLine($"Deleted {summary.Deleted}, refused {summary.Refused}, skipped {summary.Skipped}.");
