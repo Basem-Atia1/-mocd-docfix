@@ -17,9 +17,10 @@ public class TargetedCommandTests : IDisposable
     public TargetedCommandTests() => Directory.CreateDirectory(_root);
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 
-    private static DocumentRow Doc(string path, Guid? cat) =>
+    private static DocumentRow Doc(string path, Guid? cat, Guid? crossCheck = null) =>
         new(Guid.NewGuid(), "cert.jpg", Guid.NewGuid(), path, "cert.jpg", "image/jpeg", "VHASH",
-            Guid.NewGuid(), "Certificate of Good Conduct", cat, null, null, DateTimeOffset.UtcNow);
+            Guid.NewGuid(), "Certificate of Good Conduct", cat, crossCheck,
+            crossCheck is null ? null : "mocd_gamrequest", DateTimeOffset.UtcNow);
 
     private Reporter Reports() => new(Path.Combine(_root, "reports"));
 
@@ -77,11 +78,27 @@ public class TargetedCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task An_ambiguous_document_needs_force_review()
+    public async Task A_real_but_different_catalogue_is_fixed_without_force_review()
     {
+        // Group 5. Before 2026-09-13 this needed --force-review; now the document type decides.
         _read.KnownCatalogues.Add(GamRequest.ToString());
-        var doc = Doc($@"DigitalServices\{GamRequest}\20260518\a.pdf", Correct);
-        _read.Resolutions["a.pdf"] = new List<DocumentRow> { doc };
+        _read.Resolutions["a.pdf"] = new List<DocumentRow>
+            { Doc($@"DigitalServices\{GamRequest}\20260518\a.pdf", Correct) };
+        var prompts = new FakePrompts();
+
+        var summary = await Command(prompts).RunAsync("dev", new[] { "a.pdf" },
+            forceReview: false, isProduction: false, CancellationToken.None);
+
+        Assert.Equal(1, summary.Fixed);
+        Assert.Equal(0, summary.Reviewed);
+        Assert.Contains(prompts.Messages, m => m.Contains("BROKEN", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task A_malformed_path_needs_force_review()
+    {
+        _read.Resolutions["a.pdf"] = new List<DocumentRow>
+            { Doc(@"DigitalServices\\POD\\20250911\\a.pdf", Correct) };
         var prompts = new FakePrompts();
 
         var summary = await Command(prompts).RunAsync("dev", new[] { "a.pdf" },
@@ -93,16 +110,35 @@ public class TargetedCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task With_force_review_an_ambiguous_document_is_queued()
+    public async Task With_force_review_a_malformed_path_is_queued()
     {
-        _read.KnownCatalogues.Add(GamRequest.ToString());
-        var doc = Doc($@"DigitalServices\{GamRequest}\20260518\a.pdf", Correct);
-        _read.Resolutions["a.pdf"] = new List<DocumentRow> { doc };
+        _read.Resolutions["a.pdf"] = new List<DocumentRow>
+            { Doc(@"DigitalServices\\POD\\20250911\\a.pdf", Correct) };
 
         var summary = await Command(new FakePrompts()).RunAsync("dev", new[] { "a.pdf" },
             forceReview: true, isProduction: false, CancellationToken.None);
 
         Assert.Equal(1, summary.Fixed);
+    }
+
+    [Fact]
+    public async Task Force_review_cannot_act_on_a_cross_check_conflict()
+    {
+        // Group 6: the parent request and the document type name different catalogues, so there
+        // is no correct value to write. The flag must not queue a row with a null target.
+        _read.Resolutions["a.pdf"] = new List<DocumentRow>
+            { Doc(@"DigitalServices\goodConductCertificate\20260518\a.pdf", Correct, GamRequest) };
+        var prompts = new FakePrompts();
+
+        var summary = await Command(prompts).RunAsync("dev", new[] { "a.pdf" },
+            forceReview: true, isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Fixed);
+        Assert.Equal(1, summary.Reviewed);
+        Assert.Contains(prompts.Messages,
+            m => m.Contains("NEEDS A DECISION", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(prompts.Messages,
+            m => m.Contains("--force-review cannot help", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

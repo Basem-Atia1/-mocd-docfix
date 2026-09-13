@@ -32,20 +32,24 @@ public class ScanCommandTests : IDisposable
         _crm.KnownCatalogues.Add(GamRequest.ToString());
         _crm.Documents.AddRange(new[]
         {
-            Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment),      // FIX
-            Doc(@"DigitalServices\0\20260423\b.png", EmployeeAppointment),                            // FIX
-            Doc($@"DigitalServices\{GamRequest}\20260518\c.pdf", EmployeeAppointment),                // REVIEW
+            Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment),      // FIX, group 3
+            Doc(@"DigitalServices\0\20260423\b.png", EmployeeAppointment),                            // FIX, group 3
+            Doc($@"DigitalServices\{GamRequest}\20260518\c.pdf", EmployeeAppointment),                // FIX, group 5
             Doc($@"DigitalServices\{EmployeeAppointment}\20260330\d.jpg", EmployeeAppointment),       // SKIP
             Doc(null, EmployeeAppointment),                                                            // SKIP
             Doc(@"DigitalServices\x\20260330\e.jpg", null),                                            // SKIP
+
+            // The only thing still held back: the parent request contradicts the document type.
+            Doc(@"DigitalServices\goodConductCertificate\20260330\f.jpg", EmployeeAppointment,
+                GamRequest),                                                                          // REVIEW, group 6
         });
 
         var result = await Command().RunAsync("dev", CancellationToken.None);
 
-        Assert.Equal(2, result.Fix.Count);
+        Assert.Equal(3, result.Fix.Count);
         Assert.Single(result.Review);
         Assert.Equal(3, result.Skip.Count);
-        Assert.Equal(6, result.All.Count);
+        Assert.Equal(7, result.All.Count);
     }
 
     [Fact]

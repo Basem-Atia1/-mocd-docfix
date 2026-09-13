@@ -67,15 +67,22 @@ order matters, because group 6 must win over group 5:
 | # | Condition | Verdict | Live dev count |
 |---|---|---|---|
 | 7 | No file path, or segment already equals the correct catalogue | `Skip` | 88 |
-| 6 | Parent request and document type name different catalogues | `Review` | 7 |
+| 6 | A human must decide: the parent request and the document type name different catalogues, **or** the path is malformed | `Review` | 7 |
 | 5 | Segment parses as a GUID and resolves to a real catalogue, but not the correct one | **`Fix`** | 41 |
 | 1 | Segment is a GUID that is not a service catalogue (a document type id) | `Fix` | 59 |
 | 2 | Segment starts with the literal `docType` | `Fix` | 57 |
 | 4 | No segment at all - the date folder sits directly under the root | `Fix` | 23 |
 | 3 | Anything else - a name such as `Document`, `boardDecision`, `string`, `Test` | `Fix` | 133 |
 
-Malformed paths (doubled separators, or a segment count that is neither 3 nor 4) remain `Review`
-and are reported inside whichever group they land in, with the malformation named in the reason.
+**Invariant:** a row's group decides whether it is fixed. Groups 1-5 are always `Fix`, groups 6
+and 7 are never `Fix`. Nothing may be `Review` inside a group the report calls fixable, because the
+operator reads the group heading and expects it to be true of every row beneath it.
+
+That is why malformed paths (doubled separators, or a segment count that is neither 3 nor 4) are
+group 6 rather than being scattered through groups 1-5 as exceptions. Group 6 is therefore not
+only the cross-check conflict: it is **everything the tool refuses to decide**, with the reason
+line saying which of the two applies. There are no malformed paths in the dev data, so group 6's
+live count is the 7 conflicts alone.
 
 ### 3.1 Group 5 changes verdict - the reasoning
 

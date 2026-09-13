@@ -74,23 +74,40 @@ public class ClassifierTests
     }
 
     [Fact]
-    public void A_different_but_real_catalogue_is_review_not_fix()
+    public void A_different_but_real_catalogue_is_fixed()
     {
         // GAM Attendance document stored under GAM Request — both are valid catalogues.
+        // Spec 2026-09-13 section 3.1: the document type decides, so this is group 5 and is fixed.
         var r = Classify(
             @"DigitalServices\3ff27d73-653e-f111-b119-005056010908\20260518\a.pdf", GamAttendance);
 
-        Assert.Equal(Verdict.Review, r.Verdict);
+        Assert.Equal(Verdict.Fix, r.Verdict);
+        Assert.Equal(5, r.Group);
+        Assert.Equal(GamAttendance, r.CorrectCatalogueId);
         Assert.Contains("valid service catalogue", r.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void A_foreign_but_real_catalogue_is_review()
+    public void A_foreign_but_real_catalogue_is_fixed()
     {
         var r = Classify(
             @"DigitalServices\9a39aa75-9933-f111-b119-005056010908\20260709\a.jpg", GamAttendance);
 
+        Assert.Equal(Verdict.Fix, r.Verdict);
+        Assert.Equal(5, r.Group);
+    }
+
+    [Fact]
+    public void A_cross_check_conflict_beats_a_real_but_different_catalogue()
+    {
+        // Group 6 must win over group 5: when the parent request disagrees with the document
+        // type we have no trustworthy answer, whatever the path happens to hold.
+        var r = Classify(
+            @"DigitalServices\3ff27d73-653e-f111-b119-005056010908\20260518\a.pdf",
+            GamAttendance, EmployeeAppointment);
+
         Assert.Equal(Verdict.Review, r.Verdict);
+        Assert.Equal(6, r.Group);
     }
 
     [Fact]
@@ -164,5 +181,84 @@ public class ClassifierTests
         };
 
         Assert.All(cases, c => Assert.False(string.IsNullOrWhiteSpace(c.Solution)));
+    }
+
+    // ---- group numbering, spec 2026-09-13 section 3 ----
+
+    [Fact]
+    public void A_document_type_guid_segment_is_group_one()
+    {
+        // A real GUID, but not a service catalogue — this is a document type id.
+        var r = Classify(
+            @"DigitalServices\9b1121f4-e30b-f111-b117-005056010908\20260312\a.png", EmployeeAppointment);
+
+        Assert.Equal(Verdict.Fix, r.Verdict);
+        Assert.Equal(1, r.Group);
+    }
+
+    [Fact]
+    public void A_docType_prefixed_segment_is_group_two()
+    {
+        Assert.Equal(2, Classify(
+            @"DigitalServices\docType2746f51e7e3ef111b119005056010908\20260518\a.pdf", GamRequest).Group);
+
+        Assert.Equal(2, Classify(@"DigitalServices\docType\20260429\a.pdf", EmployeeAppointment).Group);
+    }
+
+    [Theory]
+    [InlineData("goodConductCertificate")]
+    [InlineData("Document")]
+    [InlineData("boardDecision")]
+    [InlineData("string")]
+    [InlineData("0")]
+    public void A_name_segment_is_group_three(string segment)
+    {
+        Assert.Equal(3, Classify($@"DigitalServices\{segment}\20260330\a.jpg", EmployeeAppointment).Group);
+    }
+
+    [Fact]
+    public void A_missing_segment_is_group_four()
+    {
+        Assert.Equal(4, Classify(@"DigitalServices\20260707\a.doc", GamRequest).Group);
+    }
+
+    [Fact]
+    public void Nothing_to_do_is_group_seven()
+    {
+        Assert.Equal(7, Classify(
+            $@"DigitalServices\{EmployeeAppointment}\20260330\a.jpg", EmployeeAppointment).Group);
+
+        Assert.Equal(7, Classify("", EmployeeAppointment).Group);
+
+        Assert.Equal(7, Classify(@"DigitalServices\goodConductCertificate\20260330\a.jpg", null).Group);
+    }
+
+    [Fact]
+    public void Every_group_number_the_classifier_produces_is_a_known_group()
+    {
+        var cases = new[]
+        {
+            Classify(@"DigitalServices\9b1121f4-e30b-f111-b117-005056010908\20260312\a.png", EmployeeAppointment),
+            Classify(@"DigitalServices\docType\20260429\a.pdf", EmployeeAppointment),
+            Classify(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment),
+            Classify(@"DigitalServices\20260707\a.doc", GamRequest),
+            Classify($@"DigitalServices\{GamRequest}\20260518\a.pdf", GamAttendance),
+            Classify(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment, GamRequest),
+            Classify("", EmployeeAppointment),
+            Classify(@"DigitalServices\\POD\\20250911\\a.png", EmployeeAppointment)
+        };
+
+        Assert.All(cases, c => Assert.Equal(
+            DocumentGroups.Get(c.Group).WillBeFixed, c.Verdict == Verdict.Fix));
+    }
+
+    [Fact]
+    public void A_malformed_path_is_group_six_because_a_human_must_decide()
+    {
+        var r = Classify(@"DigitalServices\\POD\\20250911\\a.png", EmployeeAppointment);
+
+        Assert.Equal(Verdict.Review, r.Verdict);
+        Assert.Equal(6, r.Group);
+        Assert.Contains("malformed", r.Reason, StringComparison.OrdinalIgnoreCase);
     }
 }

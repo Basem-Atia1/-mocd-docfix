@@ -12,15 +12,19 @@ public class ConfigStoreTests : IDisposable
     public void Dispose() { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); }
 
     [Fact]
-    public void Load_on_a_missing_file_returns_defaults_with_the_eight_catalogues()
+    public void Load_on_a_missing_file_returns_defaults_with_the_seven_in_scope_catalogues()
     {
         var store = new ConfigStore(ConfigPath, new InMemorySecretStore());
 
         var cfg = store.Load();
 
-        Assert.Equal(8, cfg.ServiceCatalogues.Count);
+        Assert.Equal(7, cfg.ServiceCatalogues.Count);
         Assert.Contains(Guid.Parse("cd97bf8d-bea8-f011-b116-005056010908"), cfg.ServiceCatalogues);
         Assert.Contains(Guid.Parse("930f636a-077a-f111-b119-005056010908"), cfg.ServiceCatalogues);
+
+        // Membership Managment, removed from scope on 2026-09-13 at the operator's instruction.
+        Assert.DoesNotContain(Guid.Parse("6bcb221c-6c2b-f111-b119-005056010908"), cfg.ServiceCatalogues);
+
         Assert.Empty(cfg.Environments);
     }
 

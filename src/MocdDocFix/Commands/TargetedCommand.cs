@@ -85,12 +85,29 @@ public sealed class TargetedCommand
                 continue;
             }
 
-            if (row.Verdict == nameof(Verdict.Review) && !forceReview)
+            if (row.Verdict == nameof(Verdict.Review))
             {
-                _prompts.Info($"  VERDICT  AMBIGUOUS — {row.Reason}");
-                _prompts.Info("           Not touched. Re-run with --force-review to act on it anyway.");
-                reviewed++;
-                continue;
+                // --force-review cannot conjure a catalogue that does not exist. When the parent
+                // request and the document type disagree there is no correct value to write, so
+                // the flag is refused rather than silently queuing a row with a null target.
+                if (row.CorrectCatalogueId is null)
+                {
+                    _prompts.Info($"  VERDICT  NEEDS A DECISION — {row.Reason}");
+                    _prompts.Info("           Not touched, and --force-review cannot help: the two");
+                    _prompts.Info("           authorities disagree, so there is no correct catalogue");
+                    _prompts.Info("           to write. Fix the document type or the parent request");
+                    _prompts.Info("           in CRM, then re-scan.");
+                    reviewed++;
+                    continue;
+                }
+
+                if (!forceReview)
+                {
+                    _prompts.Info($"  VERDICT  AMBIGUOUS — {row.Reason}");
+                    _prompts.Info("           Not touched. Re-run with --force-review to act on it anyway.");
+                    reviewed++;
+                    continue;
+                }
             }
 
             _prompts.Info($"  VERDICT  BROKEN — {row.Reason}");
