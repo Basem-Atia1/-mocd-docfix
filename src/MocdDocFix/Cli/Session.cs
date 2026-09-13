@@ -198,6 +198,26 @@ public sealed class Session : IDisposable
             return new StepOutcome(
                 $"{summary.Deleted} deleted, {summary.Refused} refused, {summary.Skipped} skipped.",
                 details);
+        },
+
+        VerifyAsync: async () =>
+        {
+            var summary = await new VerifyCommand(_files, _read, _write, _backups, _state,
+                _env.CrmUrl, Path.Combine(_appConfig.DataRoot, _envName, "reports"))
+                .RunAsync(_envName, ct);
+
+            var details = new List<string> { $"report → {summary.ReportPath}" };
+            foreach (var bad in summary.Verdicts.Where(v => !v.Ok).Take(10))
+            {
+                details.Add($"  {bad.FileName}");
+                foreach (var p in bad.Problems) details.Add($"      {p}");
+            }
+
+            return new StepOutcome(
+                summary.WithProblems == 0
+                    ? $"{summary.Checked} checked, all correct."
+                    : $"{summary.Checked} checked, {summary.Ok} correct, {summary.WithProblems} WITH PROBLEMS.",
+                details);
         });
 
     private static IReadOnlyList<PickableFile> Pickable(IEnumerable<ScanRow> rows) =>

@@ -244,6 +244,16 @@ public sealed class MigrateCommand
                     ("The old file", "still on the server, untouched until the delete step")
                 });
 
+            // There is no way to view the new file from inside this tool, so hand over the links
+            // that do let it be seen — the document, and the file record behind it. The View
+            // button on the document reads the record's path, which check 7 has just confirmed.
+            _prompts.Info("");
+            _prompts.Info("  REPOINTED — open it in CRM to see the file:");
+            _prompts.Info($"    document        {Reporter.CrmLink(_crmUrl, entry.DocumentId)}");
+            _prompts.Info($"    new file record {RepointedListWriter.DocumentFileLink(_crmUrl, newFile.FileId)}");
+            _prompts.Info($"    new file id     {newFile.FileId}");
+            _prompts.Info("    The View button on the document now serves the corrected copy.");
+
             await OfferToDeleteOldAsync(entry, ct);
 
             rows.Add(new MigrationRow(

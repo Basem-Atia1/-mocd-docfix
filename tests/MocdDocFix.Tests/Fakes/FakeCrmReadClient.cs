@@ -37,10 +37,22 @@ public sealed class FakeCrmReadClient : ICrmReadClient
     /// <summary>entitySet + id → raw JSON. Defaults to a minimal stub so tests need not set it.</summary>
     public Dictionary<string, string> RawRecords { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public Task<string?> GetRawRecordAsync(string entitySet, Guid id, CancellationToken ct) =>
-        Task.FromResult<string?>(RawRecords.TryGetValue($"{entitySet}:{id}", out var json)
+    /// <summary>
+    /// Records that do not exist. CRM answers 404 for these and the client returns null, so this
+    /// is how a test says "this row has been deleted" — without it every id gets a stub.
+    /// </summary>
+    public HashSet<string> MissingRecords { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<string?> GetRawRecordAsync(string entitySet, Guid id, CancellationToken ct)
+    {
+        var key = $"{entitySet}:{id}";
+
+        if (MissingRecords.Contains(key)) return Task.FromResult<string?>(null);
+
+        return Task.FromResult<string?>(RawRecords.TryGetValue(key, out var json)
             ? json
             : $$"""{"stub":true,"entitySet":"{{entitySet}}","id":"{{id}}"}""");
+    }
 
     /// <summary>documentId → raw JSON, or set the value to null to simulate a failed query.</summary>
     public Dictionary<Guid, string?> Annotations { get; } = new();

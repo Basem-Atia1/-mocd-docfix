@@ -34,7 +34,8 @@ public sealed record WizardActions(
     Func<IReadOnlyList<string>, Task<ScanOutcome>> ClassifyAsync,
     Func<Task<StepOutcome>> BackupAsync,
     Func<Task<StepOutcome>> MigrateAsync,
-    Func<Task<StepOutcome>> DeleteAsync);
+    Func<Task<StepOutcome>> DeleteAsync,
+    Func<Task<StepOutcome>> VerifyAsync);
 
 public enum WizardExit { Finished, ChangeEnvironment }
 
@@ -90,17 +91,23 @@ public sealed class Wizard
                     "Reads CRM, classifies every document, writes the CSV and the grouped " +
                     "report, and stops. Nothing is downloaded, uploaded or written."),
 
+                new Choice("Check it all", "ask the file server and CRM what is actually true",
+                    "For every document already migrated: is the old file still on the server, " +
+                    "is its CRM record still there, is the new file where it should be, and does " +
+                    "the document point at it. Reads only — it reports, it never repairs."),
+
                 new Choice("Change environment", $"currently {_envName}"),
 
                 new Choice("Quit", "stop here")
             }, defaultIndex: 0, allowBack: false);
 
-            switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 4)
+            switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 5)
             {
                 case 0: await TargetedAsync(ct); break;
                 case 1: await FullAsync(ct); break;
                 case 2: await ReportOnlyAsync(); break;
-                case 3: return WizardExit.ChangeEnvironment;
+                case 3: await VerifyOnlyAsync(); break;
+                case 4: return WizardExit.ChangeEnvironment;
                 default:
                     _prompts.Info("");
                     _prompts.Info("Nothing further was done. Bye.");
@@ -138,6 +145,16 @@ public sealed class Wizard
     private async Task FullAsync(CancellationToken ct)
     {
         await PipelineAsync(await ScanAsync(), "1", "Scan", ct);
+    }
+
+    private async Task VerifyOnlyAsync()
+    {
+        _prompts.Info("");
+        _prompts.Info("Asking the file server and CRM about every document already migrated.");
+        _prompts.Info("This reads only — nothing is changed, whatever it finds.");
+
+        var verify = await _actions.VerifyAsync();
+        Report("", "Final check", verify.Headline, verify.Details);
     }
 
     private async Task TargetedAsync(CancellationToken ct)
@@ -196,8 +213,12 @@ public sealed class Wizard
         var delete = await _actions.DeleteAsync();
         Report("5", "Delete old files", delete.Headline, delete.Details);
 
+        // Always finish by asking both systems what is actually true, rather than trusting the
+        // five steps that just ran.
         _prompts.Info("");
-        _prompts.Info("All five steps are done.");
+        _prompts.Info("Checking the file server and CRM to confirm everything landed. Reads only.");
+        var verify = await _actions.VerifyAsync();
+        Report("", "Final check", verify.Headline, verify.Details);
 
         _ = ct;
     }
