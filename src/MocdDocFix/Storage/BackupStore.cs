@@ -35,7 +35,26 @@ public sealed record ManifestEntry(
     string? DocumentFileSnapshotJson = null,
     string? DocumentSnapshotJson = null,
     Guid DocumentTypeId = default,
-    string? DocumentTypeName = null);
+    string? DocumentTypeName = null,
+    string? AnnotationsJson = null,
+    string? CrmImagePath = null);
+
+/// <summary>
+/// The complete CRM-side picture of one document, captured before any write. Written beside
+/// the file bytes as &lt;oldFileId&gt;.crm.json so it can be read without parsing the manifest.
+/// </summary>
+public sealed record CrmImage(
+    Guid DocumentId,
+    Guid DocumentFileId,
+    string OldFilePath,
+    DateTimeOffset CapturedAt,
+    string Environment,
+    System.Text.Json.JsonElement? Document,
+    System.Text.Json.JsonElement? DocumentFile,
+    System.Text.Json.JsonElement? Annotations,
+    string DocumentRaw,
+    string DocumentFileRaw,
+    string AnnotationsRaw);
 
 public sealed class BackupStore
 {
@@ -61,6 +80,40 @@ public sealed class BackupStore
     }
 
     public byte[] Read(string localPath) => File.ReadAllBytes(localPath);
+
+    /// <summary>
+    /// Writes the CRM image beside the file bytes. The parsed forms are included when the
+    /// payload is valid JSON, and the raw text always is, so nothing is lost even if CRM
+    /// returns something unexpected.
+    /// </summary>
+    public string SaveCrmImage(Guid oldFileId, Guid documentId, string oldFilePath, string environment,
+        string documentRaw, string documentFileRaw, string annotationsRaw)
+    {
+        Directory.CreateDirectory(_backupDir);
+        var path = Path.Combine(_backupDir, $"{oldFileId}.crm.json");
+
+        var image = new CrmImage(
+            DocumentId: documentId,
+            DocumentFileId: oldFileId,
+            OldFilePath: oldFilePath,
+            CapturedAt: DateTimeOffset.UtcNow,
+            Environment: environment,
+            Document: TryParse(documentRaw),
+            DocumentFile: TryParse(documentFileRaw),
+            Annotations: TryParse(annotationsRaw),
+            DocumentRaw: documentRaw,
+            DocumentFileRaw: documentFileRaw,
+            AnnotationsRaw: annotationsRaw);
+
+        File.WriteAllText(path, JsonSerializer.Serialize(image, new JsonSerializerOptions { WriteIndented = true }));
+        return path;
+    }
+
+    private static JsonElement? TryParse(string raw)
+    {
+        try { return JsonDocument.Parse(raw).RootElement.Clone(); }
+        catch (JsonException) { return null; }
+    }
 
     public void AppendManifest(ManifestEntry entry)
     {

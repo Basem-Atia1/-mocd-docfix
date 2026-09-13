@@ -31,4 +31,10 @@ public sealed class FakeCrmReadClient : ICrmReadClient
         Task.FromResult<string?>(RawRecords.TryGetValue($"{entitySet}:{id}", out var json)
             ? json
             : $$"""{"stub":true,"entitySet":"{{entitySet}}","id":"{{id}}"}""");
+
+    /// <summary>documentId → raw JSON, or set the value to null to simulate a failed query.</summary>
+    public Dictionary<Guid, string?> Annotations { get; } = new();
+
+    public Task<string?> GetDocumentAnnotationsAsync(Guid documentId, CancellationToken ct) =>
+        Task.FromResult(Annotations.TryGetValue(documentId, out var json) ? json : """{"value":[]}""");
 }

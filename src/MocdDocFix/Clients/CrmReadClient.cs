@@ -16,6 +16,13 @@ public interface ICrmReadClient
     /// backup phase to snapshot the CRM side before any write (spec section 8.2).
     /// </summary>
     Task<string?> GetRawRecordAsync(string entitySet, Guid id, CancellationToken ct);
+
+    /// <summary>
+    /// Metadata of every annotation (note) attached to the document. Null means the query
+    /// failed — an empty list is returned as an empty JSON array, so a gap is distinguishable
+    /// from "there are none".
+    /// </summary>
+    Task<string?> GetDocumentAnnotationsAsync(Guid documentId, CancellationToken ct);
 }
 
 public sealed class CrmReadClient : ICrmReadClient
@@ -97,8 +104,27 @@ public sealed class CrmReadClient : ICrmReadClient
     public async Task<string?> GetRawRecordAsync(string entitySet, Guid id, CancellationToken ct)
     {
         // No $select — we want every attribute, so a restore does not depend on us having
-        // predicted which ones matter.
-        using var response = await _http.GetAsync($"{entitySet}({id})", ct);
+        // predicted which ones matter. The Prefer header adds formatted values and, crucially,
+        // lookuplogicalname: without it a polymorphic lookup is a bare GUID with no entity type.
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{entitySet}({id})");
+        request.Headers.Add("Prefer", "odata.include-annotations=\"*\"");
+
+        using var response = await _http.SendAsync(request, ct);
+        return response.IsSuccessStatusCode ? await response.Content.ReadAsStringAsync(ct) : null;
+    }
+
+    public async Task<string?> GetDocumentAnnotationsAsync(Guid documentId, CancellationToken ct)
+    {
+        // documentbody is deliberately excluded: it is a second copy of the file content, and
+        // annotations are never modified by this tool. Metadata records that they exist.
+        var url = "annotations?$select=annotationid,subject,notetext,filename,mimetype,filesize," +
+                  "isdocument,createdon,modifiedon,_objectid_value" +
+                  $"&$filter=_objectid_value eq {documentId} and objecttypecode eq 'mocd_document'";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add("Prefer", "odata.include-annotations=\"*\"");
+
+        using var response = await _http.SendAsync(request, ct);
         return response.IsSuccessStatusCode ? await response.Content.ReadAsStringAsync(ct) : null;
     }
 

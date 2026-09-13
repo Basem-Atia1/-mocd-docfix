@@ -86,13 +86,33 @@ public sealed class BackupCommand
                 continue;
             }
 
+            // Snapshot the CRM side BEFORE saving anything, so the backup is a complete image
+            // of the document — bytes AND the CRM records about it (spec section 8.2).
+            // A partial backup that looks complete is worse than no backup, so any gap here
+            // quarantines the file instead of producing one.
+            var fileSnapshot = await _read.GetRawRecordAsync("mocd_documentfiles", row.DocumentFileId, ct);
+            var documentSnapshot = await _read.GetRawRecordAsync("mocd_documents", row.DocumentId, ct);
+            var annotations = await _read.GetDocumentAnnotationsAsync(row.DocumentId, ct);
+
+            var missing = new List<string>();
+            if (string.IsNullOrWhiteSpace(documentSnapshot)) missing.Add("mocd_document record");
+            if (string.IsNullOrWhiteSpace(fileSnapshot)) missing.Add("mocd_documentfile record");
+            if (annotations is null) missing.Add("annotations");
+
+            if (missing.Count > 0)
+            {
+                var detail = "Backup would be incomplete — could not read " +
+                             string.Join(", ", missing) + ". Nothing was saved for this document.";
+                Quarantine(row, detail);
+                quarantined.Add(row);
+                continue;
+            }
+
             var extension = Path.GetExtension(row.FileName ?? string.Empty);
             var result = _backups.Save(row.DocumentFileId, extension, bytes);
 
-            // Snapshot the CRM side BEFORE anything is written, so a restore can rebuild the
-            // records and not only the content (spec section 8.2).
-            var fileSnapshot = await _read.GetRawRecordAsync("mocd_documentfiles", row.DocumentFileId, ct);
-            var documentSnapshot = await _read.GetRawRecordAsync("mocd_documents", row.DocumentId, ct);
+            var imagePath = _backups.SaveCrmImage(row.DocumentFileId, row.DocumentId, row.OldFilePath,
+                env, documentSnapshot!, fileSnapshot!, annotations!);
 
             _backups.AppendManifest(new ManifestEntry(
                 DocumentId: row.DocumentId,
@@ -111,7 +131,9 @@ public sealed class BackupCommand
                 DocumentFileSnapshotJson: fileSnapshot,
                 DocumentSnapshotJson: documentSnapshot,
                 DocumentTypeId: Guid.Empty,
-                DocumentTypeName: row.DocumentTypeName));
+                DocumentTypeName: row.DocumentTypeName,
+                AnnotationsJson: annotations,
+                CrmImagePath: imagePath));
 
             _state.Append(new StateRecord(row.DocumentId, MigrationState.BackedUp,
                 DateTimeOffset.UtcNow, null, null, $"{result.Bytes} bytes → {result.LocalPath}"));

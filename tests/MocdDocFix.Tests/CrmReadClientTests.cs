@@ -187,4 +187,73 @@ public class CrmReadClientTests
         var url = Uri.UnescapeDataString(handler.Requests[0].RequestUri!.ToString());
         Assert.Contains("mocd_documentfile/mocd_name eq 'cert.jpg'", url);
     }
+
+    // --- snapshot completeness (spec section 8.2) ---------------------------
+
+    [Fact]
+    public async Task Raw_record_reads_ask_for_annotations_so_lookup_types_and_labels_survive()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, """{"mocd_documentid":"x"}""");
+
+        await client.GetRawRecordAsync("mocd_documents", Guid.NewGuid(), CancellationToken.None);
+
+        // Without this header a polymorphic lookup comes back as a bare GUID with no entity
+        // type, which cannot be restored.
+        var prefer = handler.Requests[0].Headers.GetValues("Prefer").Single();
+        Assert.Contains("odata.include-annotations", prefer);
+        Assert.Contains("*", prefer);
+    }
+
+    [Fact]
+    public async Task Raw_record_asks_for_every_attribute_with_no_select()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK, """{"mocd_documentfileid":"x"}""");
+        var id = Guid.NewGuid();
+
+        await client.GetRawRecordAsync("mocd_documentfiles", id, CancellationToken.None);
+
+        var url = handler.Requests[0].RequestUri!.ToString();
+        Assert.Contains($"mocd_documentfiles({id})", url);
+        Assert.DoesNotContain("$select", url);
+    }
+
+    [Fact]
+    public async Task Raw_record_returns_null_when_the_record_cannot_be_read()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.NotFound, """{"error":{"message":"Does Not Exist"}}""");
+
+        Assert.Null(await client.GetRawRecordAsync("mocd_documents", Guid.NewGuid(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Annotations_are_fetched_for_the_document_without_their_bodies()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.OK,
+            """{"value":[{"annotationid":"a1","filename":"logo.png","filesize":1234,"isdocument":true}]}""");
+        var documentId = Guid.Parse("2c9d5572-a77b-f111-b10f-00505601095a");
+
+        var json = await client.GetDocumentAnnotationsAsync(documentId, CancellationToken.None);
+
+        Assert.NotNull(json);
+        Assert.Contains("logo.png", json);
+
+        var url = Uri.UnescapeDataString(handler.Requests[0].RequestUri!.ToString());
+        Assert.Contains($"_objectid_value eq {documentId}", url);
+        Assert.Contains("objecttypecode eq 'mocd_document'", url);
+        // documentbody is a second copy of the file; metadata is what we need here.
+        Assert.DoesNotContain("documentbody", url);
+    }
+
+    [Fact]
+    public async Task Annotations_return_null_when_the_query_fails_so_the_gap_is_visible()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.InternalServerError, "boom");
+
+        Assert.Null(await client.GetDocumentAnnotationsAsync(Guid.NewGuid(), CancellationToken.None));
+    }
 }

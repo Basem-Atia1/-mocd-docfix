@@ -136,7 +136,7 @@ public class BackupCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task A_snapshot_that_cannot_be_read_does_not_stop_the_backup()
+    public async Task Unparseable_snapshot_json_is_still_stored_verbatim_and_media_type_is_just_absent()
     {
         _files.Files[Path1] = (Base64, "VENDORHASH");
         var row = Row(Path1);
@@ -146,5 +146,90 @@ public class BackupCommandTests : IDisposable
 
         Assert.Equal(1, summary.Saved);
         Assert.Null(Backups().LoadManifest()[0].MediaType);
+        Assert.Contains("not json", Backups().LoadManifest()[0].DocumentFileSnapshotJson!);
+    }
+
+    // --- backup completeness: a full image, or nothing (spec section 8.2) ---
+
+    [Fact]
+    public async Task A_complete_image_is_written_as_a_readable_sidecar_next_to_the_file()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        _read.RawRecords[$"mocd_documentfiles:{row.DocumentFileId}"] =
+            """{"mocd_documentfileid":"x","mocd_mediatype":"image/jpeg","mocd_filesize":"350208"}""";
+        _read.RawRecords[$"mocd_documents:{row.DocumentId}"] =
+            """{"mocd_documentid":"y","_mocd_relationship_value":"z","_mocd_relationship_value@Microsoft.Dynamics.CRM.lookuplogicalname":"mocd_nporelationship"}""";
+        _read.Annotations[row.DocumentId] = """{"value":[{"annotationid":"a1","filename":"logo.png"}]}""";
+
+        await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        var entry = Assert.Single(Backups().LoadManifest());
+        Assert.False(string.IsNullOrWhiteSpace(entry.CrmImagePath));
+        Assert.True(File.Exists(entry.CrmImagePath));
+
+        var image = File.ReadAllText(entry.CrmImagePath!);
+        Assert.Contains("mocd_documentfileid", image);          // the documentfile record
+        Assert.Contains("mocd_documentid", image);              // the document record
+        Assert.Contains("lookuplogicalname", image);            // lookup types survived
+        Assert.Contains("logo.png", image);                     // annotations
+        Assert.Contains(row.DocumentId.ToString(), image);
+
+        // The bytes sit beside it.
+        Assert.True(File.Exists(entry.LocalPath));
+    }
+
+    [Fact]
+    public async Task A_missing_document_snapshot_quarantines_and_saves_nothing()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        _read.RawRecords[$"mocd_documents:{row.DocumentId}"] = null!;   // read failed
+
+        var summary = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(0, summary.Saved);
+        Assert.Equal(1, summary.Quarantined);
+        Assert.Empty(Backups().LoadManifest());
+        Assert.False(States().IsAtLeast(row.DocumentId, MigrationState.BackedUp));
+    }
+
+    [Fact]
+    public async Task A_missing_documentfile_snapshot_quarantines_and_saves_nothing()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        _read.RawRecords[$"mocd_documentfiles:{row.DocumentFileId}"] = null!;
+
+        var summary = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(0, summary.Saved);
+        Assert.Equal(1, summary.Quarantined);
+        Assert.Empty(Backups().LoadManifest());
+    }
+
+    [Fact]
+    public async Task A_failed_annotations_query_quarantines_because_the_image_would_be_incomplete()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        _read.Annotations[row.DocumentId] = null;   // query failed, not "none exist"
+
+        var summary = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(0, summary.Saved);
+        Assert.Equal(1, summary.Quarantined);
+    }
+
+    [Fact]
+    public async Task A_document_with_no_annotations_backs_up_normally()
+    {
+        _files.Files[Path1] = (Base64, "VENDORHASH");
+        var row = Row(Path1);
+        _read.Annotations[row.DocumentId] = """{"value":[]}""";
+
+        var summary = await Command().RunAsync("dev", new[] { row }, CancellationToken.None);
+
+        Assert.Equal(1, summary.Saved);
     }
 }
