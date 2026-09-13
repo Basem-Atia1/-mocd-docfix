@@ -33,6 +33,13 @@ public sealed class Session : IDisposable
     /// <summary>mocd_hash per scanned row, needed by the backup phase's first check.</summary>
     private readonly Dictionary<Guid, string?> _hashes = new();
 
+    /// <summary>
+    /// What the next backup will act on: the fixable rows from the last scan, or from the last
+    /// targeted check. Holding it here is what lets the wizard put a stop between checking and
+    /// backing up instead of running a whole targeted pipeline off one answer.
+    /// </summary>
+    private IReadOnlyList<ScanRow> _pending = Array.Empty<ScanRow>();
+
     public Session(AppConfig appConfig, ResolvedEnvironment env, string envName,
         IPrompts prompts, bool dryRun)
     {
@@ -81,6 +88,7 @@ public sealed class Session : IDisposable
         ScanAsync: async () =>
         {
             var result = await ScanAsync(ct);
+            _pending = result.Fix;
 
             var details = result.Banner().Split(Environment.NewLine).ToList();
             details.Add("");
@@ -89,33 +97,54 @@ public sealed class Session : IDisposable
             details.Add($"spreadsheet    → {result.ScanPath}");
             details.Add($"needs a human  → {result.ReviewPath}");
 
-            var fixable = result.Fix
-                .Select(r => new PickableFile(r.Group, r.DocumentId.ToString(), r.FileName,
-                    r.ServiceCatalogueName ?? "(no service)", r.DocumentTypeName))
-                .ToList();
-
             return new ScanOutcome(
                 $"{result.Fix.Count} to fix, {result.Review.Count} need a human, " +
                 $"{result.Skip.Count} nothing to do, out of {result.TotalInScope}.",
-                details, fixable);
+                details, Pickable(result.Fix));
+        },
+
+        ClassifyAsync: async identifiers =>
+        {
+            // The pipeline callback only records what would be acted on. Nothing is downloaded,
+            // uploaded or deleted here — the wizard asks before each of those separately.
+            var summary = await new TargetedCommand(_read, _scan, _reporter, _prompts, rows =>
+            {
+                _pending = rows;
+                return Task.FromResult(0);
+            }).RunAsync(_envName, identifiers, forceReview: false, _env.IsProduction, ct);
+
+            foreach (var row in _pending)
+            {
+                var document = (await _read.ResolveIdentifierAsync(row.DocumentId.ToString(), ct))
+                    .FirstOrDefault();
+                if (document is not null) _hashes[document.DocumentFileId] = document.Hash;
+            }
+
+            return new ScanOutcome(
+                $"{_pending.Count} to fix, {summary.Reviewed} need a human, " +
+                $"{summary.Skipped} already correct, {summary.NotFound} not found.",
+                new[] { $"report → {summary.ScanPath}" },
+                Pickable(_pending));
         },
 
         BackupAsync: async () =>
         {
-            var result = await ScanAsync(ct);
+            if (_pending.Count == 0)
+                return StepOutcome.Of("Nothing to back up — no files are queued.");
 
-            var estimate = result.Fix.Count * 350_000L;
+            var estimate = _pending.Count * 350_000L;
             var free = BackupStore.FreeSpaceBytes(_appConfig.DataRoot);
             if (free < estimate * 2)
                 return StepOutcome.Of("Not enough free disk space with margin — nothing was downloaded.",
                     $"needs roughly {estimate * 2 / 1_048_576:N0} MB, {free / 1_048_576:N0} MB free");
 
             var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf)
-                .RunAsync(_envName, result.Fix, ct);
+                .RunAsync(_envName, _pending, ct);
 
             return StepOutcome.Of(
                 $"{summary.Saved} saved, {summary.Quarantined} quarantined, {summary.Skipped} skipped.",
                 $"{summary.TotalBytes / 1_048_576:N0} MB downloaded",
+                $"backups  → {Path.Combine(_appConfig.DataRoot, _envName, "backup")}",
                 $"manifest → {summary.ManifestPath}");
         },
 
@@ -143,21 +172,20 @@ public sealed class Session : IDisposable
             return new StepOutcome(
                 $"{summary.Deleted} deleted, {summary.Refused} refused, {summary.Skipped} skipped.",
                 details);
-        },
-
-        TargetedAsync: async identifiers =>
-        {
-            var summary = await Targeted(identifiers, forceReview: false, ct);
-
-            return StepOutcome.Of(
-                $"{summary.Fixed} fixed, {summary.Reviewed} need a human, {summary.Skipped} already ok.",
-                $"{summary.NotFound} not found, {summary.Ambiguous} name clashes",
-                $"report → {summary.ScanPath}");
         });
 
-    private Task<TargetedSummary> Targeted(
+    private static IReadOnlyList<PickableFile> Pickable(IEnumerable<ScanRow> rows) =>
+        rows.Select(r => new PickableFile(r.Group, r.DocumentId.ToString(), r.FileName,
+                r.ServiceCatalogueName ?? "(no service)", r.DocumentTypeName))
+            .ToList();
+
+    /// <summary>
+    /// The command-line targeted run. It asks between every phase, exactly as the wizard does —
+    /// one answer must never set off backup, upload and delete in sequence.
+    /// </summary>
+    private async Task<TargetedSummary> Targeted(
         IReadOnlyList<string> identifiers, bool forceReview, CancellationToken ct) =>
-        new TargetedCommand(_read, _scan, _reporter, _prompts, async rows =>
+        await new TargetedCommand(_read, _scan, _reporter, _prompts, async rows =>
         {
             foreach (var row in rows)
             {
@@ -168,20 +196,43 @@ public sealed class Session : IDisposable
 
             if (_dryRun) { _prompts.Info("Dry run — stopping before backup."); return 0; }
 
-            await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf)
+            var gate = new StepGate(_prompts);
+
+            if (!gate.Ask("1", "Check", $"{rows.Count} file(s) will be fixed.",
+                    Array.Empty<string>(), "download and back them up"))
+                return 0;
+
+            if (_prompts.Confirm($"Contact the file server at {_env.FileServiceBaseUrl} now?")
+                != ConfirmChoice.Yes)
+                return 0;
+
+            var backup = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf)
                 .RunAsync(_envName, rows, ct);
+
+            if (!gate.Ask("2", "Backup",
+                    $"{backup.Saved} saved, {backup.Quarantined} quarantined, {backup.Skipped} skipped.",
+                    new[] { $"manifest → {backup.ManifestPath}" },
+                    "upload the corrected copies — the first step that WRITES"))
+                return 0;
 
             var migrated = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
                 _prompts, _opener, _env.CrmUrl).RunAsync(_envName, ct);
 
-            if (migrated.Migrated > 0)
-                await new DeleteCommand(_files, _write, _backups, _state, _prompts)
-                    .RunAsync(_envName, _env.IsProduction, ct);
+            if (migrated.Migrated == 0) return 0;
+
+            if (!gate.Ask("3 and 4", "Upload, verify and repoint",
+                    $"{migrated.Migrated} migrated, {migrated.Skipped} skipped, {migrated.Failed} failed.",
+                    new[] { $"report → {migrated.ReportPath}" },
+                    "delete the old files — IRREVERSIBLE"))
+                return migrated.Migrated;
+
+            await new DeleteCommand(_files, _write, _backups, _state, _prompts)
+                .RunAsync(_envName, _env.IsProduction, ct);
 
             return migrated.Migrated;
         }).RunAsync(_envName, identifiers, forceReview, _env.IsProduction, ct);
 
-    // ---- the direct commands, unchanged in behaviour ----
+    // ---- the direct commands ----
 
     public async Task<int> RunDirectAsync(CommandLineOptions options, CancellationToken ct)
     {

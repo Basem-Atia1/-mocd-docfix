@@ -22,12 +22,19 @@ public sealed record ScanOutcome(
     IReadOnlyList<string> Details,
     IReadOnlyList<PickableFile> Fixable);
 
+/// <param name="ScanAsync">Classify everything in scope. Reads only.</param>
+/// <param name="ClassifyAsync">
+/// Classify just these identifiers. Reads only — it resolves and reports, and queues nothing.
+/// Kept separate from <paramref name="BackupAsync"/> so a targeted run gets the same stop
+/// between every step that a full run does.
+/// </param>
+/// <param name="BackupAsync">Back up whatever the last scan or check found fixable.</param>
 public sealed record WizardActions(
     Func<Task<ScanOutcome>> ScanAsync,
+    Func<IReadOnlyList<string>, Task<ScanOutcome>> ClassifyAsync,
     Func<Task<StepOutcome>> BackupAsync,
     Func<Task<StepOutcome>> MigrateAsync,
-    Func<Task<StepOutcome>> DeleteAsync,
-    Func<IReadOnlyList<string>, Task<StepOutcome>> TargetedAsync);
+    Func<Task<StepOutcome>> DeleteAsync);
 
 public enum WizardExit { Finished, ChangeEnvironment }
 
@@ -37,10 +44,9 @@ public enum WizardExit { Finished, ChangeEnvironment }
 /// </summary>
 public sealed class Wizard
 {
-    private const int TotalSteps = 5;
-
     private readonly IPrompts _prompts;
     private readonly Asker _asker;
+    private readonly StepGate _gate;
     private readonly string _envName;
     private readonly bool _isProduction;
     private readonly string _crmUrl;
@@ -54,6 +60,7 @@ public sealed class Wizard
     {
         _prompts = prompts;
         _asker = new Asker(prompts);
+        _gate = new StepGate(prompts);
         _envName = envName;
         _isProduction = isProduction;
         _crmUrl = crmUrl;
@@ -122,30 +129,59 @@ public sealed class Wizard
     private async Task ReportOnlyAsync()
     {
         var scan = await ScanAsync();
+        Report("1", "Scan", scan.Headline, scan.Details);
+
         _prompts.Info("");
         _prompts.Info("Nothing was changed. The reports are on disk whenever you want them.");
-        _ = scan;
     }
 
     private async Task FullAsync(CancellationToken ct)
     {
-        var scan = await ScanAsync();
+        await PipelineAsync(await ScanAsync(), "1", "Scan", ct);
+    }
 
-        if (scan.Fixable.Count == 0)
+    private async Task TargetedAsync(CancellationToken ct)
+    {
+        var identifiers = await ChooseFilesAsync();
+        if (identifiers.Count == 0) return;
+
+        _prompts.Info("");
+        _prompts.Info($"{identifiers.Count} file(s) chosen:");
+        foreach (var id in identifiers.Take(20)) _prompts.Info($"    {id}");
+        if (identifiers.Count > 20) _prompts.Info($"    … and {identifiers.Count - 20} more");
+
+        _prompts.Info("");
+        _prompts.Info("Checking them against CRM first. This reads only.");
+
+        await PipelineAsync(await _actions.ClassifyAsync(identifiers), "1", "Check", ct);
+    }
+
+    /// <summary>
+    /// The five steps, with a stop between every one. Targeted and full runs share this exactly,
+    /// so neither can ever execute two phases on one answer (spec 2026-09-13 section 6.4).
+    /// </summary>
+    private async Task PipelineAsync(ScanOutcome scan, string firstStep, string firstName, CancellationToken ct)
+    {
+        var count = scan.Fixable.Count;
+
+        if (count == 0)
         {
             _prompts.Info("");
-            _prompts.Info("Nothing needs fixing. Stopping here.");
+            _prompts.Info("Nothing here needs fixing. Stopping — no file server call, no writes.");
             return;
         }
 
-        if (!Gate("1", "Scan", scan.Headline, scan.Details, "back up all " + scan.Fixable.Count + " files"))
+        if (!Gate(firstStep, firstName, scan.Headline, scan.Details, $"back up {Files(count)}"))
             return;
 
-        if (!ConfirmFileServer($"Backing up downloads all {scan.Fixable.Count} files from the file server."))
+        if (!ConfirmFileServer(
+                $"Backing up downloads {Files(count)} from the file server and saves a full " +
+                "copy, with the CRM records, on this machine. It writes nothing anywhere else."))
             return;
 
         var backup = await _actions.BackupAsync();
-        if (!Gate("2", "Backup", backup.Headline, backup.Details, "upload the corrected copies"))
+        if (!Gate("2", "Backup", backup.Headline, backup.Details,
+                "upload the corrected copies — the first step that WRITES"))
             return;
 
         if (!ConfirmMigrate()) return;
@@ -166,25 +202,7 @@ public sealed class Wizard
         _ = ct;
     }
 
-    private async Task TargetedAsync(CancellationToken ct)
-    {
-        var identifiers = await ChooseFilesAsync();
-        if (identifiers.Count == 0) return;
-
-        _prompts.Info("");
-        _prompts.Info($"{identifiers.Count} file(s) chosen:");
-        foreach (var id in identifiers.Take(20)) _prompts.Info($"    {id}");
-        if (identifiers.Count > 20) _prompts.Info($"    … and {identifiers.Count - 20} more");
-
-        if (!ConfirmFileServer("Each of these is downloaded, re-uploaded under the correct " +
-                               "catalogue, and shown to you before CRM is touched."))
-            return;
-
-        var outcome = await _actions.TargetedAsync(identifiers);
-        Report("", "Targeted run", outcome.Headline, outcome.Details);
-
-        _ = ct;
-    }
+    private static string Files(int count) => count == 1 ? "1 file" : $"all {count} files";
 
     // ---- choosing files ----
 
@@ -306,59 +324,25 @@ public sealed class Wizard
 
     // ---- running and gating ----
 
+    /// <summary>
+    /// Runs the scan but does not report it — whoever asked for it decides how to present it, so
+    /// the step-1 heading is printed exactly once.
+    /// </summary>
     private async Task<ScanOutcome> ScanAsync()
     {
         _prompts.Info("");
         _prompts.Info("Reading CRM. This writes nothing.");
 
-        var scan = await _actions.ScanAsync();
-        _lastScan = scan;
-
-        Report("1", "Scan", scan.Headline, scan.Details);
-        return scan;
+        _lastScan = await _actions.ScanAsync();
+        return _lastScan;
     }
 
-    private void Report(string step, string name, string headline, IReadOnlyList<string> details)
-    {
-        _prompts.Info("");
-        _prompts.Info(step.Length > 0
-            ? $"  Step {step} of {TotalSteps} — {name} — done"
-            : $"  {name} — done");
-        _prompts.Info($"    {headline}");
-        foreach (var line in details) _prompts.Info($"    {line}");
-    }
+    private void Report(string step, string name, string headline, IReadOnlyList<string> details) =>
+        _gate.Report(step, name, headline, details);
 
     /// <returns>True to carry on to the next step.</returns>
-    private bool Gate(string step, string name, string headline, IReadOnlyList<string> details, string next)
-    {
-        Report(step, name, headline, details);
-
-        while (true)
-        {
-            var answer = _asker.Ask($"Step {step} finished. What next?", new[]
-            {
-                new Choice("Continue", $"go on and {next}"),
-                new Choice("Show details", "print what happened to each file, then ask again"),
-                new Choice("Stop here", "nothing else runs; what is done stays done")
-            }, defaultIndex: 0, allowBack: false);
-
-            switch (answer.Kind == AnswerKind.Chosen ? answer.Index : 2)
-            {
-                case 0: return true;
-
-                case 1:
-                    _prompts.Info("");
-                    foreach (var line in details) _prompts.Info($"    {line}");
-                    continue;
-
-                default:
-                    _prompts.Info("");
-                    _prompts.Info("Stopped. Nothing further was run.");
-                    _prompts.Info("The old files are untouched, so this is always safe to stop at.");
-                    return false;
-            }
-        }
-    }
+    private bool Gate(string step, string name, string headline, IReadOnlyList<string> details, string next) =>
+        _gate.Ask(step, name, headline, details, next);
 
     // ---- the confirmations that were already there, kept on top of the gates ----
 

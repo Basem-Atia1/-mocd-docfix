@@ -23,10 +23,15 @@ public class WizardTests
         new(prompts, "dev", isProduction: false, "https://crm/MoCD", "http://files:83",
             new WizardActions(
                 ScanAsync: () => { _ran.Add("scan"); return Task.FromResult(_scan); },
+                ClassifyAsync: ids =>
+                {
+                    _ran.Add("check");
+                    _targeted = ids;
+                    return Task.FromResult(_scan with { Fixable = _scan.Fixable.Take(ids.Count).ToList() });
+                },
                 BackupAsync: () => { _ran.Add("backup"); return Task.FromResult(StepOutcome.Of("23 saved", "0 quarantined")); },
                 MigrateAsync: () => { _ran.Add("migrate"); return Task.FromResult(StepOutcome.Of("23 migrated")); },
-                DeleteAsync: () => { _ran.Add("delete"); return Task.FromResult(StepOutcome.Of("23 deleted")); },
-                TargetedAsync: ids => { _ran.Add("targeted"); _targeted = ids; return Task.FromResult(StepOutcome.Of("1 fixed")); }));
+                DeleteAsync: () => { _ran.Add("delete"); return Task.FromResult(StepOutcome.Of("23 deleted")); }));
 
     private async Task<ScriptedPrompts> Run(params string[] input)
     {
@@ -52,9 +57,12 @@ public class WizardTests
     {
         var prompts = new ScriptedPrompts("5");
         await new Wizard(prompts, "prod", true, "https://crm", "http://files",
-            new WizardActions(() => Task.FromResult(_scan),
-                () => Task.FromResult(StepOutcome.Of("")), () => Task.FromResult(StepOutcome.Of("")),
-                () => Task.FromResult(StepOutcome.Of("")), _ => Task.FromResult(StepOutcome.Of(""))))
+            new WizardActions(
+                () => Task.FromResult(_scan),
+                _ => Task.FromResult(_scan),
+                () => Task.FromResult(StepOutcome.Of("")),
+                () => Task.FromResult(StepOutcome.Of("")),
+                () => Task.FromResult(StepOutcome.Of(""))))
             .RunAsync(CancellationToken.None);
 
         Assert.True(prompts.Said("*** PRODUCTION ***"));
@@ -198,15 +206,77 @@ public class WizardTests
         var prompts = await Run("2", "5");
 
         Assert.Equal(new[] { "scan" }, _ran);
-        Assert.True(prompts.Said("Nothing needs fixing"));
+        Assert.True(prompts.Said("Nothing here needs fixing"));
     }
 
-    // ---- targeted mode ----
+    // ---- targeted mode: the same gates, not a bulk run ----
+    //
+    // Answering the file-server question used to set off backup, upload and delete in one go.
+    // Every one of these scripts stops somewhere, and asserts what did NOT run.
+
+    [Fact]
+    public async Task Targeted_checks_before_it_touches_the_file_server()
+    {
+        // targeted -> type -> check -> STOP at the first gate
+        await Run("1", "2", "a.jpg", "3", "5");
+
+        Assert.Equal(new[] { "check" }, _ran);
+    }
+
+    [Fact]
+    public async Task Targeted_stops_after_backup_and_asks_before_uploading()
+    {
+        // … -> gate 1 continue -> contact file server -> backup -> STOP before upload
+        await Run("1", "2", "a.jpg", "1", "y", "3", "5");
+
+        Assert.Equal(new[] { "check", "backup" }, _ran);
+    }
+
+    [Fact]
+    public async Task Targeted_asks_again_before_uploading_even_after_the_gate()
+    {
+        // gate 1 -> file server y -> backup -> gate 2 continue -> refuse the upload warning
+        await Run("1", "2", "a.jpg", "1", "y", "1", "n", "5");
+
+        Assert.Equal(new[] { "check", "backup" }, _ran);
+    }
+
+    [Fact]
+    public async Task Targeted_stops_after_uploading_and_asks_before_deleting()
+    {
+        await Run("1", "2", "a.jpg", "1", "y", "1", "y", "3", "5");
+
+        Assert.Equal(new[] { "check", "backup", "migrate" }, _ran);
+    }
+
+    [Fact]
+    public async Task Targeted_runs_all_five_steps_only_when_every_gate_is_passed()
+    {
+        await Run("1", "2", "a.jpg", "1", "y", "1", "y", "1", "y", "5");
+
+        Assert.Equal(new[] { "check", "backup", "migrate", "delete" }, _ran);
+    }
+
+    [Fact]
+    public async Task Targeted_and_full_stop_at_exactly_the_same_places()
+    {
+        var targeted = await Run("1", "2", "a.jpg", "1", "y", "1", "y", "1", "y", "5");
+        var targetedSteps = targeted.Messages.Where(m => m.Contains("Step ", StringComparison.Ordinal)).ToList();
+
+        _ran.Clear();
+        var full = await Run("2", "1", "y", "1", "y", "1", "y", "5");
+        var fullSteps = full.Messages.Where(m => m.Contains("Step ", StringComparison.Ordinal)).ToList();
+
+        // Same number of gates, same numbering — only the name of step 1 differs.
+        Assert.Equal(fullSteps.Count, targetedSteps.Count);
+        Assert.True(targeted.Said("Step 1 of 5 — Check"));
+        Assert.True(full.Said("Step 1 of 5 — Scan"));
+    }
 
     [Fact]
     public async Task Typed_identifiers_are_split_on_commas_and_trimmed()
     {
-        await Run("1", "2", " a.jpg , b.jpg ", "y", "5");
+        await Run("1", "2", " a.jpg , b.jpg ", "3", "5");
 
         Assert.Equal(new[] { "a.jpg", "b.jpg" }, _targeted);
     }
@@ -214,10 +284,10 @@ public class WizardTests
     [Fact]
     public async Task Picking_from_the_last_scan_needs_no_guids_typed()
     {
-        // targeted -> from the scan -> group 3 -> rows 1 and 2 -> contact the file server
-        await Run("1", "1", "1", "1,2", "y", "5");
+        // targeted -> from the scan -> group 3 -> rows 1 and 2 -> stop at the first gate
+        await Run("1", "1", "1", "1,2", "3", "5");
 
-        Assert.Equal(new[] { "scan", "targeted" }, _ran);
+        Assert.Equal(new[] { "scan", "check" }, _ran);
         Assert.Equal(2, _targeted!.Count);
         Assert.Equal(_scan.Fixable.Take(2).Select(f => f.Identifier), _targeted);
     }
@@ -225,7 +295,7 @@ public class WizardTests
     [Fact]
     public async Task The_group_list_shows_each_group_with_its_count_and_its_label()
     {
-        var prompts = await Run("1", "1", "1", "1", "y", "5");
+        var prompts = await Run("1", "1", "1", "1", "3", "5");
 
         Assert.True(prompts.Said("Group 3"));
         Assert.True(prompts.Said("Group 5"));
@@ -237,7 +307,7 @@ public class WizardTests
     [Fact]
     public async Task All_selects_every_file_in_the_group()
     {
-        await Run("1", "1", "1", "all", "y", "5");
+        await Run("1", "1", "1", "all", "3", "5");
 
         Assert.Equal(2, _targeted!.Count);
     }
@@ -245,7 +315,7 @@ public class WizardTests
     [Fact]
     public async Task A_range_works_too()
     {
-        await Run("1", "1", "1", "1-2", "y", "5");
+        await Run("1", "1", "1", "1-2", "3", "5");
 
         Assert.Equal(2, _targeted!.Count);
     }
@@ -253,7 +323,7 @@ public class WizardTests
     [Fact]
     public async Task A_bad_selection_is_explained_and_asked_again()
     {
-        var prompts = await Run("1", "1", "1", "9", "1", "y", "5");
+        var prompts = await Run("1", "1", "1", "9", "1", "3", "5");
 
         Assert.True(prompts.Said("1 to 2"));
         Assert.Single(_targeted!);
@@ -262,19 +332,19 @@ public class WizardTests
     [Fact]
     public async Task Backing_out_of_the_file_list_returns_to_the_group_question()
     {
-        // group 3 -> b -> group 5 -> row 1
-        await Run("1", "1", "1", "b", "2", "1", "y", "5");
+        // group 3 -> b -> group 5 -> row 1 -> stop
+        await Run("1", "1", "1", "b", "2", "1", "3", "5");
 
         Assert.Single(_targeted!);
         Assert.Equal(_scan.Fixable[2].Identifier, _targeted![0]);
     }
 
     [Fact]
-    public async Task Refusing_the_file_server_runs_nothing()
+    public async Task Refusing_the_file_server_downloads_nothing()
     {
-        await Run("1", "2", "a.jpg", "n", "5");
+        await Run("1", "2", "a.jpg", "1", "n", "5");
 
-        Assert.Empty(_ran);
+        Assert.Equal(new[] { "check" }, _ran);
     }
 
     [Fact]
@@ -288,15 +358,15 @@ public class WizardTests
     [Fact]
     public async Task Targeted_reuses_the_scan_it_already_ran_rather_than_scanning_twice()
     {
-        await Run("3", "1", "1", "1", "1", "y", "5");
+        await Run("3", "1", "1", "1", "1", "3", "5");
 
-        Assert.Equal(new[] { "scan", "targeted" }, _ran);
+        Assert.Equal(new[] { "scan", "check" }, _ran);
     }
 
     [Fact]
     public async Task The_chosen_files_are_listed_back_before_anything_is_contacted()
     {
-        var prompts = await Run("1", "2", "cert.jpg", "n", "5");
+        var prompts = await Run("1", "2", "cert.jpg", "3", "5");
 
         Assert.True(prompts.Said("1 file(s) chosen"));
         Assert.True(prompts.Said("cert.jpg"));
