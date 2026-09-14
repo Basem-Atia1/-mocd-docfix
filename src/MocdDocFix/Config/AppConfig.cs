@@ -58,6 +58,12 @@ public sealed class AdoConfig
     public string LocalCopy { get; set; } =
         @"D:\Claude code for mocd\mocd-knowledge-base\kb\user-stories";
 
+    /// <summary>
+    /// Where workbooks fetched from the backlog are saved, and where a file downloaded by hand
+    /// can be dropped for the search to read.
+    /// </summary>
+    public string DropFolder { get; set; } = @"D:\mocd-docfix-data\backlog-files";
+
     /// <summary>False turns the cross-check off without forgetting the settings.</summary>
     public bool Enabled { get; set; } = true;
 }

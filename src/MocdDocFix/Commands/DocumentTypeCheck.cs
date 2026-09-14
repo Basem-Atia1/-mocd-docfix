@@ -43,19 +43,27 @@ public sealed class DocumentTypeCheck
     /// <summary>Where a local copy of the backlog lives, if there is one.</summary>
     private readonly string? _localBacklog;
 
+    /// <summary>Where downloaded and hand-placed backlog files are kept and read from.</summary>
+    private readonly string? _dropFolder;
+
     /// <param name="ado">Null when DevOps is not configured; every type then reads "not checked".</param>
     /// <param name="localBacklog">
     /// A folder holding a local copy of the backlog — the synced user stories and the files
     /// attached to them. Searched only when the live look-up cannot settle a name, because it is
     /// the one place the document lists are actually written down.
     /// </param>
+    /// <param name="dropFolder">
+    /// Where workbooks fetched from the backlog are saved, and where the operator can put one
+    /// they downloaded themselves. Searched along with the local copy.
+    /// </param>
     public DocumentTypeCheck(IAdoClient? ado, DocumentTypeDecisions decisions, IPrompts prompts,
-        string? localBacklog = null)
+        string? localBacklog = null, string? dropFolder = null)
     {
         _ado = ado;
         _decisions = decisions;
         _prompts = prompts;
         _localBacklog = localBacklog;
+        _dropFolder = dropFolder;
     }
 
     /// <summary>Document types asked about in this run, in the order they were first seen.</summary>
@@ -212,6 +220,12 @@ public sealed class DocumentTypeCheck
                 "think the backlog uses — part of the name, a screen, a work item — and it is " +
                 "searched live and shown to you, then this question comes back."),
 
+            new Choice("Find the spreadsheet", "get the story and its attached workbook",
+                "The document lists live in the spreadsheets attached to the stories, and no " +
+                "work item title carries them. This finds those stories, gives you their links, " +
+                "and fetches the workbooks where it can. Anything it cannot fetch you can " +
+                "download and drop in the folder it names, and it reads them from there."),
+
             new Choice("Wait — I will go and look", "pause while I check, then search again",
                 "Nothing happens until you come back. Go and read the story, the spreadsheet or " +
                 "the backlog; when you press Enter everything is searched again from scratch, so " +
@@ -255,9 +269,15 @@ public sealed class DocumentTypeCheck
                 return SearchAgain(name, crmService, MyOwnWords(), opinion);
 
             case 4:
+                FetchTheSpreadsheets(name, crmService);
+                return Ask(name, crmService, opinion);
+
+            case 5:
                 _prompts.Blank();
                 _prompts.Say("Take your time. Nothing is running and nothing has been changed.",
                     Tone.Muted);
+                _prompts.Say($"Anything you download can go in {DropFolder()} — it is read from " +
+                             "there.", Tone.Muted);
                 _prompts.ReadLine("  Press Enter when you are ready");
 
                 return SearchAgain(name, crmService, null, opinion);
@@ -266,6 +286,97 @@ public sealed class DocumentTypeCheck
                 return Skipped(name, opinion);
         }
     }
+
+    /// <summary>
+    /// Finds the stories whose attachments should hold this document's list, fetches the
+    /// workbooks where it can, and hands over the links where it cannot.
+    ///
+    /// Downloading it here rather than asking for it is the better half of the bargain — the
+    /// tool is already signed in — but an attachment can be refused, or live behind a permission
+    /// the sign-in does not carry. So the link and the folder are always printed: the operator
+    /// can finish the job by hand, and the search reads whatever ends up in that folder.
+    /// </summary>
+    private void FetchTheSpreadsheets(string name, string? crmService)
+    {
+        if (_ado is null) return;
+
+        var folder = DropFolder();
+        Directory.CreateDirectory(folder);
+
+        // The document's own name rarely appears in a title; the service's name finds its
+        // stories, and the workbooks hang off those.
+        var phrases = new[] { name, crmService }
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => p!)
+            .ToList();
+
+        var found = new List<AdoAttachment>();
+
+        foreach (var phrase in phrases)
+        {
+            try
+            {
+                found.AddRange(_ado.FindSpreadsheetsAsync(phrase, CancellationToken.None)
+                    .GetAwaiter().GetResult());
+            }
+            catch (Exception ex)
+            {
+                _prompts.Blank();
+                _prompts.Warn($"Could not ask DevOps for attachments — {ex.GetType().Name}: {Innermost(ex)}");
+                return;
+            }
+
+            if (found.Count > 0) break;
+        }
+
+        _prompts.Section("Spreadsheets attached to the backlog");
+
+        if (found.Count == 0)
+        {
+            _prompts.Say("No work item found by these searches has a spreadsheet attached.");
+            _prompts.Blank();
+            _prompts.Say($"If you know of one, put it in {folder} and it will be read from there.",
+                Tone.Muted);
+            return;
+        }
+
+        foreach (var attachment in found.DistinctBy(a => a.Name).Take(10))
+        {
+            _prompts.Blank();
+            _prompts.Info($"    {Trim(attachment.WorkItemTitle, 66)}", Tone.Strong);
+            _prompts.Info($"      {_ado.LinkTo(attachment.WorkItemId)}", Tone.Muted);
+            _prompts.Info($"      {attachment.Name}", Tone.Muted);
+
+            var to = Path.Combine(folder, attachment.Name);
+
+            if (File.Exists(to))
+            {
+                _prompts.Info("      already here", Tone.Good);
+                continue;
+            }
+
+            try
+            {
+                var got = _ado.DownloadAttachmentAsync(attachment, to, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+
+                _prompts.Info(got ? $"      downloaded to {to}" : "      could not be downloaded",
+                    got ? Tone.Good : Tone.Warn);
+            }
+            catch (Exception ex)
+            {
+                _prompts.Info($"      could not be downloaded — {Innermost(ex)}", Tone.Warn);
+            }
+        }
+
+        _prompts.Blank();
+        _prompts.Say($"Whatever is not downloaded, open the link above, save the file into " +
+                     $"{folder}, and choose \"Wait — I will go and look\". Everything in that " +
+                     "folder is searched.", Tone.Muted);
+    }
+
+    /// <summary>Where downloaded and hand-placed backlog files are read from.</summary>
+    private string DropFolder() => _dropFolder ?? Path.Combine(Path.GetTempPath(), "docfix-backlog-files");
 
     private string? MyOwnWords()
     {
@@ -326,7 +437,12 @@ public sealed class DocumentTypeCheck
     /// </summary>
     private void ShowLocalHits(string name)
     {
-        var hits = LocalBacklogSearch.Find(_localBacklog, name);
+        // Both places: the synced copy of the backlog, and whatever has been downloaded or
+        // dropped in by hand since.
+        var hits = LocalBacklogSearch.Find(_localBacklog, name)
+            .Concat(LocalBacklogSearch.Find(_dropFolder, name))
+            .DistinctBy(h => h.File)
+            .ToList();
 
         if (hits.Count == 0) return;
 

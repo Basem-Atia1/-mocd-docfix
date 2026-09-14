@@ -1,3 +1,4 @@
+using MocdDocFix.Clients;
 using MocdDocFix.Commands;
 using MocdDocFix.Domain;
 using MocdDocFix.Storage;
@@ -133,7 +134,7 @@ public class DocumentTypeCheckTests : IDisposable
     [Fact]
     public async Task Skipping_remembers_nothing_and_leaves_the_verdict_open()
     {
-        _prompts.ReadLineQueue = new Queue<string>(new[] { "6" });   // skip is the last option
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "7" });   // skip is the last option
 
         var ruling = await Check().RuleOnAsync("Odd Type", Emap, CancellationToken.None);
 
@@ -304,7 +305,7 @@ public class DocumentTypeCheckTests : IDisposable
     [Fact]
     public async Task A_phrase_that_settles_nothing_brings_the_same_question_back()
     {
-        _prompts.ReadLineQueue = new Queue<string>(new[] { "4", "nothing matches this", "6" });
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "4", "nothing matches this", "7" });
 
         var ruling = await Check().RuleOnAsync("Odd Type", Emap, CancellationToken.None);
 
@@ -321,7 +322,7 @@ public class DocumentTypeCheckTests : IDisposable
     public async Task Waiting_pauses_and_then_searches_again_from_scratch()
     {
         _ado.Titles["Odd Type"] = new();
-        _prompts.ReadLineQueue = new Queue<string>(new[] { "5", "" });
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "6", "" });   // wait, then Enter
 
         // While the operator is away, the backlog gains the work items that answer it — which is
         // the point of waiting, so the second look has to be a real second look.
@@ -351,12 +352,88 @@ public class DocumentTypeCheckTests : IDisposable
             "---\ntitle: 1.1.6 NPOP- Employee Appointment Request Form- Documents\n---\n" +
             "A Copy of Certificate of Good Conduct and Behavior\n");
 
-        _prompts.ReadLineQueue = new Queue<string>(new[] { "6" });
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "7" });
 
         await new DocumentTypeCheck(_ado, Decisions(), _prompts, folder)
             .RuleOnAsync("A Copy of Certificate of Good Conduct and Behavior", Emap, CancellationToken.None);
 
         var said = string.Join("\n", _prompts.Messages);
+        Assert.Contains("local backlog copy", said);
+        Assert.Contains("Employee Appointment Request", said);
+    }
+
+    // ---- fetching the spreadsheet the answer is written in ----
+
+    /// <summary>
+    /// The tool is already signed in, so it fetches the workbook rather than asking for it. The
+    /// link is printed either way, because an attachment can be refused by a permission the
+    /// sign-in does not carry — and then the operator finishing the job by hand is the plan.
+    /// </summary>
+    [Fact]
+    public async Task The_spreadsheet_is_found_downloaded_and_the_story_link_given()
+    {
+        var drop = Path.Combine(_root, "backlog-files");
+
+        _ado.Attachments["Employee Appointment Request"] = new()
+        {
+            new AdoAttachment(27632, "1.1.6 NPOP- Employee Appointment Request Form- Documents",
+                "EMAP_Data_Dictionary.xlsx", "https://devops/_apis/wit/attachments/abc")
+        };
+
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "5", "7" });   // find it, then skip
+
+        await new DocumentTypeCheck(_ado, Decisions(), _prompts, null, drop)
+            .RuleOnAsync("Zed Marker Sheet", Emap, CancellationToken.None);
+
+        var said = string.Join("\n", _prompts.Messages);
+
+        Assert.Contains("EMAP_Data_Dictionary.xlsx", said);
+        Assert.Contains("_workitems/edit/27632", said);            // the link to open
+        Assert.Contains(drop, said);                                // and where it landed
+        Assert.True(File.Exists(Path.Combine(drop, "EMAP_Data_Dictionary.xlsx")));
+    }
+
+    [Fact]
+    public async Task Where_it_cannot_be_downloaded_the_link_and_the_folder_are_still_given()
+    {
+        var drop = Path.Combine(_root, "backlog-files");
+
+        _ado.Attachments["Employee Appointment Request"] = new()
+        {
+            new AdoAttachment(29339, "5.1.1 NPOP- Holding GAM Request- Documents",
+                "GAM_Data_Dictionary.xlsx", "https://devops/_apis/wit/attachments/xyz")
+        };
+        _ado.DownloadFails = true;
+
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "5", "7" });
+
+        await new DocumentTypeCheck(_ado, Decisions(), _prompts, null, drop)
+            .RuleOnAsync("Zed Marker Sheet", Emap, CancellationToken.None);
+
+        var said = string.Join("\n", _prompts.Messages);
+
+        Assert.Contains("could not be downloaded", said);
+        Assert.Contains("_workitems/edit/29339", said);
+        Assert.Contains(drop, said);
+        Assert.Contains("Wait — I will go and look", said);          // what to do next
+    }
+
+    [Fact]
+    public async Task A_file_dropped_in_by_hand_is_read_like_any_other()
+    {
+        var drop = Path.Combine(_root, "backlog-files");
+        Directory.CreateDirectory(drop);
+        File.WriteAllText(Path.Combine(drop, "documents.md"),
+            "---\ntitle: 1.1.6 NPOP- Employee Appointment Request Form- Documents\n---\n" +
+            "Zed Marker Sheet is required at filing\n");
+
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "7" });
+
+        await new DocumentTypeCheck(_ado, Decisions(), _prompts, null, drop)
+            .RuleOnAsync("Zed Marker Sheet", Emap, CancellationToken.None);
+
+        var said = string.Join("\n", _prompts.Messages);
+
         Assert.Contains("local backlog copy", said);
         Assert.Contains("Employee Appointment Request", said);
     }

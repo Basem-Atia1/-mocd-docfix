@@ -17,6 +17,29 @@ public sealed class FakeAdoClient : IAdoClient
     /// so a test can change what the backlog holds between one look and the next.</summary>
     public Action<string, int>? OnSearched { get; set; }
 
+    /// <summary>Search phrase → the spreadsheets attached to the work items it finds.</summary>
+    public Dictionary<string, List<AdoAttachment>> Attachments { get; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True to behave like an attachment the sign-in is not allowed to fetch.</summary>
+    public bool DownloadFails { get; set; }
+
+    public Task<IReadOnlyList<AdoAttachment>> FindSpreadsheetsAsync(string phrase, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<AdoAttachment>>(
+            Attachments.TryGetValue(phrase, out var found) ? found : new List<AdoAttachment>());
+
+    public Task<bool> DownloadAttachmentAsync(AdoAttachment attachment, string toPath, CancellationToken ct)
+    {
+        if (DownloadFails) return Task.FromResult(false);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(toPath)!);
+        File.WriteAllText(toPath, "pretend workbook");
+        return Task.FromResult(true);
+    }
+
+    public string LinkTo(int workItemId) =>
+        $"https://devops.mocd.gov.ae/MOCD/NPO%20-%20Phase%202/_workitems/edit/{workItemId}";
+
     public Task<IReadOnlyList<AdoHit>> FindByTitleAsync(string phrase, CancellationToken ct)
     {
         Searched.Add(phrase);

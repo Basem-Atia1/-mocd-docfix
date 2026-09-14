@@ -5,6 +5,9 @@ using MocdDocFix.Domain;
 
 namespace MocdDocFix.Clients;
 
+/// <param name="Url">Where the file itself can be fetched from.</param>
+public sealed record AdoAttachment(int WorkItemId, string WorkItemTitle, string Name, string Url);
+
 public interface IAdoClient
 {
     /// <summary>
@@ -12,6 +15,20 @@ public interface IAdoClient
     /// TF401349 to a CONTAINS WORDS search over descriptions, so full text is not available.
     /// </summary>
     Task<IReadOnlyList<AdoHit>> FindByTitleAsync(string phrase, CancellationToken ct);
+
+    /// <summary>
+    /// The spreadsheets attached to the work items a phrase finds — the data dictionaries and
+    /// document lists, which is where the answer lives when no title carries it.
+    /// </summary>
+    Task<IReadOnlyList<AdoAttachment>> FindSpreadsheetsAsync(string phrase, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<AdoAttachment>>(Array.Empty<AdoAttachment>());
+
+    /// <summary>Saves one attachment. False when it could not be fetched, with the reason said.</summary>
+    Task<bool> DownloadAttachmentAsync(AdoAttachment attachment, string toPath, CancellationToken ct)
+        => Task.FromResult(false);
+
+    /// <summary>The address a person can open in a browser.</summary>
+    string LinkTo(int workItemId) => workItemId.ToString();
 }
 
 /// <summary>
@@ -87,6 +104,76 @@ public sealed class AdoClient : IAdoClient, IDisposable
                 .ToList()
             : hits;
     }
+
+    public async Task<IReadOnlyList<AdoAttachment>> FindSpreadsheetsAsync(
+        string phrase, CancellationToken ct)
+    {
+        var ids = await SearchAsync(phrase, ct);
+        var found = new List<AdoAttachment>();
+
+        // Relations have to be asked for one work item at a time, so only the first few are
+        // looked at. Any more and this becomes a minute of waiting for a list nobody reads.
+        foreach (var id in ids.Take(MostWeWillOpen))
+        {
+            using var response = await _http.GetAsync(
+                $"{Uri.EscapeDataString(_project)}/_apis/wit/workitems/{id}" +
+                "?$expand=relations&api-version=6.0", ct);
+
+            if (!response.IsSuccessStatusCode) continue;
+
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            var root = json.RootElement;
+
+            var title = root.TryGetProperty("fields", out var fields) &&
+                        fields.TryGetProperty("System.Title", out var t)
+                ? t.GetString() ?? string.Empty
+                : string.Empty;
+
+            if (!root.TryGetProperty("relations", out var relations)) continue;
+
+            foreach (var relation in relations.EnumerateArray())
+            {
+                if (!relation.TryGetProperty("rel", out var rel) ||
+                    rel.GetString() != "AttachedFile") continue;
+
+                var url = relation.TryGetProperty("url", out var u) ? u.GetString() : null;
+                var name = relation.TryGetProperty("attributes", out var attributes) &&
+                           attributes.TryGetProperty("name", out var n)
+                    ? n.GetString()
+                    : null;
+
+                if (url is null || name is null || !IsSpreadsheet(name)) continue;
+
+                found.Add(new AdoAttachment(id, title, name, url));
+            }
+        }
+
+        return found;
+    }
+
+    public async Task<bool> DownloadAttachmentAsync(
+        AdoAttachment attachment, string toPath, CancellationToken ct)
+    {
+        using var response = await _http.GetAsync(attachment.Url, ct);
+        if (!response.IsSuccessStatusCode) return false;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(toPath)!);
+
+        await using var file = File.Create(toPath);
+        await response.Content.CopyToAsync(file, ct);
+        return true;
+    }
+
+    public string LinkTo(int workItemId) =>
+        $"{_http.BaseAddress}{Uri.EscapeDataString(_project)}/_workitems/edit/{workItemId}";
+
+    /// <summary>Work items opened for their attachments before giving up on a phrase.</summary>
+    private const int MostWeWillOpen = 12;
+
+    private static bool IsSpreadsheet(string name) =>
+        name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ||
+        name.EndsWith(".xls", StringComparison.OrdinalIgnoreCase) ||
+        name.EndsWith(".csv", StringComparison.OrdinalIgnoreCase);
 
     private async Task<IReadOnlyList<int>> SearchAsync(string phrase, CancellationToken ct)
     {
