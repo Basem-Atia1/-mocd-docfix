@@ -135,6 +135,20 @@ public sealed class MigrateCommand
             {
                 Fail(entry, $"Upload failed: {upload.Message}");
                 failed++;
+
+                var afterUpload = ReportTrouble(entry,
+                    "The file server would not accept the upload.",
+                    "a new copy filed under the correct catalogue",
+                    upload.Message ?? "no reason given",
+                    "nothing was uploaded, so nothing downstream could happen",
+                    new[]
+                    {
+                        "no documentfile record was created",
+                        "the document was NOT repointed",
+                        "the old file and its CRM record were NOT deleted — both are untouched"
+                    });
+
+                if (afterUpload == AfterTrouble.StopTheRun) break;
                 continue;
             }
 
@@ -167,20 +181,31 @@ public sealed class MigrateCommand
 
             var report = new VerificationReport(checks);
 
-            if (report.MustHalt)
-            {
-                haltReason = string.Join(" | ", report.Failures.Select(f => $"{f.Name}: {f.Detail}"));
-                Fail(entry, haltReason);
-                failed++;
-                break;
-            }
-
             if (!report.AllPassed)
             {
                 var detail = string.Join(" | ", report.Failures.Select(f => $"{f.Name}: {f.Detail}"));
-                _prompts.Info($"  FAILED verification — {detail}");
                 Fail(entry, detail);
                 failed++;
+
+                var choice = ReportTrouble(entry,
+                    "The new copy did not pass verification.",
+                    "the uploaded copy to be identical to the backup, under the right catalogue",
+                    detail,
+                    "the new copy cannot be trusted, so CRM was left pointing at the old file",
+                    new[]
+                    {
+                        "no documentfile record was created",
+                        "the document was NOT repointed — it still uses the old file",
+                        "the old file and its CRM record were NOT deleted",
+                        $"the uploaded copy is on the server at {newFile.FilePath} and can be ignored"
+                    });
+
+                if (report.MustHalt || choice == AfterTrouble.StopTheRun)
+                {
+                    haltReason = detail;
+                    break;
+                }
+
                 continue;
             }
 
@@ -262,6 +287,19 @@ public sealed class MigrateCommand
                 haltReason = $"{tookIt.Name}: {tookIt.Detail}";
                 Fail(entry, haltReason);
                 failed++;
+
+                ReportTrouble(entry,
+                    "CRM did not accept the repoint.",
+                    $"the document to point at {newRecordId}",
+                    $"it points at {linked?.ToString() ?? "nothing"}",
+                    "the document still uses its old file, so nothing has moved",
+                    new[]
+                    {
+                        $"the new record {newRecordId} EXISTS but nothing points at it",
+                        "the old file and its CRM record were NOT deleted",
+                        "no further document will be attempted — this looks like a CRM problem"
+                    });
+
                 break;
             }
 
@@ -278,6 +316,20 @@ public sealed class MigrateCommand
                 haltReason = $"{pathStuck.Name}: {pathStuck.Detail}";
                 Fail(entry, haltReason);
                 failed++;
+
+                ReportTrouble(entry,
+                    "The new record does not hold the new path.",
+                    $"mocd_filepath on record {newRecordId} to be {newFile.FilePath}",
+                    $"it is '{recordPath ?? "null"}'",
+                    "the document points at a record that names the wrong file, so the View " +
+                    "button would not open it",
+                    new[]
+                    {
+                        "the old file and its CRM record were NOT deleted — deliberately, " +
+                        "because the document would then have nothing that opens",
+                        "no further document will be attempted until this is understood"
+                    });
+
                 break;
             }
 
@@ -344,6 +396,51 @@ public sealed class MigrateCommand
     private void Fail(ManifestEntry entry, string detail) =>
         _state.Append(new StateRecord(entry.DocumentId, MigrationState.Failed,
             DateTimeOffset.UtcNow, null, null, detail));
+
+    /// <summary>What the operator chose after something went wrong.</summary>
+    private enum AfterTrouble { StopTheRun, SkipThisOne }
+
+    /// <summary>
+    /// Says plainly that something failed, what was expected, what happened instead, and — the
+    /// part that is easy to leave out — which of the remaining steps did NOT run because of it.
+    /// Then asks what to do, rather than deciding silently.
+    ///
+    /// Written after a real run halted on a failed check and reported it as one line inside a
+    /// step summary. The operator could see the delete had not happened but not why.
+    /// </summary>
+    private AfterTrouble ReportTrouble(ManifestEntry entry, string what, string expected,
+        string actual, string meaning, IEnumerable<string> notDone)
+    {
+        _prompts.Info("");
+        _prompts.Info("  ──────────────────────────────────────────────────────────────────");
+        _prompts.Info($"  SOMETHING WENT WRONG — {entry.FileName}");
+        _prompts.Info($"    {what}");
+        _prompts.Info("");
+        _prompts.Info($"    Expected      {expected}");
+        _prompts.Info($"    Actually      {actual}");
+        _prompts.Info($"    Which means   {meaning}");
+        _prompts.Info("");
+        _prompts.Info("    NOT done because of this:");
+        foreach (var line in notDone) _prompts.Info($"      - {line}");
+        _prompts.Info("");
+        _prompts.Info($"    document  {entry.DocumentId}");
+        _prompts.Info($"    open it   {Reporter.CrmLink(_crmUrl, entry.DocumentId)}");
+        _prompts.Info("  ──────────────────────────────────────────────────────────────────");
+
+        var answer = new Asker(_prompts).Ask("What should happen now?", new[]
+        {
+            new Choice("Stop the run", "look at this before doing anything else",
+                "Nothing further runs. Everything already done stays done, and the state file " +
+                "records where each document got to, so the run can be picked up later."),
+            new Choice("Skip it, carry on", "leave this one and continue with the others",
+                "This document is left exactly as it is — including anything the failed step " +
+                "left behind — and the next document is attempted.")
+        }, defaultIndex: 0, allowBack: false);
+
+        return answer.Kind == AnswerKind.Chosen && answer.Index == 1
+            ? AfterTrouble.SkipThisOne
+            : AfterTrouble.StopTheRun;
+    }
 
     /// <summary>
     /// The id of the record this document already points at, when that record is filed under the

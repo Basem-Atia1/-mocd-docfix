@@ -212,6 +212,69 @@ public class MigrateCommandTests : IDisposable
         Assert.Contains($"id={DocumentId}", row.OldCrmLink);
     }
 
+    // ---- a failure is stated plainly, with what it cost ----
+
+    [Fact]
+    public async Task A_failed_verification_says_what_was_expected_and_what_was_skipped()
+    {
+        _files.UploadResponder = _ =>
+        {
+            var path = NewPath(NewFileId);
+            _files.Files[path] = (Convert.ToBase64String(Encoding.UTF8.GetBytes("DIFFERENT")), "VHASH");
+            return new ApiResponse<FileData>(true, null,
+                new FileData(NewFileId, path, "VHASH", "cert.jpg", "image/jpeg", null), null);
+        };
+
+        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes);
+
+        await Command(prompts).RunAsync("dev", CancellationToken.None);
+
+        var said = string.Join("|", prompts.Messages);
+        Assert.Contains("SOMETHING WENT WRONG", said);
+        Assert.Contains("Expected", said);
+        Assert.Contains("Actually", said);
+        Assert.Contains("NOT done because of this", said);
+        Assert.Contains("the old file and its CRM record were NOT deleted", said);
+        Assert.Contains("the document was NOT repointed", said);
+    }
+
+    [Fact]
+    public async Task A_failed_upload_says_the_old_file_is_untouched()
+    {
+        _files.UploadResponder = _ => ApiResponse<FileData>.Fail("vendor exploded");
+        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes);
+
+        await Command(prompts).RunAsync("dev", CancellationToken.None);
+
+        var said = string.Join("|", prompts.Messages);
+        Assert.Contains("SOMETHING WENT WRONG", said);
+        Assert.Contains("vendor exploded", said);
+        Assert.Contains("both are untouched", said);
+    }
+
+    [Fact]
+    public async Task A_record_left_holding_the_wrong_path_explains_why_nothing_was_deleted()
+    {
+        _files.UploadResponder = _ =>
+        {
+            var path = NewPath(NewFileId);
+            _files.Files[path] = (Convert.ToBase64String(Content), "VHASH");
+            _read.RawRecords[$"mocd_documentfiles:{NewFileId}"] =
+                "{\"mocd_filepath\":\"" + OldPath.Replace("\\", "\\\\") + "\"}";
+            return new ApiResponse<FileData>(true, null,
+                new FileData(NewFileId, path, "VHASH", "cert.jpg", "image/jpeg", null), null);
+        };
+
+        var prompts = new FakePrompts().Answer(
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+
+        await Command(prompts).RunAsync("dev", CancellationToken.None);
+
+        var said = string.Join("|", prompts.Messages);
+        Assert.Contains("does not hold the new path", said);
+        Assert.Contains("would then have nothing that opens", said);
+    }
+
     // ---- creating the record and repointing are separate decisions ----
 
     [Fact]
