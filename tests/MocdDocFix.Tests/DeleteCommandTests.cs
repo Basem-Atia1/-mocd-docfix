@@ -166,6 +166,37 @@ public class DeleteCommandTests : IDisposable
         Assert.Empty(prompts.Questions);
     }
 
+    // ---- when nothing can be deleted, say why ----
+
+    [Fact]
+    public async Task Nothing_to_delete_explains_where_each_document_actually_got_to()
+    {
+        States().Append(new StateRecord(DocumentId, MigrationState.Failed,
+            DateTimeOffset.UtcNow, NewFileId, NewPath, "file-record-path: the record and the file disagree."));
+        var prompts = Confirmed();
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        var said = string.Join("|", prompts.Messages);
+        Assert.Equal(0, summary.Deleted);
+        Assert.Contains("Nothing is awaiting deletion", said);
+        Assert.Contains("Only a document that has been repointed", said);
+        Assert.Contains("FAILED, so not eligible", said);
+        Assert.Contains("the record and the file disagree", said);   // the actual reason
+        Assert.Contains("cert.jpg", said);                            // and which document
+    }
+
+    [Fact]
+    public async Task Nothing_migrated_at_all_says_so_plainly()
+    {
+        File.Delete(Path.Combine(_root, "state.jsonl"));
+        var prompts = Confirmed();
+
+        await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Contains("nothing that could be deleted", string.Join("|", prompts.Messages));
+    }
+
     // ---- the delete step shows its working ----
 
     // ---- a file that more than one record points at ----

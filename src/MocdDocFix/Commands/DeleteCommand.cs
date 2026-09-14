@@ -47,7 +47,7 @@ public sealed class DeleteCommand
 
         if (candidates.Count == 0)
         {
-            _prompts.Info("Nothing is awaiting deletion.");
+            ExplainWhyNothingIsEligible(latest, manifest);
             return new DeleteSummary(0, 0, 0, false, null);
         }
 
@@ -129,6 +129,64 @@ public sealed class DeleteCommand
 
         return new DeleteSummary(deleted, skipped, refused, false, null);
     }
+
+    /// <summary>
+    /// Only a repointed document can have its old file deleted, so "nothing to delete" is usually
+    /// a consequence of something that happened earlier. Saying only "nothing is awaiting
+    /// deletion" leaves the operator to work that out — which is exactly what it cost once.
+    /// </summary>
+    private void ExplainWhyNothingIsEligible(
+        IReadOnlyDictionary<Guid, StateRecord> latest, IReadOnlyDictionary<Guid, ManifestEntry> manifest)
+    {
+        _prompts.Info("");
+        _prompts.Info("Nothing is awaiting deletion.");
+
+        if (latest.Count == 0)
+        {
+            _prompts.Info("  Nothing has been migrated yet — there is nothing that could be deleted.");
+            return;
+        }
+
+        _prompts.Info("  Only a document that has been repointed can have its old file removed.");
+        _prompts.Info("  Here is where each one actually got to:");
+        _prompts.Info("");
+
+        foreach (var group in latest.Values.GroupBy(r => r.State).OrderBy(g => g.Key))
+        {
+            _prompts.Info($"    {group.Count(),4}  {Describe(group.Key)}");
+
+            // The reason matters most where something went wrong, so name those individually.
+            if (group.Key is not (MigrationState.Failed or MigrationState.Quarantined)) continue;
+
+            foreach (var record in group.Take(10))
+            {
+                var name = manifest.TryGetValue(record.DocumentId, out var entry)
+                    ? entry.FileName ?? record.DocumentId.ToString()
+                    : record.DocumentId.ToString();
+
+                _prompts.Info($"          {name}");
+                if (!string.IsNullOrWhiteSpace(record.Detail))
+                    _prompts.Info($"            {record.Detail}");
+            }
+        }
+
+        _prompts.Info("");
+        _prompts.Info("  Put right whatever stopped them, run the upload step again, and the old");
+        _prompts.Info("  files become eligible. Nothing has been lost in the meantime.");
+    }
+
+    private static string Describe(MigrationState state) => state switch
+    {
+        MigrationState.Pending => "not started",
+        MigrationState.BackedUp => "backed up, but not yet uploaded",
+        MigrationState.Uploaded => "uploaded, but not yet verified",
+        MigrationState.Verified => "verified, but the document was not repointed",
+        MigrationState.Repointed => "repointed — these ARE eligible",
+        MigrationState.Deleted => "already done; the old file is gone",
+        MigrationState.Quarantined => "QUARANTINED during backup, so never migrated",
+        MigrationState.Failed => "FAILED, so not eligible",
+        _ => state.ToString()
+    };
 
     /// <param name="Removed">True when the file is gone from the server AND the CRM row is gone.</param>
     /// <param name="Log">What happened, line by line, for the operator to read.</param>
