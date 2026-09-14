@@ -3,6 +3,7 @@ using MocdDocFix.Commands;
 using MocdDocFix.Domain;
 using MocdDocFix.Storage;
 using MocdDocFix.Tests.Fakes;
+using MocdDocFix.Ui;
 using Xunit;
 
 namespace MocdDocFix.Tests;
@@ -205,11 +206,12 @@ public class DocumentTypeCheckTests : IDisposable
     }
 
     /// <summary>
-    /// No VPN, or a server having a bad day, must not stop a scan — the backlog is a third
-    /// opinion, not a dependency.
+    /// With nobody at the console — a scripted run, or output redirected to a file — there is no
+    /// one to ask, so an outage is said once and the run carries on with the cross-check off.
+    /// When somebody IS there it is a question instead: the interactive tests below.
     /// </summary>
     [Fact]
-    public async Task A_devops_outage_is_reported_and_the_run_carries_on()
+    public async Task A_devops_outage_with_nobody_to_ask_is_reported_and_the_run_carries_on()
     {
         _ado.Throws = new HttpRequestException("An error occurred while sending the request",
             new IOException("The connection was closed"));
@@ -217,8 +219,6 @@ public class DocumentTypeCheckTests : IDisposable
         var check = Check();
         var ruling = await check.RuleOnAsync("Medical Certificate", Emap, CancellationToken.None);
 
-        // Not a question: an unreachable backlog is the same answer for every document type, so
-        // the operator is told once instead of being asked twenty times.
         Assert.Equal(AdoVerdict.NotChecked, ruling.Verdict);
         Assert.Empty(_prompts.Questions);
         Assert.Contains(_prompts.Messages, m => m.Contains("DevOps is unreachable"));
@@ -436,5 +436,83 @@ public class DocumentTypeCheckTests : IDisposable
 
         Assert.Contains("local backlog copy", said);
         Assert.Contains("Employee Appointment Request", said);
+    }
+
+    // ---- an outage, with somebody there to be asked ----
+
+    /// <summary>A console fake: arrow keys and Enter, and yes to every "are you sure".</summary>
+    private static FakePrompts AtTheConsole(params MenuKey[] keys)
+    {
+        var prompts = new FakePrompts
+        {
+            Keys = new Queue<(MenuKey, char)>(keys.Select(k => (k, '\0'))),
+            YesNoResponse = true
+        };
+
+        return prompts;
+    }
+
+    /// <summary>
+    /// The change asked for: an outage is not shrugged off. The operator is shown what happened
+    /// and given the four things that can be done about it, because connecting the VPN or
+    /// signing in again is something only they can do.
+    /// </summary>
+    [Fact]
+    public async Task An_outage_is_put_to_the_operator_when_there_is_somebody_to_ask()
+    {
+        _ado.Throws = new HttpRequestException("An error occurred while sending the request",
+            new IOException("The connection was closed"));
+
+        // Try again (the default), it fails again, then carry on without the cross-check.
+        var prompts = AtTheConsole(MenuKey.Enter, MenuKey.Down, MenuKey.Down, MenuKey.Enter);
+
+        var ruling = await new DocumentTypeCheck(_ado, Decisions(), prompts)
+            .RuleOnAsync("Medical Certificate", Emap, CancellationToken.None);
+
+        var said = string.Join("\n", prompts.Messages);
+
+        Assert.Contains("DevOps could not be reached", said);
+        Assert.Contains("connection was closed", said.Replace(Environment.NewLine, " "));
+        Assert.Equal(AdoVerdict.NotChecked, ruling.Verdict);
+
+        // Trying again really did try again, rather than repeating the first answer.
+        Assert.True(_ado.Searched.Count >= 2, $"only {_ado.Searched.Count} search(es) were made");
+    }
+
+    [Fact]
+    public async Task Carrying_on_without_the_check_is_asked_once_not_once_per_document_type()
+    {
+        _ado.Throws = new HttpRequestException("boom");
+
+        var prompts = AtTheConsole(MenuKey.Down, MenuKey.Down, MenuKey.Enter);
+        var check = new DocumentTypeCheck(_ado, Decisions(), prompts);
+
+        await check.RuleOnAsync("Medical Certificate", Emap, CancellationToken.None);
+        var asked = prompts.Questions.Count;
+        var calls = _ado.Searched.Count;
+
+        var later = await check.RuleOnAsync("Academic Qualification Certificate", Emap, CancellationToken.None);
+
+        Assert.Equal(AdoVerdict.NotChecked, later.Verdict);
+        Assert.Equal(asked, prompts.Questions.Count);      // not asked a second time
+        Assert.Equal(calls, _ado.Searched.Count);          // and nothing further attempted
+    }
+
+    /// <summary>
+    /// Stopping is one of the four answers, and it stops the run the way every other halt does
+    /// rather than as an unhandled error.
+    /// </summary>
+    [Fact]
+    public async Task Choosing_to_stop_ends_the_run()
+    {
+        _ado.Throws = new HttpRequestException("boom");
+
+        var prompts = AtTheConsole(MenuKey.Down, MenuKey.Down, MenuKey.Down, MenuKey.Enter);
+
+        var stopped = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            new DocumentTypeCheck(_ado, Decisions(), prompts)
+                .RuleOnAsync("Medical Certificate", Emap, CancellationToken.None));
+
+        Assert.Contains("DevOps", stopped.Message);
     }
 }

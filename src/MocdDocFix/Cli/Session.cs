@@ -29,6 +29,7 @@ public sealed class Session : IDisposable
     private readonly BackupStore _backups;
     private readonly StateStore _state;
     private readonly ScanCommand _scan;
+    private readonly DocumentTypeCheck _typeCheck;
     private readonly ShellFileOpener _opener = new();
     private readonly RepointedListWriter _repointedList;
     private readonly DocumentReportStore _docReports;
@@ -88,11 +89,16 @@ public sealed class Session : IDisposable
         _typeDecisions = new DocumentTypeDecisions(
             Path.Combine(ConfigStore.DefaultDirectory, "document-types.json"));
 
+        // Held on the session, not built inside the scan, because the upload step asks it again
+        // for each document it is about to move — with the same per-type cache, so asking twice
+        // costs one query.
+        _typeCheck = new DocumentTypeCheck(ado, _typeDecisions, prompts,
+            appConfig.Ado.LocalCopy, appConfig.Ado.DropFolder);
+
         _scan = new ScanCommand(_read, _reporter, env.CrmUrl, appConfig.ServiceCatalogues,
             new GroupedReportWriter(runRoot),
             new GuidListWriter(runRoot),
-            new DocumentTypeCheck(ado, _typeDecisions, prompts,
-                appConfig.Ado.LocalCopy, appConfig.Ado.DropFolder),
+            _typeCheck,
             _docReports, _backups);
     }
 
@@ -109,6 +115,15 @@ public sealed class Session : IDisposable
     /// the migrate step so the operator can remove a file right after repointing it, without a
     /// second implementation of what "safe to delete" means.
     /// </summary>
+    /// <summary>
+    /// Where the backlog stands on one document type. Handed to the upload step so it can ask
+    /// again for each document it is about to move, against the same per-type cache and the same
+    /// saved decisions the scan used — so a second look costs nothing and cannot contradict the
+    /// first by accident.
+    /// </summary>
+    private Task<TypeRuling> CheckTypeAsync(string? documentType, string? crmService, CancellationToken ct) =>
+        _typeCheck.RuleOnAsync(documentType, crmService, ct);
+
     private Task<string?> DeleteOneAsync(Guid documentId, CancellationToken ct) =>
         new DeleteCommand(_files, _read, _write, _backups, _state, _prompts, _docReports).DeleteOneAsync(documentId, ct);
 
@@ -220,7 +235,9 @@ public sealed class Session : IDisposable
         MigrateAsync: async () =>
         {
             var summary = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
-                _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports).RunAsync(_envName, ct);
+                    _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports,
+                    CheckTypeAsync)
+                .RunAsync(_envName, ct);
 
             // Each document's own account first — that is where the detail is, and it is the
             // folder the operator wants open. The whole-run files are an index across them.
@@ -458,7 +475,9 @@ public sealed class Session : IDisposable
                 return 0;
 
             var migrated = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
-                _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports).RunAsync(_envName, ct);
+                    _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports,
+                    CheckTypeAsync)
+                .RunAsync(_envName, ct);
 
             if (migrated.Migrated == 0) return 0;
 
@@ -526,7 +545,9 @@ public sealed class Session : IDisposable
                 if (_dryRun) { Console.WriteLine("Dry run: migrate writes, so nothing was done."); return 0; }
 
                 var summary = await new MigrateCommand(_files, _read, _write, _backups, _state,
-                    _reporter, _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports).RunAsync(_envName, ct);
+                        _reporter, _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList,
+                        _docReports, CheckTypeAsync)
+                    .RunAsync(_envName, ct);
 
                 Console.WriteLine($"Migrated {summary.Migrated}, skipped {summary.Skipped}, failed {summary.Failed}.");
                 Console.WriteLine($"report → {summary.ReportPath}");

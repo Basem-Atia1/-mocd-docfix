@@ -70,27 +70,37 @@ public static class CheckLines
     }
 
     /// <summary>What the DevOps backlog made of this document's type, whatever it said.</summary>
-    public static void WriteDevOps(IPrompts prompts, ScanRow row)
-    {
-        var evidence = string.IsNullOrWhiteSpace(row.AdoEvidence)
-            ? ""
-            : $"   (work items {row.AdoEvidence})";
+    public static void WriteDevOps(IPrompts prompts, ScanRow row) =>
+        WriteDevOps(prompts, row.AdoVerdict, row.AdoService, row.AdoEvidence);
 
-        var (text, tone) = row.AdoVerdict switch
+    public static void WriteDevOps(IPrompts prompts, string verdict, string? service, string? evidence)
+    {
+        var (text, tone) = DevOps(verdict, service, evidence);
+        prompts.Field("DevOps", text, tone);
+    }
+
+    /// <summary>
+    /// The one sentence that says where the backlog stands — shared by the screen, the step-1
+    /// report and the upload briefing, so a document cannot be described one way at the check
+    /// and another way at the moment it is moved.
+    /// </summary>
+    public static (string Text, Tone Tone) DevOps(string verdict, string? service, string? evidence)
+    {
+        var items = string.IsNullOrWhiteSpace(evidence) ? "" : $"   (work items {evidence})";
+
+        return verdict switch
         {
             nameof(AdoVerdict.Agrees) =>
-                ($"agrees — {(row.AdoService.Length > 0 ? row.AdoService : "same service")}{evidence}",
+                ($"agrees — {(string.IsNullOrWhiteSpace(service) ? "same service" : service)}{items}",
                     Tone.Good),
 
             nameof(AdoVerdict.Disagrees) =>
-                ($"DISAGREES — the backlog says {row.AdoService}{evidence}", Tone.Danger),
+                ($"DISAGREES — the backlog says {service}{items}", Tone.Danger),
 
             nameof(AdoVerdict.CannotTell) =>
                 ("asked, but could not tell — left to the CRM answer", Tone.Warn),
 
             _ => ("not checked — DevOps is not set up for this run", Tone.Muted)
         };
-
-        prompts.Field("DevOps", text, tone);
     }
 }

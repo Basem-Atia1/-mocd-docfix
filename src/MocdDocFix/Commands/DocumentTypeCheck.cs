@@ -87,29 +87,125 @@ public sealed class DocumentTypeCheck
     {
         if (_decisions.For(name) is { } saved) return FromDecision(name, crmService, saved);
 
+        // Set only once the operator has chosen to carry on without the cross-check, so from
+        // here on the answer is the same for every type and is not put to them again.
         if (_ado is null || _unreachable is not null)
             return new TypeRuling(name, AdoVerdict.NotChecked, null,
                 _unreachable ?? "DevOps was not consulted.", Array.Empty<AdoHit>(), "not checked");
 
         var opinion = await AskDevOpsAsync(name, crmService, ct);
 
-        // A backlog that cannot be reached is not a question for the operator — it is the same
-        // answer for every document type, and asking it twenty times would be a barrage where
-        // one sentence is the truth. It is said once, and the rest of the run carries on.
+        // A backlog that cannot be reached used to be announced once and then quietly dropped
+        // for the rest of the run. That is the wrong default: the check exists so that no file
+        // is moved on one authority's word, and "it could not be asked" is the moment to stop
+        // and let it be put right — the VPN, the sign-in — not to carry on regardless.
         if (_unreachable is not null)
-        {
-            _prompts.Blank();
-            _prompts.Warn($"DevOps is unreachable, so the cross-check is off for this run. " +
-                          $"Everything else is unaffected. {_unreachable}");
-
-            return new TypeRuling(name, AdoVerdict.NotChecked, null, _unreachable,
-                Array.Empty<AdoHit>(), "not checked");
-        }
+            return await AskAboutTheOutageAsync(name, crmService, ct);
 
         return opinion.Verdict == AdoVerdict.CannotTell
             ? Ask(name, crmService, opinion)
             : new TypeRuling(name, opinion.Verdict, opinion.Service, opinion.Detail,
                 opinion.Evidence, "DevOps");
+    }
+
+    /// <summary>
+    /// Told, and asked, rather than decided for them. The operator is the only one who can fix
+    /// an outage — connect the VPN, sign in again — so the run stops here and offers the four
+    /// things that can actually be done about it.
+    ///
+    /// Choosing to carry on without the check latches, so this is asked once however many
+    /// document types follow. Choosing to try again clears the latch, so a VPN that comes back
+    /// is picked up immediately.
+    /// </summary>
+    private async Task<TypeRuling> AskAboutTheOutageAsync(string name, string? crmService, CancellationToken ct)
+    {
+        // Nobody to ask — a scripted run, or output redirected to a file. Asking into the void
+        // would either hang or invent an answer, so it behaves as it always did: says what
+        // happened, carries on with the cross-check off, and marks every type "not checked".
+        if (!_prompts.Interactive)
+        {
+            _prompts.Blank();
+            _prompts.Warn($"DevOps is unreachable, so the cross-check is off for this run. " +
+                          $"Everything else is unaffected. {_unreachable}");
+
+            return new TypeRuling(name, AdoVerdict.NotChecked, null, _unreachable!,
+                Array.Empty<AdoHit>(), "not checked");
+        }
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            _prompts.Blank();
+            _prompts.Section("DevOps could not be reached", Tone.Danger);
+            _prompts.Field("document type", name, Tone.Muted);
+            _prompts.Field("CRM says", crmService ?? "(no service catalogue)", Tone.Muted);
+            _prompts.Blank();
+            _prompts.Say(_unreachable ?? "No reason was given.", Tone.Warn);
+            _prompts.Blank();
+            _prompts.Say("Nothing has been changed. The cross-check is the only thing affected — " +
+                         "CRM and the file server are untouched by this.", Tone.Muted);
+
+            var answer = new Asker(_prompts).Ask("What should I do?", new[]
+            {
+                new Choice("Try again now", "I have put it right — connected the VPN, signed in",
+                    "The search is run again from scratch. If it works, this document type is " +
+                    "settled the usual way and the rest of the run carries on with the check on."),
+
+                new Choice("Decide this document type myself", "show me what there is and ask me",
+                    "The same question you get when the backlog cannot settle a name: take CRM's " +
+                    "answer, send it to a human, type the service yourself, or go and look. Your " +
+                    "answer is written down and used for every document of this type."),
+
+                new Choice("Carry on without the cross-check", "for the rest of this run",
+                    "Every document type from here on reads 'not checked' — in the reports too, " +
+                    "so nothing later pretends the backlog agreed. CRM's answer decides, exactly " +
+                    "as it did before this check existed. You are not asked about this again."),
+
+                new Choice("Stop the run", "leave everything as it is",
+                    "Nothing further runs. Everything already done stays done and is recorded on " +
+                    "disk, so the run can be picked up once the connection is back.")
+            }, defaultIndex: 0, allowBack: false, confirm: true);
+
+            switch (answer.Kind == AnswerKind.Chosen ? answer.Index : 3)
+            {
+                case 0:
+                    _unreachable = null;
+                    var again = await AskDevOpsAsync(name, crmService, ct);
+
+                    if (_unreachable is not null) continue;      // still down — ask again
+
+                    _prompts.Say("DevOps answered.", Tone.Good);
+
+                    return again.Verdict == AdoVerdict.CannotTell
+                        ? Ask(name, crmService, again)
+                        : new TypeRuling(name, again.Verdict, again.Service, again.Detail,
+                            again.Evidence, "DevOps");
+
+                case 1:
+                    var why = _unreachable;
+
+                    // Not latched: deciding this one by hand says nothing about the next one,
+                    // and an outage that clears halfway through a run should be picked up. The
+                    // way to stop being asked is the option below, which says so plainly.
+                    _unreachable = null;
+
+                    return Ask(name, crmService, new AdoOpinion(AdoVerdict.CannotTell, null,
+                        Array.Empty<AdoHit>(), $"DevOps could not be reached — {why}"));
+
+                case 2:
+                    _prompts.Say("The cross-check is off for the rest of this run. Every document " +
+                                 "type will read 'not checked'.", Tone.Muted);
+
+                    return new TypeRuling(name, AdoVerdict.NotChecked, null,
+                        $"DevOps could not be reached — {_unreachable}",
+                        Array.Empty<AdoHit>(), "not checked");
+
+                default:
+                    throw new OperationCanceledException(
+                        "Stopped at your request: DevOps could not be reached.");
+            }
+        }
     }
 
     /// <summary>

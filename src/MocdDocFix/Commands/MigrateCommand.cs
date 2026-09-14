@@ -48,6 +48,14 @@ public sealed class MigrateCommand
     private readonly RepointedListWriter? _repointed;
     private readonly DocumentReportStore? _reports;
 
+    /// <summary>
+    /// The DevOps standing of one document type — (type name, what CRM says) → the ruling.
+    /// Asked again here, at the moment a file is about to move, rather than trusted from the
+    /// scan: the answer is only useful if it is true now. It is cached per type inside the
+    /// check itself, so ten documents of one type cost one query.
+    /// </summary>
+    private readonly Func<string?, string?, CancellationToken, Task<TypeRuling>>? _checkTypeAsync;
+
     /// <param name="deleteOldAsync">
     /// Deletes one document's old file, re-running the full safety check first. Returns null on
     /// success or the reason it refused. Optional: when it is not supplied the operator is not
@@ -57,8 +65,10 @@ public sealed class MigrateCommand
         BackupStore backups, StateStore state, Reporter reporter, IPrompts prompts,
         IFileOpener opener, string crmUrl,
         Func<Guid, CancellationToken, Task<string?>>? deleteOldAsync = null,
-        RepointedListWriter? repointed = null, DocumentReportStore? reports = null)
+        RepointedListWriter? repointed = null, DocumentReportStore? reports = null,
+        Func<string?, string?, CancellationToken, Task<TypeRuling>>? checkTypeAsync = null)
     {
+        _checkTypeAsync = checkTypeAsync;
         _files = files;
         _read = read;
         _write = write;
@@ -141,6 +151,24 @@ public sealed class MigrateCommand
                 entry.CorrectCatalogueId.ToString(), ct);
 
             WriteUploadBriefing(i + 1, manifest.Count, entry, catalogueName, oldBytes.Length);
+
+            // The backlog, again, for this document — said out loud before the question that
+            // moves it, whatever it says. A check made at scan time and never mentioned again is
+            // no protection at the moment it matters.
+            var standing = await WhereDevOpsStandsAsync(entry, catalogueName, ct);
+
+            if (standing == TypeStanding.LeaveThisOne)
+            {
+                Skip("the DevOps check for its document type was not settled");
+                continue;
+            }
+
+            if (standing == TypeStanding.StopTheRun)
+            {
+                haltReason = "You stopped the run over the DevOps check on " +
+                             $"'{entry.DocumentTypeName ?? "(no document type)"}'.";
+                break;
+            }
 
             var goAhead = _prompts.Confirm("Upload this corrected copy now?");
             if (goAhead == ConfirmChoice.Quit) break;
@@ -566,6 +594,82 @@ public sealed class MigrateCommand
     /// Offers to remove this document's old file straight away, rather than leaving every
     /// deletion to the end. Declining is always safe: the separate delete step can still do it.
     /// </summary>
+    /// <summary>What to do with the document in front of us, after asking the backlog again.</summary>
+    private enum TypeStanding { GoAhead, LeaveThisOne, StopTheRun }
+
+    /// <summary>
+    /// Asks the backlog where this document's type belongs, at the moment the document is about
+    /// to move, and says so on screen whatever the answer.
+    ///
+    /// A disagreement, or an answer nobody could get, is not something to note and move past: it
+    /// means the one thing this run is for — which service the file belongs under — is in doubt
+    /// for this file. So it is put to the operator, with leaving it alone as the default.
+    /// </summary>
+    private async Task<TypeStanding> WhereDevOpsStandsAsync(
+        ManifestEntry entry, string? catalogueName, CancellationToken ct)
+    {
+        if (_checkTypeAsync is null) return TypeStanding.GoAhead;
+
+        TypeRuling ruling;
+
+        try
+        {
+            ruling = await _checkTypeAsync(entry.DocumentTypeName, catalogueName, ct);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // The check's own "stop the run" answer. It reaches here as a cancellation, and the
+            // run stops the way every other halt does rather than as an unhandled error.
+            return TypeStanding.StopTheRun;
+        }
+
+        CheckLines.WriteDevOps(_prompts, ruling.Verdict.ToString(), ruling.Service,
+            string.Join(" ", ruling.Evidence.Where(h => h.WorkItemId > 0).Take(5)
+                .Select(h => h.WorkItemId)));
+
+        if (ruling.Verdict == AdoVerdict.Agrees) return TypeStanding.GoAhead;
+
+        _prompts.Blank();
+
+        if (ruling.Verdict == AdoVerdict.Disagrees)
+        {
+            _prompts.Warn("The backlog and CRM do not agree about which service owns this " +
+                          "document type, so which folder this file belongs in is exactly what " +
+                          "is in doubt.", Tone.Danger);
+        }
+        else
+        {
+            _prompts.Warn("The backlog could not confirm which service owns this document type, " +
+                          "so CRM's answer is the only one behind this move.");
+        }
+
+        _prompts.Say($"    {ruling.Detail}", Tone.Muted);
+        _prompts.Blank();
+
+        var answer = new Asker(_prompts).Ask("What should I do with this document?", new[]
+        {
+            new Choice("Leave it alone", "skip this one and carry on with the rest",
+                "Nothing is uploaded, created or repointed for this document. It stays exactly " +
+                "as it is, and the run moves on to the next one."),
+
+            new Choice("Go on anyway", "use the service catalogue CRM holds",
+                "The file is re-uploaded under the catalogue on its document type, which is what " +
+                "the tool would have done before this check existed. The disagreement is written " +
+                "into this document's own report either way."),
+
+            new Choice("Stop the run", "settle this before anything else moves",
+                "Nothing further runs. Everything already done stays done and is on disk, so the " +
+                "run can be picked up once the document type is settled.")
+        }, defaultIndex: 0, allowBack: false, confirm: true);
+
+        return (answer.Kind == AnswerKind.Chosen ? answer.Index : 0) switch
+        {
+            1 => TypeStanding.GoAhead,
+            2 => TypeStanding.StopTheRun,
+            _ => TypeStanding.LeaveThisOne
+        };
+    }
+
     /// <returns>True when the old file and its record were removed here and now.</returns>
     private async Task<bool> OfferToDeleteOldAsync(ManifestEntry entry, CancellationToken ct)
     {

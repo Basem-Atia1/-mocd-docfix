@@ -107,6 +107,18 @@ while (true)
     {
         if (await wizard.RunAsync(CancellationToken.None) == WizardExit.Finished) return 0;
     }
+    catch (OperationCanceledException stopped)
+    {
+        // Asked for. "Stop the run" is an answer, not a failure, and printing it as one — under
+        // "That did not work", with an exception name and a chain of causes — reads as though
+        // something had broken.
+        prompts.Blank();
+        prompts.Section("Stopped", Tone.Normal);
+        prompts.Say(stopped.Message);
+        prompts.Blank();
+        prompts.Say("Nothing further was run. Everything already done is recorded on disk, so " +
+                    "the run can be picked up where it stopped.", Tone.Muted);
+    }
     catch (Exception ex)
     {
         // A failure mid-run returns to the environment question rather than dumping a stack
