@@ -29,7 +29,16 @@ public sealed record ScanRow(
     string Reason,
     string Solution,
     string? CrossCheckSource,
-    string CrmLink);
+    string CrmLink,
+
+    /// <summary>What DevOps says about this document type: Agrees, Disagrees or CannotTell.</summary>
+    string AdoVerdict = "",
+
+    /// <summary>The service DevOps — or the operator, when asked — puts this document type under.</summary>
+    string AdoService = "",
+
+    /// <summary>The work items the answer rests on, so a reader can check it rather than believe it.</summary>
+    string AdoEvidence = "");
 
 public sealed record MigrationRow(
     Guid DocumentId,

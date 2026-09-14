@@ -14,6 +14,7 @@ namespace MocdDocFix.Cli;
 public sealed class Session : IDisposable
 {
     private readonly AppConfig _appConfig;
+    private readonly DocumentTypeDecisions _typeDecisions;
     private readonly ResolvedEnvironment _env;
     private readonly string _envName;
     private readonly IPrompts _prompts;
@@ -43,8 +44,11 @@ public sealed class Session : IDisposable
     /// </summary>
     private IReadOnlyList<ScanRow> _pending = Array.Empty<ScanRow>();
 
+    /// <param name="ado">
+    /// The DevOps backlog, for the scan's third opinion. Null leaves the scan exactly as it was.
+    /// </param>
     public Session(AppConfig appConfig, ResolvedEnvironment env, string envName,
-        IPrompts prompts, bool dryRun)
+        IPrompts prompts, bool dryRun, IAdoClient? ado = null)
     {
         _appConfig = appConfig;
         _env = env;
@@ -78,9 +82,16 @@ public sealed class Session : IDisposable
         _fileHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         _files = new FileServiceClient(_fileHttp, env);
 
+        // The decisions file sits beside config.json rather than under the environment: a
+        // document type belongs to the same service in dev as it does in production, and being
+        // asked the same awkward question again after switching environment would be absurd.
+        _typeDecisions = new DocumentTypeDecisions(
+            Path.Combine(ConfigStore.DefaultDirectory, "document-types.json"));
+
         _scan = new ScanCommand(_read, _reporter, env.CrmUrl, appConfig.ServiceCatalogues,
             new GroupedReportWriter(runRoot),
-            new GuidListWriter(runRoot));
+            new GuidListWriter(runRoot),
+            new DocumentTypeCheck(ado, _typeDecisions, prompts));
     }
 
     public void Dispose()
@@ -115,6 +126,15 @@ public sealed class Session : IDisposable
             _pending = result.Fix;
 
             var details = result.Banner().Split(Environment.NewLine).ToList();
+
+            if (result.DevOpsSummary() is { } devops)
+            {
+                details.Add("");
+                details.Add(devops);
+                foreach (var name in result.DevOpsCouldNotTell().Take(10))
+                    details.Add($"  could not be told about: {name}");
+            }
+
             details.Add("");
             details.Add($"grouped report → {result.GroupsPath}");
             details.Add($"GUIDs by group → {result.GuidsPath}");
