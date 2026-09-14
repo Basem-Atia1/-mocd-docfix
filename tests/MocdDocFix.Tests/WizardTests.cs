@@ -8,6 +8,7 @@ public class WizardTests
 {
     private readonly List<string> _ran = new();
     private IReadOnlyList<string>? _targeted;
+    private IReadOnlyList<string>? _lookedUp;
     private ScanOutcome _scan = Scan(
         File(3, "a.pdf", "Employee Appointment Request", "Medical Certificate"),
         File(3, "b.pdf", "Employee Appointment Request", "Medical Certificate"),
@@ -32,7 +33,13 @@ public class WizardTests
                 BackupAsync: () => { _ran.Add("backup"); return Task.FromResult(StepOutcome.Of("23 saved", "0 quarantined")); },
                 MigrateAsync: () => { _ran.Add("migrate"); return Task.FromResult(StepOutcome.Of("23 migrated")); },
                 DeleteAsync: () => { _ran.Add("delete"); return Task.FromResult(StepOutcome.Of("23 deleted")); },
-                VerifyAsync: () => { _ran.Add("verify"); return Task.FromResult(StepOutcome.Of("1 checked, all correct.")); }));
+                VerifyAsync: () => { _ran.Add("verify"); return Task.FromResult(StepOutcome.Of("1 checked, all correct.")); },
+                LookAsync: asked =>
+                {
+                    _ran.Add("look");
+                    _lookedUp = asked;
+                    return Task.FromResult(StepOutcome.Of($"{asked.Count} looked up. Nothing was changed."));
+                }));
 
     private async Task<ScriptedPrompts> Run(params string[] input)
     {
@@ -78,10 +85,34 @@ public class WizardTests
         Assert.Empty(_ran);
     }
 
+    // ---- asking about one file ----
+
+    /// <summary>
+    /// The one thing the tool could not do: be pointed at a single file and asked whether it is
+    /// still there. Every other mode works on a population and wants to change something.
+    /// </summary>
+    [Fact]
+    public async Task Looking_one_up_passes_what_was_typed_and_changes_nothing()
+    {
+        var prompts = await Run("6", @"DigitalServices\20260405\3568.png, 2a1c51a3-e330-f111", "q");
+
+        Assert.Equal(new[] { "look" }, _ran);
+        Assert.Equal(new[] { @"DigitalServices\20260405\3568.png", "2a1c51a3-e330-f111" }, _lookedUp);
+        Assert.True(prompts.Said("changes nothing"));
+    }
+
+    [Fact]
+    public async Task Looking_up_nothing_at_all_does_not_call_anything()
+    {
+        await Run("6", "", "q");
+
+        Assert.Empty(_ran);
+    }
+
     [Fact]
     public async Task Changing_environment_reports_that_and_stops_the_wizard()
     {
-        var prompts = new ScriptedPrompts("6");
+        var prompts = new ScriptedPrompts("7");
 
         var exit = await Build(prompts).RunAsync(CancellationToken.None);
 

@@ -228,7 +228,34 @@ public sealed class Session : IDisposable
                     ? $"{summary.Checked} checked, all correct."
                     : $"{summary.Checked} checked, {summary.Ok} correct, {summary.WithProblems} WITH PROBLEMS.",
                 details);
+        },
+
+        LookAsync: async asked =>
+        {
+            var reports = await new LookupCommand(_files, _read, _backups, _state, _prompts)
+                .RunAsync(asked, ct);
+
+            var details = reports.Select(Summarise).ToList();
+
+            return new StepOutcome($"{reports.Count} looked up. Nothing was changed.", details);
         });
+
+    /// <summary>One line per look-up, for the summary under the step.</summary>
+    private static string Summarise(LookupReport report)
+    {
+        var onDisk = report.OnTheServer switch
+        {
+            true => "on the file server",
+            false => "NOT on the file server",
+            _ => "no path to check"
+        };
+
+        var inCrm = report.Record is not null || report.PointingAtThePath.Count > 0
+            ? "still referred to in CRM"
+            : "not referred to in CRM";
+
+        return $"{report.Asked} — {onDisk}, {inCrm}";
+    }
 
     private static IReadOnlyList<PickableFile> Pickable(IEnumerable<ScanRow> rows) =>
         rows.Select(r => new PickableFile(r.Group, r.DocumentId.ToString(), r.FileName,

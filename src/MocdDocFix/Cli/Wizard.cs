@@ -29,13 +29,18 @@ public sealed record ScanOutcome(
 /// between every step that a full run does.
 /// </param>
 /// <param name="BackupAsync">Back up whatever the last scan or check found fixable.</param>
+/// <param name="LookAsync">
+/// Ask both systems about particular files — by path or by documentfile id — and say what each
+/// one holds. Reads only.
+/// </param>
 public sealed record WizardActions(
     Func<Task<ScanOutcome>> ScanAsync,
     Func<IReadOnlyList<string>, Task<ScanOutcome>> ClassifyAsync,
     Func<Task<StepOutcome>> BackupAsync,
     Func<Task<StepOutcome>> MigrateAsync,
     Func<Task<StepOutcome>> DeleteAsync,
-    Func<Task<StepOutcome>> VerifyAsync);
+    Func<Task<StepOutcome>> VerifyAsync,
+    Func<IReadOnlyList<string>, Task<StepOutcome>>? LookAsync = null);
 
 public enum WizardExit { Finished, ChangeEnvironment }
 
@@ -102,19 +107,28 @@ public sealed class Wizard
                     "genuinely finished, so one whose migration succeeded but was recorded as " +
                     "failed is picked up here instead of being left behind for good."),
 
+                new Choice("Is this file still there?", "check one path or documentfile id",
+                    "Give it an old file path, or the id of a mocd_documentfile, and it asks " +
+                    "the file server whether the file is still on disk and CRM whether any " +
+                    "record still refers to it — and says what this tool's own backup and state " +
+                    "notes have for it. It changes nothing, in either system.",
+                    Enabled: _actions.LookAsync is not null,
+                    DisabledNote: "this build was not given a look-up action."),
+
                 new Choice("Change environment", $"currently {_envName}"),
 
                 new Choice("Quit", "stop here")
             }, defaultIndex: 0, allowBack: false);
 
-            switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 6)
+            switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 7)
             {
                 case 0: await TargetedAsync(ct); break;
                 case 1: await FullAsync(ct); break;
                 case 2: await ReportOnlyAsync(); break;
                 case 3: await VerifyOnlyAsync(); break;
                 case 4: await DeleteOnlyAsync(); break;
-                case 5: return WizardExit.ChangeEnvironment;
+                case 5: await LookUpAsync(); break;
+                case 6: return WizardExit.ChangeEnvironment;
                 default:
                     _prompts.Blank();
                     _prompts.Say("Nothing further was done. Bye.");
@@ -190,6 +204,42 @@ public sealed class Wizard
         _prompts.Say("Confirming with the file server and CRM. Reads only.", Tone.Muted);
         var verify = await _actions.VerifyAsync();
         Report("", "Final check", verify.Headline, verify.Details);
+    }
+
+    /// <summary>
+    /// One question, for particular files: is it still there? Everything else in the tool works
+    /// on a population and wants to change something; this reads, about one file at a time.
+    /// </summary>
+    private async Task LookUpAsync()
+    {
+        if (_actions.LookAsync is not { } look) return;
+
+        _prompts.Section("Is this file still there?");
+        _prompts.Say("Give an old file path, or the id of a mocd_documentfile record. Several " +
+                     "at once, separated by commas. For example:");
+        _prompts.Blank();
+        _prompts.Info(@"      DigitalServices\20260405\35687738-986f-413d-8846-6dc1a720a1ec.png",
+            Tone.Muted);
+        _prompts.Info("      2a1c51a3-e330-f111-b119-005056010908", Tone.Muted);
+        _prompts.Blank();
+        _prompts.Say("It asks the file server and CRM, and changes nothing in either.", Tone.Muted);
+        _prompts.Blank();
+
+        var asked = _prompts.ReadLine("  Path or id")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0 && !s.Equals("q", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (asked.Count == 0)
+        {
+            _prompts.Blank();
+            _prompts.Say("Nothing to look up.", Tone.Muted);
+            return;
+        }
+
+        var outcome = await look(asked);
+        Report("", "Look-up", outcome.Headline, outcome.Details);
     }
 
     private async Task TargetedAsync(CancellationToken ct)
