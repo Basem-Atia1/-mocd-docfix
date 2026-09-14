@@ -111,8 +111,18 @@ while (true)
     {
         // A failure mid-run returns to the environment question rather than dumping a stack
         // trace and exiting. Whatever was already done stays on disk in the state file.
-        prompts.Info("");
-        prompts.Info($"That did not work: {ex.Message}");
-        prompts.Info("Nothing further was run. Anything already completed is recorded on disk.");
+        //
+        // The whole chain is printed, not just the top message: every HttpClient failure
+        // surfaces as "An error occurred while sending the request", which names neither the
+        // system nor the reason and leaves the operator with nothing to act on.
+        prompts.Blank();
+        prompts.Section("That did not work", Tone.Danger);
+
+        for (Exception? cause = ex; cause is not null; cause = cause.InnerException)
+            prompts.Say($"{cause.GetType().Name}: {cause.Message}",
+                ReferenceEquals(cause, ex) ? Tone.Danger : Tone.Muted);
+
+        prompts.Blank();
+        prompts.Say("Nothing further was run. Anything already completed is recorded on disk.");
     }
 }

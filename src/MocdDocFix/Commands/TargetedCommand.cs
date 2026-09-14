@@ -5,9 +5,15 @@ using MocdDocFix.Ui;
 
 namespace MocdDocFix.Commands;
 
+/// <param name="Documents">
+/// The CRM rows behind the resolved documents, handed back rather than thrown away. The caller
+/// needs their mocd_hash for the backup step's first check, and re-resolving each one is a CRM
+/// round trip per document for something already in hand.
+/// </param>
 public sealed record TargetedSummary(
     int Resolved, int Fixed, int Reviewed, int Skipped, int NotFound, int Ambiguous,
-    string ScanPath);
+    string ScanPath,
+    IReadOnlyList<DocumentRow>? Documents = null);
 
 /// <summary>
 /// Targeted mode (spec section 5.3). Accepts document ids, documentfile ids and file names —
@@ -49,6 +55,7 @@ public sealed class TargetedCommand
         int resolved = 0, notFound = 0, ambiguous = 0, reviewed = 0, skipped = 0;
         var queued = new List<ScanRow>();
         var classified = new List<ScanRow>();   // every resolved row, whatever its verdict
+        var documents = new List<DocumentRow>();   // and the CRM rows they came from
 
         foreach (var identifier in identifiers)
         {
@@ -84,6 +91,7 @@ public sealed class TargetedCommand
             var result = await _scan.ClassifyAsync(new[] { document }, env, writeReports: false, ct);
             var row = result.All[0];
             classified.Add(row);
+            documents.Add(document);
 
             _prompts.Section(identifier);
             _prompts.Field("document", document.DocumentId.ToString(), Tone.Muted);
@@ -153,7 +161,8 @@ public sealed class TargetedCommand
         _prompts.Say($"report → {scanPath}", Tone.Muted);
 
         var fixedCount = queued.Count == 0 ? 0 : await _runPipelineAsync(queued);
-        return new TargetedSummary(resolved, fixedCount, reviewed, skipped, notFound, ambiguous, scanPath);
+        return new TargetedSummary(resolved, fixedCount, reviewed, skipped, notFound, ambiguous,
+            scanPath, documents);
     }
 
     /// <summary>

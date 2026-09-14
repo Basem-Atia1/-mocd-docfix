@@ -210,12 +210,67 @@ public class DocumentTypeCheckTests : IDisposable
     [Fact]
     public async Task A_devops_outage_is_reported_and_the_run_carries_on()
     {
-        _ado.Throws = new HttpRequestException("The remote name could not be resolved");
-        _prompts.ReadLineQueue = new Queue<string>(new[] { "4" });   // skip
+        _ado.Throws = new HttpRequestException("An error occurred while sending the request",
+            new IOException("The connection was closed"));
 
-        var ruling = await Check().RuleOnAsync("Medical Certificate", Emap, CancellationToken.None);
+        var check = Check();
+        var ruling = await check.RuleOnAsync("Medical Certificate", Emap, CancellationToken.None);
 
-        Assert.Equal(AdoVerdict.CannotTell, ruling.Verdict);
-        Assert.Contains("could not be reached", ruling.Detail);
+        // Not a question: an unreachable backlog is the same answer for every document type, so
+        // the operator is told once instead of being asked twenty times.
+        Assert.Equal(AdoVerdict.NotChecked, ruling.Verdict);
+        Assert.Empty(_prompts.Questions);
+        Assert.Contains(_prompts.Messages, m => m.Contains("DevOps is unreachable"));
+
+        // And the message worth reading is the cause, not HttpClient's wrapper. The transcript is
+        // rejoined first, because the warning wraps and hangs like every paragraph the tool prints.
+        var said = System.Text.RegularExpressions.Regex.Replace(
+            string.Join(" ", _prompts.Messages), @"\s+", " ");
+
+        Assert.Contains("connection was closed", said);
+    }
+
+    /// <summary>
+    /// Once the backlog has failed, the rest of the run stops paying for it: no more calls, no
+    /// more questions, and every remaining document type simply reads "not checked".
+    /// </summary>
+    [Fact]
+    public async Task After_an_outage_it_stops_asking_devops_for_the_rest_of_the_run()
+    {
+        _ado.Throws = new HttpRequestException("boom");
+
+        var check = Check();
+        await check.RuleOnAsync("Medical Certificate", Emap, CancellationToken.None);
+        var calls = _ado.Searched.Count;
+
+        var later = await check.RuleOnAsync("Academic Qualification Certificate", Emap, CancellationToken.None);
+
+        Assert.Equal(AdoVerdict.NotChecked, later.Verdict);
+        Assert.Equal(calls, _ado.Searched.Count);      // nothing further was attempted
+        Assert.Empty(_prompts.Questions);
+    }
+
+    /// <summary>
+    /// An IOException thrown mid-read is not one of the two obvious HTTP exceptions, and it used
+    /// to escape and end the run — after the check had already finished and written its report.
+    /// </summary>
+    [Fact]
+    public async Task No_kind_of_failure_is_allowed_to_escape_and_end_the_run()
+    {
+        foreach (var failure in new Exception[]
+                 {
+                     new IOException("connection reset"),
+                     new InvalidOperationException("bad handler state"),
+                     new System.Text.Json.JsonException("unexpected token")
+                 })
+        {
+            var prompts = new FakePrompts();
+            var ado = new FakeAdoClient { Throws = failure };
+
+            var ruling = await new DocumentTypeCheck(ado, Decisions(), prompts)
+                .RuleOnAsync("Medical Certificate", Emap, CancellationToken.None);
+
+            Assert.Equal(AdoVerdict.NotChecked, ruling.Verdict);
+        }
     }
 }

@@ -157,16 +157,17 @@ public sealed class Session : IDisposable
                 return Task.FromResult(0);
             }, _docReports).RunAsync(_envName, identifiers, forceReview: false, _env.IsProduction, ct);
 
-            foreach (var row in _pending)
-            {
-                var document = (await _read.ResolveIdentifierAsync(row.DocumentId.ToString(), ct))
-                    .FirstOrDefault();
-                if (document is not null) _hashes[document.DocumentFileId] = document.Hash;
+            // The hashes come back with the summary rather than being fetched again. Re-resolving
+            // each document was a CRM round trip per document for something already in hand, and
+            // it ran after the report was written — so a hiccup there threw away a finished check
+            // and left the operator with "an error occurred while sending the request".
+            foreach (var document in summary.Documents ?? Array.Empty<DocumentRow>())
+                _hashes[document.DocumentFileId] = document.Hash;
 
-                // Each document gets its own folder and its own readable record from step 1,
-                // and everything about it lands there as the later steps run.
+            // Each document gets its own folder, and everything about it lands there as the
+            // later steps run.
+            foreach (var row in _pending)
                 DocumentRecord.WriteHeader(_backups, row, _docReports);
-            }
 
             var details = new List<string>();
             foreach (var row in _pending.Take(10))

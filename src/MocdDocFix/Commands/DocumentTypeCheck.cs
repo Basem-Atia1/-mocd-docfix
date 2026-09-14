@@ -37,6 +37,9 @@ public sealed class DocumentTypeCheck
     private readonly IPrompts _prompts;
     private readonly Dictionary<string, TypeRuling> _thisRun = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Why DevOps stopped answering, once it has. Set means: do not try again this run.</summary>
+    private string? _unreachable;
+
     /// <param name="ado">Null when DevOps is not configured; every type then reads "not checked".</param>
     public DocumentTypeCheck(IAdoClient? ado, DocumentTypeDecisions decisions, IPrompts prompts)
     {
@@ -66,9 +69,24 @@ public sealed class DocumentTypeCheck
     {
         if (_decisions.For(name) is { } saved) return FromDecision(name, crmService, saved);
 
-        if (_ado is null) return TypeRuling.NotChecked(name);
+        if (_ado is null || _unreachable is not null)
+            return new TypeRuling(name, AdoVerdict.NotChecked, null,
+                _unreachable ?? "DevOps was not consulted.", Array.Empty<AdoHit>(), "not checked");
 
         var opinion = await AskDevOpsAsync(name, crmService, ct);
+
+        // A backlog that cannot be reached is not a question for the operator — it is the same
+        // answer for every document type, and asking it twenty times would be a barrage where
+        // one sentence is the truth. It is said once, and the rest of the run carries on.
+        if (_unreachable is not null)
+        {
+            _prompts.Blank();
+            _prompts.Warn($"DevOps is unreachable, so the cross-check is off for this run. " +
+                          $"Everything else is unaffected. {_unreachable}");
+
+            return new TypeRuling(name, AdoVerdict.NotChecked, null, _unreachable,
+                Array.Empty<AdoHit>(), "not checked");
+        }
 
         return opinion.Verdict == AdoVerdict.CannotTell
             ? Ask(name, crmService, opinion)
@@ -92,10 +110,20 @@ public sealed class DocumentTypeCheck
             {
                 hits = await _ado!.FindByTitleAsync(term, ct);
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                throw;                      // the operator stopping the run is not a failure
+            }
+            catch (Exception ex)
+            {
+                // Anything at all. The backlog is a third opinion, not a dependency: a dropped
+                // connection, an expired password, a proxy, a server having a bad day — none of
+                // it may take down a run that is otherwise working. Catching only the two
+                // obvious HTTP exceptions let an IOException mid-read escape and kill the run.
+                _unreachable = $"{ex.GetType().Name}: {Innermost(ex)}";
+
                 return new AdoOpinion(AdoVerdict.CannotTell, null, Array.Empty<AdoHit>(),
-                    $"DevOps could not be reached: {ex.Message}");
+                    $"DevOps could not be reached — {_unreachable}");
             }
 
             var opinion = DocumentTypeAuthority.Weigh(name, crmService, hits);
@@ -213,4 +241,17 @@ public sealed class DocumentTypeCheck
 
     private static string Trim(string value, int width) =>
         value.Length <= width ? value : value[..(width - 1)] + "…";
+
+    /// <summary>
+    /// The message worth reading. "An error occurred while sending the request" is the outer
+    /// wrapper of every HttpClient failure and says nothing; the cause underneath names the
+    /// host, the refusal or the timeout.
+    /// </summary>
+    private static string Innermost(Exception ex)
+    {
+        var cause = ex;
+        while (cause.InnerException is not null) cause = cause.InnerException;
+
+        return cause.Message;
+    }
 }
