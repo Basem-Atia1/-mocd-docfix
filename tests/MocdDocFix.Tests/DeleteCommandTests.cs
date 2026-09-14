@@ -158,6 +158,7 @@ public class DeleteCommandTests : IDisposable
     public async Task Nothing_to_delete_is_reported_without_prompting()
     {
         File.Delete(Path.Combine(_root, "state.jsonl"));
+        StillOnTheOldFile();
         var prompts = Confirmed();
 
         var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
@@ -171,6 +172,7 @@ public class DeleteCommandTests : IDisposable
     [Fact]
     public async Task Nothing_to_delete_explains_where_each_document_actually_got_to()
     {
+        StillOnTheOldFile();
         States().Append(new StateRecord(DocumentId, MigrationState.Failed,
             DateTimeOffset.UtcNow, NewFileId, NewPath, "file-record-path: the record and the file disagree."));
         var prompts = Confirmed();
@@ -190,12 +192,101 @@ public class DeleteCommandTests : IDisposable
     public async Task Nothing_migrated_at_all_says_so_plainly()
     {
         File.Delete(Path.Combine(_root, "state.jsonl"));
+        StillOnTheOldFile();
         var prompts = Confirmed();
 
         await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
 
         Assert.Contains("nothing that could be deleted", string.Join("|", prompts.Messages));
     }
+
+    // ---- CRM is the authority; the state file is only a note ----
+
+    /// <summary>
+    /// The bug this exists to stop. A run can finish every CRM write and then fail a later check,
+    /// recording Failed over work that actually succeeded. Reading only the state file, this step
+    /// then finds nothing to do, for ever, and the old file and old record stay behind.
+    /// </summary>
+    [Fact]
+    public async Task A_document_CRM_says_is_done_is_deleted_even_though_the_state_file_says_failed()
+    {
+        States().Append(new StateRecord(DocumentId, MigrationState.Failed,
+            DateTimeOffset.UtcNow, null, null, "check 7 halted the run"));
+
+        var summary = await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(1, summary.Deleted);
+        Assert.Contains(OldPath, _files.Deleted);
+        Assert.Contains(OldFileId, _write.DeletedFiles);
+    }
+
+    [Fact]
+    public async Task The_correction_is_announced_rather_than_made_silently()
+    {
+        States().Append(new StateRecord(DocumentId, MigrationState.Failed,
+            DateTimeOffset.UtcNow, null, null, "check 7 halted the run"));
+
+        var prompts = Confirmed();
+        await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        var said = string.Join("|", prompts.Messages);
+        Assert.Contains("disagreed with what this tool had written down", said);
+        Assert.Contains("recorded as   Failed", said);
+        Assert.Contains(NewFileId.ToString(), said);
+        Assert.Contains("CORRECTED", said);
+    }
+
+    [Fact]
+    public async Task A_reconciled_document_keeps_the_path_so_the_safety_checks_can_run()
+    {
+        States().Append(new StateRecord(DocumentId, MigrationState.Failed,
+            DateTimeOffset.UtcNow, null, null, "check 7 halted the run"));
+
+        await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        // Recorded as Repointed with BOTH halves, or the delete step refuses with
+        // "no new file recorded" — which is how the same document got stuck twice.
+        var record = States().LoadLatest()[DocumentId];
+        Assert.Equal(MigrationState.Deleted, record.State);
+        Assert.Equal(NewFileId, record.NewFileId);
+        Assert.Equal(NewPath, record.NewFilePath);
+    }
+
+    [Fact]
+    public async Task A_document_that_CRM_says_is_still_wrong_is_never_promoted()
+    {
+        // The document points at a new record, but one filed under the wrong catalogue.
+        var wrong = Guid.NewGuid();
+        _write.Links[DocumentId] = wrong;
+        _read.RawRecords[$"mocd_documentfiles:{wrong}"] =
+            "{\"mocd_filepath\":\"DigitalServices\\\\20260910\\\\" + wrong + ".jpg\"}";
+
+        States().Append(new StateRecord(DocumentId, MigrationState.Failed,
+            DateTimeOffset.UtcNow, null, null, "check 7 halted the run"));
+
+        var summary = await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Empty(_files.Deleted);
+        Assert.Equal(MigrationState.Failed, States().LoadLatest()[DocumentId].State);
+    }
+
+    [Fact]
+    public async Task A_document_still_on_its_old_file_is_never_promoted()
+    {
+        StillOnTheOldFile();
+        States().Append(new StateRecord(DocumentId, MigrationState.Failed,
+            DateTimeOffset.UtcNow, null, null, "upload failed"));
+
+        var summary = await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Empty(_files.Deleted);
+        Assert.Empty(_write.DeletedFiles);
+    }
+
+    /// <summary>CRM still has the document on its original file — nothing was ever migrated.</summary>
+    private void StillOnTheOldFile() => _write.Links[DocumentId] = OldFileId;
 
     // ---- the delete step shows its working ----
 

@@ -94,9 +94,16 @@ public sealed class MigrateCommand
             if (await AlreadyCorrectAsync(entry, ct) is { } settled)
             {
                 _prompts.Info($"  {entry.FileName}: already points at a correctly filed record " +
-                              $"({settled}). Nothing to do.");
+                              $"({settled.RecordId}). Nothing to do.");
+                _prompts.Info($"    its path  {settled.FilePath}");
+                _prompts.Info("    The old file is now eligible for deletion.");
+
+                // The path matters as much as the id. Recording it as null passes every check
+                // here and then fails the delete step with "no new file recorded", which reads
+                // like the migration never happened.
                 _state.Append(new StateRecord(entry.DocumentId, MigrationState.Repointed,
-                    DateTimeOffset.UtcNow, settled, null, "Already correct — not migrated again."));
+                    DateTimeOffset.UtcNow, settled.RecordId, settled.FilePath,
+                    "Already correct — not migrated again."));
                 skipped++;
                 continue;
             }
@@ -154,7 +161,7 @@ public sealed class MigrateCommand
 
             var newFile = upload.Data;
             _state.Append(new StateRecord(entry.DocumentId, MigrationState.Uploaded,
-                DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath, null));
+                DateTimeOffset.UtcNow, null, newFile.FilePath, null));
 
             // Checks 2, 5 and 4 before we spend a download.
             var checks = new List<CheckResult>
@@ -184,7 +191,7 @@ public sealed class MigrateCommand
             if (!report.AllPassed)
             {
                 var detail = string.Join(" | ", report.Failures.Select(f => $"{f.Name}: {f.Detail}"));
-                Fail(entry, detail);
+                Fail(entry, detail, null, newFile.FilePath);
                 failed++;
 
                 var choice = ReportTrouble(entry,
@@ -230,8 +237,11 @@ public sealed class MigrateCommand
                 _prompts.Info("  Left alone. CRM still points at the old file, and the old file is");
                 _prompts.Info("  untouched. The new copy stays on the server for you to inspect:");
                 _prompts.Info($"     {newFile.FilePath}");
+                // No CRM record exists yet, so NewFileId stays null: it names the new
+                // mocd_documentfile, and claiming one that was never created is what sent the
+                // delete and final-check steps looking for a record that is not there.
                 _state.Append(new StateRecord(entry.DocumentId, MigrationState.Uploaded,
-                    DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath,
+                    DateTimeOffset.UtcNow, null, newFile.FilePath,
                     "Operator did not confirm the two files match."));
                 skipped++;
                 continue;
@@ -271,7 +281,7 @@ public sealed class MigrateCommand
                 _prompts.Info("  Left as it was. The new record exists but nothing points at it;");
                 _prompts.Info("  delete it by hand if you do not want it.");
                 _state.Append(new StateRecord(entry.DocumentId, MigrationState.Verified,
-                    DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath,
+                    DateTimeOffset.UtcNow, newRecordId, newFile.FilePath,
                     $"Record {newRecordId} created; operator did not repoint."));
                 skipped++;
                 continue;
@@ -285,7 +295,7 @@ public sealed class MigrateCommand
             if (!tookIt.Passed)
             {
                 haltReason = $"{tookIt.Name}: {tookIt.Detail}";
-                Fail(entry, haltReason);
+                Fail(entry, haltReason, newRecordId, newFile.FilePath);
                 failed++;
 
                 ReportTrouble(entry,
@@ -314,7 +324,7 @@ public sealed class MigrateCommand
             if (!pathStuck.Passed)
             {
                 haltReason = $"{pathStuck.Name}: {pathStuck.Detail}";
-                Fail(entry, haltReason);
+                Fail(entry, haltReason, newRecordId, newFile.FilePath);
                 failed++;
 
                 ReportTrouble(entry,
@@ -333,13 +343,19 @@ public sealed class MigrateCommand
                 break;
             }
 
+            // newRecordId, not newFile.FileId. They are the same number only when the portal
+            // created the original record; when the plugin did, CRM generated its own key and the
+            // vendor's file id lives in mocd_fileid. Everything downstream — the delete step's
+            // safety checks, the final check, the CRM links — looks the record up by this id, so
+            // recording the vendor's id here makes a correctly migrated document fail all of them.
             _state.Append(new StateRecord(entry.DocumentId, MigrationState.Repointed,
-                DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath, null));
+                DateTimeOffset.UtcNow, newRecordId, newFile.FilePath, null));
 
             var repointedPoints = new (string, string?)[]
                 {
                     ("New path", newFile.FilePath),
-                    ("New file record", newFile.FileId.ToString()),
+                    ("New file record", newRecordId.ToString()),
+                    ("Vendor file id", newFile.FileId.ToString()),
                     ("Filed under", entry.CorrectCatalogueId.ToString()),
                     ("Vendor hash", newFile.Hash),
                     ("Saved as", Path.Combine("new", Path.GetFileName(stagedPath))),
@@ -361,8 +377,9 @@ public sealed class MigrateCommand
             _prompts.Info("");
             _prompts.Info("  REPOINTED — open it in CRM to see the file:");
             _prompts.Info($"    document        {Reporter.CrmLink(_crmUrl, entry.DocumentId)}");
-            _prompts.Info($"    new file record {RepointedListWriter.DocumentFileLink(_crmUrl, newFile.FileId)}");
-            _prompts.Info($"    new file id     {newFile.FileId}");
+            _prompts.Info($"    new file record {RepointedListWriter.DocumentFileLink(_crmUrl, newRecordId)}");
+            _prompts.Info($"    record id       {newRecordId}");
+            _prompts.Info($"    vendor file id  {newFile.FileId}");
             _prompts.Info("    The View button on the document now serves the corrected copy.");
 
             await OfferToDeleteOldAsync(entry, ct);
@@ -370,7 +387,7 @@ public sealed class MigrateCommand
             rows.Add(new MigrationRow(
                 DocumentId: entry.DocumentId,
                 OldFileId: entry.OldFileId,
-                NewFileId: newFile.FileId,
+                NewFileId: newRecordId,
                 OldFilePath: entry.OldFilePath,
                 NewFilePath: newFile.FilePath,
                 Bytes: oldBytes.Length,
@@ -393,9 +410,16 @@ public sealed class MigrateCommand
             reportPath, rows, repointedPath);
     }
 
-    private void Fail(ManifestEntry entry, string detail) =>
+    /// <summary>
+    /// Records a failure without throwing away what the run already learned. A Failed record that
+    /// blanks the new record's id and path leaves nothing to recover from: the work may have been
+    /// done in CRM, but the tool's own notes no longer say where it went. Whatever was known when
+    /// the failure happened is carried through.
+    /// </summary>
+    private void Fail(ManifestEntry entry, string detail,
+        Guid? newRecordId = null, string? newFilePath = null) =>
         _state.Append(new StateRecord(entry.DocumentId, MigrationState.Failed,
-            DateTimeOffset.UtcNow, null, null, detail));
+            DateTimeOffset.UtcNow, newRecordId, newFilePath, detail));
 
     /// <summary>What the operator chose after something went wrong.</summary>
     private enum AfterTrouble { StopTheRun, SkipThisOne }
@@ -446,21 +470,8 @@ public sealed class MigrateCommand
     /// The id of the record this document already points at, when that record is filed under the
     /// right catalogue — meaning the work is done, whoever did it. Null means there is work to do.
     /// </summary>
-    private async Task<Guid?> AlreadyCorrectAsync(ManifestEntry entry, CancellationToken ct)
-    {
-        var linked = await _write.GetDocumentFileLinkAsync(entry.DocumentId, ct);
-        if (linked is not { } linkedId || linkedId == entry.OldFileId) return null;
-
-        var path = ReadString(
-            await _read.GetRawRecordAsync("mocd_documentfiles", linkedId, ct), "mocd_filepath");
-        if (path is null) return null;
-
-        var segment = FilePathParser.Parse(path).CategorySegment;
-
-        return Guid.TryParse(segment, out var catalogue) && catalogue == entry.CorrectCatalogueId
-            ? linkedId
-            : null;
-    }
+    private async Task<SettledRecord?> AlreadyCorrectAsync(ManifestEntry entry, CancellationToken ct) =>
+        await Reconciler.AlreadyCorrectAsync(_read, _write, entry, ct);
 
     /// <summary>Pulls one string attribute out of a raw record snapshot.</summary>
     private static string? ReadString(string? recordJson, string attribute)

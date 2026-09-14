@@ -52,6 +52,14 @@ public class MigrateCommandTests : IDisposable
             return new ApiResponse<FileData>(true, null,
                 new FileData(NewFileId, path, "VHASH", "cert.jpg", "image/jpeg", null), null);
         };
+
+        // CRM stores the new row under whatever key it ended up with — the vendor's file id for a
+        // portal-shaped record, its own generated key for a plugin-shaped one. Registering it only
+        // under the vendor id let a read-back by the real key silently find nothing.
+        _write.OnCreated = (id, attributes) =>
+            _read.RawRecords[$"mocd_documentfiles:{id}"] =
+                "{\"mocd_filepath\":\"" +
+                ((string?)attributes["mocd_filepath"] ?? "").Replace("\\", "\\\\") + "\"}";
     }
 
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
@@ -255,15 +263,7 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task A_record_left_holding_the_wrong_path_explains_why_nothing_was_deleted()
     {
-        _files.UploadResponder = _ =>
-        {
-            var path = NewPath(NewFileId);
-            _files.Files[path] = (Convert.ToBase64String(Content), "VHASH");
-            _read.RawRecords[$"mocd_documentfiles:{NewFileId}"] =
-                "{\"mocd_filepath\":\"" + OldPath.Replace("\\", "\\\\") + "\"}";
-            return new ApiResponse<FileData>(true, null,
-                new FileData(NewFileId, path, "VHASH", "cert.jpg", "image/jpeg", null), null);
-        };
+        CrmKeepsTheOldPathOnTheNewRecord();
 
         var prompts = new FakePrompts().Answer(
             ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
@@ -404,6 +404,42 @@ public class MigrateCommandTests : IDisposable
         Assert.Equal(DocumentId, upload.ApplicationId);
     }
 
+    /// <summary>
+    /// The state file names the new mocd_documentfile, and for a plugin-shaped record that is the
+    /// key CRM generated, not the vendor's file id. Recording the vendor id instead made the
+    /// delete step and the final check look up a record that does not exist, so a document that
+    /// had migrated perfectly was reported as broken and its old file could never be removed.
+    /// </summary>
+    [Fact]
+    public async Task A_plugin_created_record_is_recorded_under_the_key_crm_generated()
+    {
+        BackedUpAsPluginRecord();
+
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+            .RunAsync("dev", CancellationToken.None);
+
+        Assert.Equal(1, summary.Migrated);
+        Assert.False(summary.Halted);
+
+        var record = States().LoadLatest()[DocumentId];
+        Assert.Equal(MigrationState.Repointed, record.State);
+        Assert.Equal(_write.GeneratedId, record.NewFileId);      // the CRM key
+        Assert.NotEqual(NewFileId, record.NewFileId);            // not the vendor's file id
+        Assert.Equal(NewPath(NewFileId), record.NewFilePath);
+    }
+
+    [Fact]
+    public async Task The_crm_link_offered_after_repointing_is_the_record_that_exists()
+    {
+        BackedUpAsPluginRecord();
+        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+
+        var summary = await Command(prompts).RunAsync("dev", CancellationToken.None);
+
+        Assert.Equal(_write.GeneratedId, Assert.Single(summary.Rows).NewFileId);
+        Assert.Contains(_write.GeneratedId.ToString(), string.Join("|", prompts.Messages));
+    }
+
     [Fact]
     public async Task A_portal_created_record_still_uses_the_vendor_id_as_its_key()
     {
@@ -511,16 +547,7 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task A_documentfile_left_pointing_at_the_old_path_halts_the_run()
     {
-        _files.UploadResponder = _ =>
-        {
-            var path = NewPath(NewFileId);
-            _files.Files[path] = (Convert.ToBase64String(Content), "VHASH");
-            // CRM ends up holding the OLD path on the new record.
-            _read.RawRecords[$"mocd_documentfiles:{NewFileId}"] =
-                "{\"mocd_filepath\":\"" + OldPath.Replace("\\", "\\\\") + "\"}";
-            return new ApiResponse<FileData>(true, null,
-                new FileData(NewFileId, path, "VHASH", "cert.jpg", "image/jpeg", null), null);
-        };
+        CrmKeepsTheOldPathOnTheNewRecord();
 
         var summary = await Command(new FakePrompts().Answer(
                 ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
@@ -529,6 +556,32 @@ public class MigrateCommandTests : IDisposable
         Assert.True(summary.Halted);
         Assert.Contains("file-record-path", summary.HaltReason!);
         Assert.Empty(_files.Deleted);              // and nothing was deleted
+    }
+
+    /// <summary>The new row is created, but its mocd_filepath still names the old file.</summary>
+    private void CrmKeepsTheOldPathOnTheNewRecord() =>
+        _write.OnCreated = (id, _) =>
+            _read.RawRecords[$"mocd_documentfiles:{id}"] =
+                "{\"mocd_filepath\":\"" + OldPath.Replace("\\", "\\\\") + "\"}";
+
+    /// <summary>
+    /// A halt must not erase what the run already learned. Blanking the new record's id and path
+    /// left nothing to recover from: the row existed in CRM, but the tool's own notes no longer
+    /// said where it was, so no later step could find it.
+    /// </summary>
+    [Fact]
+    public async Task A_halt_keeps_the_new_record_id_and_path_it_already_knew()
+    {
+        CrmKeepsTheOldPathOnTheNewRecord();
+
+        await Command(new FakePrompts().Answer(
+                ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+            .RunAsync("dev", CancellationToken.None);
+
+        var record = States().LoadLatest()[DocumentId];
+        Assert.Equal(MigrationState.Failed, record.State);
+        Assert.Equal(NewFileId, record.NewFileId);           // portal shape: key = vendor file id
+        Assert.Equal(NewPath(NewFileId), record.NewFilePath);
     }
 
     // ---- one question per decision ----

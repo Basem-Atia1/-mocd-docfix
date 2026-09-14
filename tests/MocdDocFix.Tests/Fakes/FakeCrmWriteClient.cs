@@ -24,11 +24,19 @@ public sealed class FakeCrmWriteClient : ICrmWriteClient
     /// <summary>The key CRM invents when none is supplied. Set it to control what comes back.</summary>
     public Guid GeneratedId { get; set; } = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
+    /// <summary>
+    /// Called with the key CRM actually used. Lets a test mirror the new row into the read
+    /// client the way CRM would, so a read-back by that key finds it — which is the difference
+    /// between the portal shape (key = vendor file id) and the plugin shape (key from CRM).
+    /// </summary>
+    public Action<Guid, IReadOnlyDictionary<string, object?>>? OnCreated { get; set; }
+
     public Task<Guid> CreateDocumentFileAsync(Guid? explicitId,
         IReadOnlyDictionary<string, object?> attributes, CancellationToken ct)
     {
         var id = explicitId ?? GeneratedId;
         CreatedFiles.Add(new Created(explicitId, id, attributes));
+        OnCreated?.Invoke(id, attributes);
         return Task.FromResult(id);
     }
 

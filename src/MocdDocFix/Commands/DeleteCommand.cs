@@ -39,6 +39,13 @@ public sealed class DeleteCommand
     public async Task<DeleteSummary> RunAsync(string env, bool isProduction, CancellationToken ct)
     {
         var manifest = _backups.LoadManifest().ToDictionary(m => m.DocumentId);
+
+        // Ask CRM what is actually true before deciding what is eligible. Without this the step
+        // reads only its own notes, and a document whose migration succeeded in CRM but was
+        // recorded as Failed can never become eligible — its old file and old record stay behind
+        // for good, with the app reporting "nothing awaiting deletion" and no way to say why.
+        await ReconcileWithCrmAsync(manifest.Values, ct);
+
         var latest = _state.LoadLatest();
 
         var candidates = latest.Values
@@ -128,6 +135,32 @@ public sealed class DeleteCommand
         }
 
         return new DeleteSummary(deleted, skipped, refused, false, null);
+    }
+
+    /// <summary>
+    /// Brings the state file into line with CRM, and says out loud what it changed. CRM is read
+    /// only — nothing is written to the file server and nothing is deleted here.
+    /// </summary>
+    private async Task ReconcileWithCrmAsync(IEnumerable<ManifestEntry> manifest, CancellationToken ct)
+    {
+        var corrected = await Reconciler.SweepAsync(_read, _write, _state, manifest, ct);
+        if (corrected.Count == 0) return;
+
+        _prompts.Info("");
+        _prompts.Info($"Asked CRM about every backed-up document first. {corrected.Count} " +
+                      "disagreed with what this tool had written down:");
+
+        foreach (var fix in corrected)
+        {
+            _prompts.Info("");
+            _prompts.Info($"  {fix.FileName ?? fix.DocumentId.ToString()}");
+            _prompts.Info($"    recorded as   {fix.Was}");
+            _prompts.Info($"    CRM says      the document points at {fix.Now.RecordId}");
+            _prompts.Info($"    its path      {fix.Now.FilePath}");
+            _prompts.Info("    CORRECTED     the migration did finish. Now eligible for deletion.");
+        }
+
+        _prompts.Info("");
     }
 
     /// <summary>
@@ -331,6 +364,10 @@ public sealed class DeleteCommand
 
         var entry = _backups.LoadManifest().FirstOrDefault(m => m.DocumentId == documentId);
         if (entry is null) return "no backup record for this document";
+
+        // Same reconciliation as the bulk step, for the same reason: the answer to "is this
+        // repointed" belongs to CRM, not to the note this tool left itself.
+        await ReconcileWithCrmAsync(new[] { entry }, ct);
 
         if (!_state.LoadLatest().TryGetValue(documentId, out var candidate) ||
             candidate.State != MigrationState.Repointed)

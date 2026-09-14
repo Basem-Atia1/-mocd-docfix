@@ -96,18 +96,25 @@ public sealed class Wizard
                     "is its CRM record still there, is the new file where it should be, and does " +
                     "the document point at it. Reads only — it reports, it never repairs."),
 
+                new Choice("Finish off old files", "delete the old files of work already done",
+                    "Goes straight to the delete step for documents that have already been " +
+                    "migrated — no scanning, no uploading. It asks CRM first which documents are " +
+                    "genuinely finished, so one whose migration succeeded but was recorded as " +
+                    "failed is picked up here instead of being left behind for good."),
+
                 new Choice("Change environment", $"currently {_envName}"),
 
                 new Choice("Quit", "stop here")
             }, defaultIndex: 0, allowBack: false);
 
-            switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 5)
+            switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 6)
             {
                 case 0: await TargetedAsync(ct); break;
                 case 1: await FullAsync(ct); break;
                 case 2: await ReportOnlyAsync(); break;
                 case 3: await VerifyOnlyAsync(); break;
-                case 4: return WizardExit.ChangeEnvironment;
+                case 4: await DeleteOnlyAsync(); break;
+                case 5: return WizardExit.ChangeEnvironment;
                 default:
                     _prompts.Info("");
                     _prompts.Info("Nothing further was done. Bye.");
@@ -153,6 +160,31 @@ public sealed class Wizard
         _prompts.Info("Asking the file server and CRM about every document already migrated.");
         _prompts.Info("This reads only — nothing is changed, whatever it finds.");
 
+        var verify = await _actions.VerifyAsync();
+        Report("", "Final check", verify.Headline, verify.Details);
+    }
+
+    /// <summary>
+    /// The delete step on its own. A document can be finished in CRM and still have its old file
+    /// on the server — a run that halted after repointing, or a fix made by hand. Without a way
+    /// in here, the only route to the delete step was a full cycle, and a document the scan now
+    /// calls correct never appears in one. So it could never be cleaned up.
+    /// </summary>
+    private async Task DeleteOnlyAsync()
+    {
+        _prompts.Info("");
+        _prompts.Info("This goes straight to the delete step. Nothing is scanned or uploaded.");
+        _prompts.Info("First it asks CRM about every backed-up document, and corrects its own");
+        _prompts.Info("notes where they disagree — that read changes nothing.");
+        _prompts.Info("Then it lists what is eligible and asks before deleting anything.");
+
+        if (!ConfirmDelete()) return;
+
+        var delete = await _actions.DeleteAsync();
+        Report("5", "Delete old files", delete.Headline, delete.Details);
+
+        _prompts.Info("");
+        _prompts.Info("Confirming with the file server and CRM. Reads only.");
         var verify = await _actions.VerifyAsync();
         Report("", "Final check", verify.Headline, verify.Details);
     }
