@@ -118,7 +118,7 @@ public sealed class Wizard
                 new Choice("Change environment", $"currently {_envName}"),
 
                 new Choice("Quit", "stop here")
-            }, defaultIndex: 0, allowBack: false);
+            }, defaultIndex: 0, allowBack: false, confirm: true);
 
             switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 7)
             {
@@ -195,10 +195,12 @@ public sealed class Wizard
         _prompts.Bullet("Then it lists what is eligible and asks before deleting anything.",
             Tone.Muted);
 
-        if (!ConfirmDelete()) return;
+        // No step number here: this is one action on its own, not the fifth of five, and
+        // "Step 5 of 5" in a run with a single step invents four that never happened.
+        if (!ConfirmDelete(standalone: true)) return;
 
         var delete = await _actions.DeleteAsync();
-        Report("5", "Delete old files", delete.Headline, delete.Details);
+        Report("", "Delete old files", delete.Headline, delete.Details);
 
         _prompts.Blank();
         _prompts.Say("Confirming with the file server and CRM. Reads only.", Tone.Muted);
@@ -462,7 +464,7 @@ public sealed class Wizard
 
     private bool ConfirmFileServer(string what)
     {
-        _prompts.Section("Step 2 — Backup", Tone.Normal);
+        _prompts.Section("Step 2 of 5 — Backup", Tone.Normal);
         _prompts.Say(what);
         _prompts.Blank();
         _prompts.Field("File server", _fileServerUrl, Tone.Muted);
@@ -472,7 +474,7 @@ public sealed class Wizard
 
     private bool ConfirmMigrate()
     {
-        _prompts.Section("Steps 3 and 4 — Upload and repoint", Tone.Warn);
+        _prompts.Section("Steps 3 and 4 of 5 — Upload and repoint", Tone.Warn);
         _prompts.Say("This uploads a corrected copy of every backed-up file and repoints CRM at it.");
         _prompts.Blank();
         _prompts.Warn("It contacts the file server, and it WRITES to CRM.");
@@ -485,9 +487,9 @@ public sealed class Wizard
         return _prompts.YesNo("  Start uploading?", defaultYes: false, Tone.Warn);
     }
 
-    private bool ConfirmDelete()
+    private bool ConfirmDelete(bool standalone = false)
     {
-        _prompts.Section("Step 5 — Delete old files", Tone.Danger);
+        _prompts.Section(standalone ? "Delete old files" : "Step 5 of 5 — Delete old files", Tone.Danger);
         _prompts.Say("Delete removes the OLD files from the file server and their CRM records.");
         _prompts.Blank();
         _prompts.Warn("This cannot be undone.", Tone.Danger);

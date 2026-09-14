@@ -194,7 +194,7 @@ public sealed class DocumentTypeCheck
             new Choice("Skip for now", "decide later; ask me again next run",
                 "Nothing is remembered. The documents keep the verdict the path gave them, and " +
                 "this question comes back on the next scan.")
-        }, defaultIndex: 0, allowBack: false);
+        }, defaultIndex: 0, allowBack: false, confirm: true);
 
         var index = answer.Kind == AnswerKind.Chosen ? answer.Index : 3;
 

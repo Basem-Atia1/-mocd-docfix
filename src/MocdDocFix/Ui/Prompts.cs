@@ -27,8 +27,24 @@ public enum Tone
     Danger
 }
 
+/// <summary>One keypress while a live menu is on screen.</summary>
+public enum MenuKey { Up, Down, Enter, Escape, Back, Help, Digit, Other }
+
 public interface IPrompts
 {
+    /// <summary>
+    /// True when a real console is on the other end, so a menu can be driven with the arrow keys
+    /// and redrawn in place. False for piped input, which takes the typed-number path instead —
+    /// the same path that keeps scripted runs and the tests deterministic.
+    /// </summary>
+    bool Interactive => false;
+
+    /// <summary>One key for a live menu. Only called when <see cref="Interactive"/> is true.</summary>
+    (MenuKey Key, char Character) ReadMenuKey() => (MenuKey.Escape, '\0');
+
+    /// <summary>Clears the last n printed lines and puts the cursor back at the first of them.</summary>
+    void Rewind(int lines) { }
+
     ConfirmChoice Confirm(string question);
 
     /// <summary>
@@ -124,6 +140,54 @@ public sealed class ConsolePrompts : IPrompts
         return ReadOrEndOfInput() is { } answer ? answer.Trim() : "q";
     }
 
+    /// <summary>
+    /// Arrow keys need a real console on both ends: a key to read, and a cursor to move. Piped
+    /// input has neither, so it falls back to typing a number — which is also how every test and
+    /// every scripted run drives the menus.
+    /// </summary>
+    public bool Interactive => _coloured && SafeToRead();
+
+    public (MenuKey Key, char Character) ReadMenuKey()
+    {
+        ConsoleKeyInfo key;
+
+        try { key = Console.ReadKey(intercept: true); }
+        catch (InvalidOperationException) { return (MenuKey.Escape, '\0'); }
+
+        return key.Key switch
+        {
+            ConsoleKey.UpArrow or ConsoleKey.K => (MenuKey.Up, '\0'),
+            ConsoleKey.DownArrow or ConsoleKey.J => (MenuKey.Down, '\0'),
+            ConsoleKey.Enter or ConsoleKey.Spacebar => (MenuKey.Enter, '\0'),
+            ConsoleKey.Escape => (MenuKey.Escape, '\0'),
+            _ => key.KeyChar switch
+            {
+                'q' or 'Q' => (MenuKey.Escape, key.KeyChar),
+                'b' or 'B' => (MenuKey.Back, key.KeyChar),
+                '?' or 'h' or 'H' => (MenuKey.Help, key.KeyChar),
+                >= '1' and <= '9' => (MenuKey.Digit, key.KeyChar),
+                _ => (MenuKey.Other, key.KeyChar)
+            }
+        };
+    }
+
+    public void Rewind(int lines)
+    {
+        if (!Interactive || lines <= 0) return;
+
+        try
+        {
+            var top = Math.Max(0, Console.CursorTop - lines);
+            var width = Math.Max(1, Console.WindowWidth - 1);
+
+            Console.SetCursorPosition(0, top);
+            for (var i = 0; i < lines; i++) _out.WriteLine(new string(' ', width));
+            Console.SetCursorPosition(0, top);
+        }
+        catch (IOException) { /* the console went away; the menu simply reprints below */ }
+        catch (ArgumentOutOfRangeException) { /* scrolled past the top of the buffer */ }
+    }
+
     public void Info(string message, Tone tone = Tone.Normal) => Write(message, tone, newLine: true);
 
     private void Ask(string prompt, Tone tone) => Write(prompt, tone, newLine: false);
@@ -161,6 +225,12 @@ public sealed class ConsolePrompts : IPrompts
     private static bool SafeToColour()
     {
         try { return !Console.IsOutputRedirected; }
+        catch (IOException) { return false; }
+    }
+
+    private static bool SafeToRead()
+    {
+        try { return !Console.IsInputRedirected; }
         catch (IOException) { return false; }
     }
 

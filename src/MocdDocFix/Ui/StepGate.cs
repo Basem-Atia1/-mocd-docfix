@@ -55,12 +55,15 @@ public sealed class StepGate
 
         while (true)
         {
+            // No default, and a confirmation on top of it. This question sets the next step
+            // going, and it used to take a bare Enter — so a stray newline left in the buffer
+            // ran a whole phase nobody had asked for.
             var answer = _asker.Ask($"Step {step} finished. What next?", new[]
             {
                 new Choice("Continue", $"go on and {next}"),
                 new Choice("Show details", "print what happened to each file, then ask again"),
                 new Choice("Stop here", "nothing else runs; what is done stays done")
-            }, defaultIndex: 0, allowBack: false);
+            }, defaultIndex: null, allowBack: false, confirm: true);
 
             switch (answer.Kind == AnswerKind.Chosen ? answer.Index : 2)
             {

@@ -45,16 +45,32 @@ public sealed class DocumentReportStore
         text.AppendLine($"  {"written",-20}{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}");
         text.AppendLine();
 
+        var lastWasBlank = true;       // no leading blank line under the header
+
         foreach (var (label, value) in points)
         {
-            if (string.IsNullOrWhiteSpace(value)) continue;
+            // A point with a label but no value is a deliberate gap between sections. Skipping
+            // every empty value swallowed those too, and the report came out as one dense block
+            // of twenty lines with nothing to rest the eye on.
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                if (label.Length == 0 && !lastWasBlank)
+                {
+                    text.AppendLine();
+                    lastWasBlank = true;
+                }
+
+                continue;
+            }
 
             var first = true;
-            foreach (var line in Wrap(value, 56))
+            foreach (var line in Wrap(value, 54))
             {
                 text.AppendLine($"  {(first ? label : string.Empty),-20}{line}");
                 first = false;             // only the first line carries the label
             }
+
+            lastWasBlank = false;
         }
 
         if (extraLines is not null)

@@ -42,12 +42,94 @@ public sealed class Asker
 
     public Asker(IPrompts prompts) => _prompts = prompts;
 
+    /// <param name="confirm">
+    /// Ask "are you sure" after the choice. On for anything that sets work going: a question
+    /// answered by a stray keypress once ran a whole step nobody had asked for.
+    /// </param>
     public Answer Ask(string question, IReadOnlyList<Choice> choices,
-        int? defaultIndex = null, bool allowBack = true)
+        int? defaultIndex = null, bool allowBack = true, bool confirm = false)
+    {
+        if (_prompts.Interactive)
+            return Navigate(question, choices, defaultIndex, allowBack, confirm);
+
+        return Typed(question, choices, defaultIndex, allowBack);
+    }
+
+    /// <summary>
+    /// The live menu: up and down to move, Enter to choose, and a plain question after it.
+    /// Nothing here can be answered by accident — a keypress moves the highlight, and only
+    /// Enter followed by a yes actually does anything.
+    /// </summary>
+    private Answer Navigate(string question, IReadOnlyList<Choice> choices,
+        int? defaultIndex, bool allowBack, bool confirm)
+    {
+        var selectable = Enumerable.Range(0, choices.Count).Where(i => choices[i].Enabled).ToList();
+
+        if (selectable.Count == 0) return Answer.Quit;
+
+        var at = selectable.Contains(defaultIndex ?? -1) ? defaultIndex!.Value : selectable[0];
+        var drawn = 0;
+
+        while (true)
+        {
+            _prompts.Rewind(drawn);
+            drawn = Show(question, choices, defaultIndex, at);
+            _prompts.Info("   ↑ ↓ to move · Enter to choose · ? for detail · " +
+                          (allowBack ? "b to go back · " : "") + "q to quit", Tone.Muted);
+            drawn++;
+
+            var (key, character) = _prompts.ReadMenuKey();
+
+            switch (key)
+            {
+                case MenuKey.Up:
+                    at = selectable[(selectable.IndexOf(at) - 1 + selectable.Count) % selectable.Count];
+                    continue;
+
+                case MenuKey.Down:
+                    at = selectable[(selectable.IndexOf(at) + 1) % selectable.Count];
+                    continue;
+
+                case MenuKey.Digit:
+                    var typed = character - '1';
+                    if (typed >= 0 && typed < choices.Count && choices[typed].Enabled) at = typed;
+                    continue;
+
+                case MenuKey.Help:
+                    _prompts.Rewind(drawn);
+                    drawn = 0;
+                    Explain(choices);
+                    continue;
+
+                case MenuKey.Back when allowBack:
+                    return Answer.Back;
+
+                case MenuKey.Escape:
+                    return Answer.Quit;
+
+                case MenuKey.Enter:
+                    if (!confirm || AreYouSure(choices[at])) return Answer.Choose(at);
+                    drawn = 0;                     // the confirmation printed over the menu
+                    continue;
+
+                default:
+                    continue;
+            }
+        }
+    }
+
+    private bool AreYouSure(Choice choice)
+    {
+        _prompts.Blank();
+        return _prompts.YesNo($"  {choice.Label} — are you sure?", defaultYes: true, Tone.Warn);
+    }
+
+    private Answer Typed(string question, IReadOnlyList<Choice> choices,
+        int? defaultIndex, bool allowBack)
     {
         while (true)
         {
-            Show(question, choices, defaultIndex);
+            Show(question, choices, defaultIndex, defaultIndex ?? -1);
 
             var typed = _prompts.ReadLine("  Choose").Trim();
 
@@ -88,16 +170,25 @@ public sealed class Asker
         }
     }
 
-    private void Show(string question, IReadOnlyList<Choice> choices, int? defaultIndex)
+    /// <param name="highlighted">The row the cursor is on, or -1 when nothing is highlighted.</param>
+    /// <returns>How many lines were printed, so a live menu can rub them out and redraw.</returns>
+    private int Show(string question, IReadOnlyList<Choice> choices, int? defaultIndex, int highlighted)
     {
-        _prompts.Section(question);
-        _prompts.Blank();
+        var lines = 0;
+
+        void Line(string text, Tone tone = Tone.Normal) { _prompts.Info(text, tone); lines++; }
+
+        _prompts.Info("");
+        Line("  " + question, Tone.Strong);
+        Line("  " + new string('─', Math.Min(Screen.Width - 2, question.Length)), Tone.Muted);
+        lines++;                                   // the blank line above the heading
+        Line("");
 
         // One column for this question's descriptions, wide enough for its own longest label.
         // Fixing it in advance would either waste the width of every short-labelled question or
         // push the one long label in a list onto a line of its own.
         var heads = choices
-            .Select((c, i) => $"   {Marker(c, defaultIndex == i)}{i + 1,2}  {c.Label}")
+            .Select((c, i) => $"  {Marker(c, highlighted == i)}{i + 1,2}  {c.Label}")
             .ToList();
 
         var column = Math.Min(WidestLabelColumn, heads.Max(h => h.Length) + 2);
@@ -105,38 +196,43 @@ public sealed class Asker
         for (var i = 0; i < choices.Count; i++)
         {
             var c = choices[i];
-            var tone = c.Enabled ? Tone.Normal : Tone.Muted;
+
+            var tone = !c.Enabled ? Tone.Muted
+                : highlighted == i ? Tone.Strong
+                : Tone.Normal;
+
             var wrapped = Screen.Wrap(c.Description, Screen.Width - column);
 
             if (heads[i].Length >= column)
             {
                 // Too long even for the widened column: the description goes underneath rather
                 // than shunting every other row across to meet it.
-                _prompts.Info(heads[i], tone);
-                foreach (var line in wrapped) _prompts.Info(new string(' ', column) + line, tone);
+                Line(heads[i], tone);
+                foreach (var line in wrapped) Line(new string(' ', column) + line, tone);
                 continue;
             }
 
-            _prompts.Info(heads[i].PadRight(column) + wrapped[0], tone);
+            Line(heads[i].PadRight(column) + wrapped[0], tone);
             foreach (var line in wrapped.Skip(1))
-                _prompts.Info(new string(' ', column) + line, tone);
+                Line(new string(' ', column) + line, tone);
         }
 
-        // Said once, under the list, rather than tacked onto one description — where it used to
-        // push that one row's text onto a second line and make the list look ragged.
-        if (defaultIndex is { } d && choices[d].Enabled)
-            _prompts.Info($"   > Enter chooses {d + 1}, {choices[d].Label} (default).", Tone.Muted);
+        // Only the typed path needs telling what Enter does; the live menu shows it, because the
+        // row Enter would take is the one under the cursor.
+        if (!_prompts.Interactive && defaultIndex is { } d && choices[d].Enabled)
+            Line($"   > Enter chooses {d + 1}, {choices[d].Label} (default).", Tone.Muted);
 
-        _prompts.Blank();
+        Line("");
+        return lines;
     }
 
     /// <summary>
-    /// The column before the number: '-' for a choice that cannot be picked, '>' for the one
-    /// Enter would take, blank otherwise. A marker as well as a colour, so the list still reads
-    /// where there is none.
+    /// The column before the number: '-' for a choice that cannot be picked, '›' for the row the
+    /// cursor is on, blank otherwise. A marker as well as a colour, so the list still reads where
+    /// there is none — and so the selected row is obvious on a monochrome console.
     /// </summary>
-    private static string Marker(Choice choice, bool isDefault) =>
-        !choice.Enabled ? "-" : isDefault ? ">" : " ";
+    private static string Marker(Choice choice, bool highlighted) =>
+        !choice.Enabled ? "-" : highlighted ? "›" : " ";
 
     private void Explain(IReadOnlyList<Choice> choices)
     {

@@ -473,7 +473,7 @@ public sealed class MigrateCommand
             new Choice("Skip it, carry on", "leave this one and continue with the others",
                 "This document is left exactly as it is — including anything the failed step " +
                 "left behind — and the next document is attempted.")
-        }, defaultIndex: 0, allowBack: false);
+        }, defaultIndex: 0, allowBack: false, confirm: true);
 
         return answer.Kind == AnswerKind.Chosen && answer.Index == 1
             ? AfterTrouble.SkipThisOne

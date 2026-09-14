@@ -61,5 +61,20 @@ public sealed class FakePrompts : IPrompts
         return ReadLineQueue.Dequeue();
     }
 
+    // ---- the live menu ----
+
+    /// <summary>Setting this makes the fake behave like a real console: arrow keys, not typing.</summary>
+    public Queue<(MenuKey Key, char Character)>? Keys { get; set; }
+
+    /// <summary>How many lines the menu has rubbed out, so redrawing can be checked.</summary>
+    public int Rewound { get; private set; }
+
+    public bool Interactive => Keys is not null;
+
+    public (MenuKey Key, char Character) ReadMenuKey() =>
+        Keys is { Count: > 0 } ? Keys.Dequeue() : (MenuKey.Escape, '\0');
+
+    public void Rewind(int lines) => Rewound += lines;
+
     public void Info(string message, Tone tone = Tone.Normal) => Messages.Add(message);
 }

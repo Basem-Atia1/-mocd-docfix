@@ -272,7 +272,7 @@ public sealed class DeleteCommand
             new Choice("Stop", "nothing is deleted",
                 "Leaves everything exactly as it is. The old files stay on the server, the old " +
                 "records stay in CRM, and this step can be run again at any time.")
-        }, defaultIndex: 0, allowBack: false);
+        }, defaultIndex: 0, allowBack: false, confirm: true);
 
         return answer.Kind == AnswerKind.Chosen
             ? (HowToDelete)answer.Index
@@ -418,7 +418,7 @@ public sealed class DeleteCommand
             new Choice("Delete the CRM record only", "keep the file, remove this old row",
                 "The file stays on the server for the other records. This document already " +
                 "points at its new file, so removing its old row changes nothing it depends on.")
-        }, defaultIndex: 0, allowBack: false);
+        }, defaultIndex: 0, allowBack: false, confirm: true);
 
         return answer.Kind == AnswerKind.Chosen && answer.Index == 1
             ? SharedPathChoice.CrmRecordOnly

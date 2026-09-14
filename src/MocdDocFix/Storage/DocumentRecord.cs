@@ -28,16 +28,19 @@ public static class DocumentRecord
         var group = DocumentGroups.Get(row.Group);
         var points = Points(row, group);
 
-        backups.Folder(row.DocumentId, row.FileName).WriteHeader($"DOCUMENT  {row.DocumentId}", points);
+        backups.Folder(row.DocumentId, row.FileName)
+            .WriteHeader($"DOCUMENT  {row.DocumentId}",
+                points.Prepend(("File name", row.FileName)).ToArray());
 
-        // The same account, as step 1 of this document's own reports.
+        // The same account, as step 1 of this document's own reports — without the file name,
+        // which that writer already prints in the header this sits under.
         reports?.Write(row.DocumentId, row.FileName, "01-check", CheckTitle, points);
     }
 
     private static (string, string?)[] Points(ScanRow row, DocumentGroup group) =>
         new (string, string?)[]
         {
-            ("File name", row.FileName),
+            // The file name is already in the header this sits under, so it is not repeated.
             ("Document type", row.DocumentTypeName),
             ("Service", row.ServiceCatalogueName),
             ("Service catalogue", row.ServiceCatalogueId?.ToString()),
@@ -51,6 +54,8 @@ public static class DocumentRecord
             ("What we will do", row.Solution),
             ("", null),
 
+            ("CRM says", row.ServiceCatalogueName),
+            ("Parent request", row.CrossCheckSource),
             ("DevOps says", DevOps(row)),
             ("", null),
 
