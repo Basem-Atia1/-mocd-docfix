@@ -29,7 +29,22 @@ public sealed class StepGate
         if (details.Count > 0)
         {
             _prompts.Blank();
-            foreach (var line in details) _prompts.Info("    " + line, Tone.Muted);
+            ShowDetails(details);
+        }
+    }
+
+    /// <summary>
+    /// Detail lines come from the phases themselves and can be a sentence long, so they wrap and
+    /// hang under their own indent rather than running off the right of the screen.
+    /// </summary>
+    private void ShowDetails(IReadOnlyList<string> details)
+    {
+        foreach (var detail in details)
+        {
+            var wrapped = Screen.Wrap(detail, Screen.Width - 4);
+
+            _prompts.Info("    " + wrapped[0], Tone.Muted);
+            foreach (var line in wrapped.Skip(1)) _prompts.Info("      " + line, Tone.Muted);
         }
     }
 
@@ -54,7 +69,7 @@ public sealed class StepGate
                 case 1:
                     _prompts.Blank();
                     if (details.Count == 0) _prompts.Info("    (nothing further to show)", Tone.Muted);
-                    foreach (var line in details) _prompts.Info("    " + line, Tone.Muted);
+                    ShowDetails(details);
                     continue;
 
                 default:

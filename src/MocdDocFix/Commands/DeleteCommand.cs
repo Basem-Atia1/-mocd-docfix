@@ -82,6 +82,18 @@ public sealed class DeleteCommand
             return new DeleteSummary(0, 0, 0, true, "Answered no at the delete confirmation.");
         }
 
+        // Only now, once the answer is yes, is it worth reading a document-by-document account —
+        // and this is the last moment at which reading one can still change anything.
+        WriteBriefing(candidates, manifest);
+
+        var how = AskHowToWorkThrough(candidates.Count);
+        if (how == HowToDelete.Stop)
+        {
+            _prompts.Blank();
+            _prompts.Say("Nothing was deleted. Everything is exactly as it was.", Tone.Good);
+            return new DeleteSummary(0, 0, 0, true, "Stopped after reading what would be deleted.");
+        }
+
         // Production keeps a second question that cannot be answered by reflex: the count has to
         // be read off the screen and typed. It is digits, so there is no case to get wrong.
         if (isProduction &&
@@ -93,12 +105,26 @@ public sealed class DeleteCommand
 
         int deleted = 0, refused = 0, skipped = 0;
 
-        foreach (var candidate in candidates)
+        for (var i = 0; i < candidates.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
+            var candidate = candidates[i];
 
             var entry = manifest[candidate.DocumentId];
             if (_state.IsAtLeast(candidate.DocumentId, MigrationState.Deleted)) { skipped++; continue; }
+
+            if (how == HowToDelete.OneAtATime)
+            {
+                WriteOneDocument(i + 1, candidates.Count, entry, candidate);
+                _prompts.Blank();
+
+                if (!_prompts.YesNo("  Delete this one?", defaultYes: false, Tone.Danger))
+                {
+                    _prompts.Say("Left alone. Its old file and old record both stay.", Tone.Muted);
+                    skipped++;
+                    continue;
+                }
+            }
 
             // Before the question, not after it: the shared-path answer can itself delete the old
             // CRM record, so the proof that it IS the old record has to come first.
@@ -143,7 +169,7 @@ public sealed class DeleteCommand
             }
 
             var outcome = await RemoveOldAsync(entry, ct);
-            foreach (var line in outcome.Log) _prompts.Info(line);
+            WriteRemovalLog(outcome.Log);
             WriteDeleteReport(entry, outcome);
 
             if (!outcome.Removed)
@@ -162,6 +188,95 @@ public sealed class DeleteCommand
         }
 
         return new DeleteSummary(deleted, skipped, refused, false, null);
+    }
+
+    private enum HowToDelete { OneAtATime, Everything, Stop }
+
+    /// <summary>
+    /// The blow-by-blow account of one removal, coloured by what each line is: the last line is
+    /// the outcome and the rest are the steps that led to it.
+    /// </summary>
+    private void WriteRemovalLog(IReadOnlyList<string> log)
+    {
+        foreach (var line in log)
+        {
+            var tone = line.Contains("RESULT", StringComparison.Ordinal)
+                ? (line.Contains("done", StringComparison.Ordinal) ? Tone.Good : Tone.Danger)
+                : line.Contains("STILL ON THE SERVER", StringComparison.Ordinal)
+                    ? Tone.Danger
+                    : Tone.Muted;
+
+            _prompts.Info(line, tone);
+        }
+    }
+
+    /// <summary>
+    /// The document-by-document account of what the yes just agreed to.
+    ///
+    /// A list of twenty paths is not something anyone can check. What has to be checkable is the
+    /// pairing: for each document, the file and record about to be destroyed, next to the file
+    /// and record it will be left using. If those two are ever the same thing, the delete would
+    /// take the only copy — the checks catch that, but the operator should be able to see it
+    /// before anything is asked of the file server, not read about it in a refusal afterwards.
+    /// </summary>
+    private void WriteBriefing(IReadOnlyList<StateRecord> candidates,
+        IReadOnlyDictionary<Guid, ManifestEntry> manifest)
+    {
+        _prompts.Section($"What will be deleted — {candidates.Count} document(s)", Tone.Danger);
+        _prompts.Say("GOES is the old file and its old CRM record. STAYS is what the document " +
+                     "points at now — it is not touched. The two should never be the same.");
+
+        for (var i = 0; i < candidates.Count; i++)
+            WriteOneDocument(i + 1, candidates.Count, manifest[candidates[i].DocumentId], candidates[i]);
+
+        _prompts.Blank();
+        _prompts.Say("Each one is also re-checked against CRM and the file server immediately " +
+                     "before it goes, and refused there if anything has changed since this list " +
+                     "was written.", Tone.Muted);
+    }
+
+    private void WriteOneDocument(int index, int total, ManifestEntry entry, StateRecord candidate)
+    {
+        _prompts.Blank();
+        _prompts.Info($"  {index} of {total}   {entry.FileName ?? "(no file name)"}", Tone.Strong);
+
+        if (!string.IsNullOrWhiteSpace(entry.DocumentTypeName))
+            _prompts.Info($"      {entry.DocumentTypeName}", Tone.Muted);
+
+        _prompts.Info($"      document       {entry.DocumentId}", Tone.Muted);
+        _prompts.Blank();
+        _prompts.Info($"      GOES   file    {entry.OldFilePath}", Tone.Danger);
+        _prompts.Info($"      GOES   record  {entry.OldFileId}", Tone.Danger);
+        _prompts.Info($"      STAYS  file    {candidate.NewFilePath ?? "(none recorded)"}", Tone.Good);
+        _prompts.Info($"      STAYS  record  {candidate.NewFileId?.ToString() ?? "(none recorded)"}",
+            Tone.Good);
+    }
+
+    /// <summary>
+    /// One at a time by default. A run of one or two is the normal case here, and for those the
+    /// extra question costs a keypress; for a run of hundreds the operator can say so once.
+    /// </summary>
+    private HowToDelete AskHowToWorkThrough(int count)
+    {
+        var answer = new Asker(_prompts).Ask($"How do you want to work through the {count}?", new[]
+        {
+            new Choice("One at a time", "show each one again and ask before it goes",
+                "The safest way. Each document is shown on its own — what goes and what stays — " +
+                "and answering no leaves that one entirely alone and moves to the next."),
+
+            new Choice("All of them", $"delete all {count} without asking again",
+                "Every one on the list above is deleted, each still re-checked against CRM and " +
+                "the file server first and refused if anything has changed. You are not asked " +
+                "again, except where a file turns out to be shared with another record."),
+
+            new Choice("Stop", "nothing is deleted",
+                "Leaves everything exactly as it is. The old files stay on the server, the old " +
+                "records stay in CRM, and this step can be run again at any time.")
+        }, defaultIndex: 0, allowBack: false);
+
+        return answer.Kind == AnswerKind.Chosen
+            ? (HowToDelete)answer.Index
+            : HowToDelete.Stop;
     }
 
     /// <summary>
@@ -421,7 +536,7 @@ public sealed class DeleteCommand
         }
 
         var outcome = await RemoveOldAsync(entry, ct);
-        foreach (var line in outcome.Log) _prompts.Info(line);
+        WriteRemovalLog(outcome.Log);
         WriteDeleteReport(entry, outcome);
 
         // The log goes into the document's own folder too, so the record of what happened

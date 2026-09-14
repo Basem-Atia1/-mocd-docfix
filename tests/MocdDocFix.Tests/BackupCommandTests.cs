@@ -363,7 +363,7 @@ public class BackupCommandTests : IDisposable
 
         await new BackupCommand(_files, _read, Backups(), States(),
                 new Reporter(System.IO.Path.Combine(_root, "reports")),
-                _ => "VENDORHASH", said.Add)
+                _ => "VENDORHASH", (m, _) => said.Add(m))
             .RunAsync("dev", new[] { row }, CancellationToken.None);
 
         Assert.Contains(said, m => m.Contains("missing", StringComparison.OrdinalIgnoreCase));
@@ -428,7 +428,7 @@ public class BackupCommandTests : IDisposable
         _files.Files[Path1] = (Convert.ToBase64String(Encoding.UTF8.GetBytes("different")), "VENDORHASH");
 
         await new BackupCommand(_files, _read, Backups(), States(),
-                new Reporter(System.IO.Path.Combine(_root, "reports")), _ => "VENDORHASH", said.Add)
+                new Reporter(System.IO.Path.Combine(_root, "reports")), _ => "VENDORHASH", (m, _) => said.Add(m))
             .RunAsync("dev", new[] { row }, CancellationToken.None);
 
         Assert.Contains(said, m => m.Contains("CHANGED", StringComparison.Ordinal));

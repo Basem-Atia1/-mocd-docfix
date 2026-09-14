@@ -53,8 +53,8 @@ public sealed class EnvironmentPicker
             }
             else
             {
-                _prompts.Info("");
-                _prompts.Info($"'{fromArgs}' has no settings saved on this machine yet.");
+                _prompts.Blank();
+                _prompts.Say($"'{fromArgs}' has no settings saved on this machine yet.", Tone.Warn);
             }
         }
 
@@ -127,20 +127,19 @@ public sealed class EnvironmentPicker
 
     private void RefuseProduction(string name)
     {
-        _prompts.Info("");
-        _prompts.Info($"'{name}' is a PRODUCTION environment.");
-        _prompts.Info("It needs --confirm-production on the command line. Nothing has been changed.");
+        _prompts.Section($"'{name}' is a PRODUCTION environment", Tone.Danger);
+        _prompts.Say("It needs --confirm-production on the command line. Nothing has been changed.");
     }
 
     private bool TypeTheNameInFull(string name)
     {
-        _prompts.Info("");
-        _prompts.Info($"*** {name.ToUpperInvariant()} IS PRODUCTION ***");
-        _prompts.Info("Writes here affect live citizen documents.");
+        _prompts.Section($"*** {name.ToUpperInvariant()} IS PRODUCTION ***", Tone.Danger);
+        _prompts.Warn("Writes here affect live citizen documents.", Tone.Danger);
+        _prompts.Blank();
 
-        if (_prompts.TypedWord("Confirm the environment name", name)) return true;
+        if (_prompts.TypedWord("  Confirm the environment name", name)) return true;
 
-        _prompts.Info("  That did not match. Production was not selected.");
+        _prompts.Say("That did not match. Production was not selected.", Tone.Warn);
         return false;
     }
 
@@ -150,9 +149,9 @@ public sealed class EnvironmentPicker
     /// </returns>
     private (string? Name, bool Quit) SetUp(string name)
     {
-        _prompts.Info("");
-        _prompts.Info($"'{name}' has not been set up on this machine.");
-        _prompts.Info("Nothing is broken — it simply has no URLs or credentials saved yet.");
+        _prompts.Section($"'{name}' has not been set up on this machine");
+        _prompts.Say("Nothing is broken — it simply has no URLs or credentials saved yet.",
+            Tone.Muted);
 
         var what = _asker.Ask($"What would you like to do about '{name}'?", new[]
         {
@@ -167,8 +166,9 @@ public sealed class EnvironmentPicker
         if (what.Kind != AnswerKind.Chosen || what.Index == 2) return (null, Quit: true);
         if (what.Index == 1) return (null, Quit: false);
 
-        _prompts.Info("");
-        _prompts.Info($"Setting up '{name}'. Everything is saved locally; nothing is sent anywhere.");
+        _prompts.Section($"Setting up '{name}'");
+        _prompts.Say("Everything is saved locally; nothing is sent anywhere.", Tone.Muted);
+        _prompts.Blank();
 
         var fileUrl = Required("File service base URL   e.g. http://mocdstgdpfs01.mocd.gov.ae:83");
         var crmUrl = Required("CRM base URL            e.g. https://devdigitalplatform.mocd.gov.ae/MoCD");
@@ -179,23 +179,26 @@ public sealed class EnvironmentPicker
 
         var isProduction = name.Equals("prod", StringComparison.OrdinalIgnoreCase);
 
-        _prompts.Info("");
-        _prompts.Info($"  environment   {name}{(isProduction ? "   *** PRODUCTION ***" : "")}");
-        _prompts.Info($"  CRM           {crmUrl}");
-        _prompts.Info($"  file server   {fileUrl}");
-        _prompts.Info($"  signing in as {domain}\\{user}");
-        _prompts.Info("  password and API key    stored encrypted, not shown");
+        _prompts.Section("About to save");
+        _prompts.Field("environment", name + (isProduction ? "   *** PRODUCTION ***" : ""),
+            isProduction ? Tone.Danger : Tone.Normal);
+        _prompts.Field("CRM", crmUrl, Tone.Muted);
+        _prompts.Field("file server", fileUrl, Tone.Muted);
+        _prompts.Field("signing in as", $"{domain}\\{user}", Tone.Muted);
+        _prompts.Field("password", "stored encrypted, never shown again", Tone.Muted);
+        _prompts.Field("API key", "stored encrypted, never shown again", Tone.Muted);
+        _prompts.Blank();
 
-        if (_prompts.Confirm($"Save this as '{name}'?") != ConfirmChoice.Yes)
+        if (_prompts.Confirm($"  Save this as '{name}'?") != ConfirmChoice.Yes)
         {
-            _prompts.Info("  Not saved.");
+            _prompts.Say("Not saved.", Tone.Muted);
             return (null, Quit: false);
         }
 
         _save(name, new NewEnvironment(
             new EnvironmentConfig(fileUrl, crmUrl, domain, user, isProduction), apiKey, password));
 
-        _prompts.Info($"  Saved. '{name}' is ready to use.");
+        _prompts.Say($"Saved. '{name}' is ready to use.", Tone.Good);
         return (name, Quit: false);
     }
 
@@ -205,7 +208,7 @@ public sealed class EnvironmentPicker
         {
             var value = _prompts.ReadLine(question).Trim();
             if (value.Length > 0) return value;
-            _prompts.Info("  That cannot be blank.");
+            _prompts.Say("That cannot be blank.", Tone.Warn);
         }
     }
 }

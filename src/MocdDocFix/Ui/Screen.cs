@@ -54,9 +54,13 @@ public static class Screen
             prompts.Info((i == 0 ? "    • " : "      ") + lines[i], tone);
     }
 
-    /// <summary>A label and its value, with values aligned down the screen.</summary>
+    /// <summary>
+    /// A label and its value, with values aligned down the screen. The column is two wider than
+    /// the longest label in use, so a label that exactly fills it still has a gap after it —
+    /// without that margin "Document type" ran straight into its own value.
+    /// </summary>
     public static void Field(this IPrompts prompts, string label, string value, Tone tone = Tone.Normal)
-        => prompts.Info(Indent + label.PadRight(13) + value, tone);
+        => prompts.Info(Indent + label.PadRight(15) + value, tone);
 
     /// <summary>
     /// A line the operator must not skim past. The marker carries the same weight as the colour,

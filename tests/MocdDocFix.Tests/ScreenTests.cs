@@ -97,6 +97,20 @@ public class ScreenTests
                      prompts.Messages[1].IndexOf("http:", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The column has to be wider than the longest label, not equal to it: "Document type" was
+    /// exactly as long as the column, so it ran straight into its own value.
+    /// </summary>
+    [Fact]
+    public void The_longest_label_still_has_a_gap_after_it()
+    {
+        var prompts = new FakePrompts();
+
+        prompts.Field("Document type", "Medical Certificate");
+
+        Assert.Contains("Document type  Medical Certificate", prompts.Messages[0]);
+    }
+
     [Fact]
     public void A_section_underlines_its_heading_to_its_own_length()
     {

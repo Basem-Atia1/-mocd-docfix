@@ -1,6 +1,7 @@
 using MocdDocFix.Clients;
 using MocdDocFix.Domain;
 using MocdDocFix.Storage;
+using MocdDocFix.Ui;
 using MocdDocFix.Verification;
 
 namespace MocdDocFix.Commands;
@@ -26,16 +27,20 @@ public sealed class BackupCommand
     private readonly StateStore _state;
     private readonly Reporter _reporter;
     private readonly Func<ScanRow, string?> _hashLookup;
-    private readonly Action<string>? _prompts;
+    private readonly Action<string, Tone>? _prompts;
     private readonly DocumentReportStore? _reports;
 
     /// <param name="hashLookup">
     /// Supplies the mocd_hash CRM holds for a row. Injected because ScanRow does not carry it.
     /// </param>
-    /// <param name="say">Optional progress line, for things the operator should know about.</param>
+    /// <param name="say">
+    /// Optional progress line, for things the operator should know about. It takes a tone as
+    /// well as the text so a warning here reads as one on the screen; the caller decides how
+    /// that is shown, and a caller that does not care can ignore it.
+    /// </param>
     public BackupCommand(IFileServiceClient files, ICrmReadClient read, BackupStore backups,
         StateStore state, Reporter reporter, Func<ScanRow, string?> hashLookup,
-        Action<string>? say = null, DocumentReportStore? reports = null)
+        Action<string, Tone>? say = null, DocumentReportStore? reports = null)
     {
         _files = files;
         _read = read;
@@ -75,10 +80,13 @@ public sealed class BackupCommand
             // one is the point, and the state file is only a claim about the disk anyway.
             if (_state.IsAtLeast(row.DocumentId, MigrationState.BackedUp))
             {
-                _prompts?.Invoke(BackupIsIntact(row.DocumentId)
-                    ? $"  {row.FileName}: backed up before — taking a fresh copy anyway."
-                    : $"  {row.FileName}: the state says this was backed up, but the saved copy " +
-                      "is missing. Downloading it again.");
+                var intact = BackupIsIntact(row.DocumentId);
+
+                _prompts?.Invoke(intact
+                    ? $"{row.FileName}: backed up before — taking a fresh copy anyway."
+                    : $"{row.FileName}: the state says this was backed up, but the saved copy " +
+                      "is missing. Downloading it again.",
+                    intact ? Tone.Muted : Tone.Warn);
             }
 
             // The document's folder and its record exist before anything is attempted, so even a
@@ -149,9 +157,10 @@ public sealed class BackupCommand
             if (result.PreviousKeptAs is not null)
             {
                 _prompts?.Invoke(
-                    $"  {row.FileName}: WARNING — the file on the server has CHANGED since the " +
+                    $"{row.FileName}: WARNING — the file on the server has CHANGED since the " +
                     "last backup. The earlier copy was kept as " +
-                    $"{Path.GetFileName(result.PreviousKeptAs)}.");
+                    $"{Path.GetFileName(result.PreviousKeptAs)}.",
+                    Tone.Warn);
             }
 
             var backedUp = new (string, string?)[]

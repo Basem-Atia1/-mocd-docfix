@@ -170,7 +170,7 @@ public sealed class Session : IDisposable
                 return StepOutcome.Of("Not enough free disk space with margin — nothing was downloaded.",
                     $"needs roughly {estimate * 2 / 1_048_576:N0} MB, {free / 1_048_576:N0} MB free");
 
-            var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, m => _prompts.Info(m), _docReports)
+            var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, (m, tone) => _prompts.Say(m, tone), _docReports)
                 .RunAsync(_envName, _pending, ct);
 
             return StepOutcome.Of(
@@ -262,7 +262,7 @@ public sealed class Session : IDisposable
                 != ConfirmChoice.Yes)
                 return 0;
 
-            var backup = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, m => _prompts.Info(m), _docReports)
+            var backup = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, (m, tone) => _prompts.Say(m, tone), _docReports)
                 .RunAsync(_envName, rows, ct);
 
             if (!gate.Ask("2", "Backup",
@@ -327,7 +327,7 @@ public sealed class Session : IDisposable
                 }
                 if (_dryRun) return 0;
 
-                var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, m => _prompts.Info(m), _docReports)
+                var summary = await new BackupCommand(_files, _read, _backups, _state, _reporter, HashOf, (m, tone) => _prompts.Say(m, tone), _docReports)
                     .RunAsync(_envName, result.Fix, ct);
                 Console.WriteLine($"Saved {summary.Saved}, quarantined {summary.Quarantined}, " +
                                   $"skipped {summary.Skipped}, {summary.TotalBytes / 1_048_576:N0} MB.");

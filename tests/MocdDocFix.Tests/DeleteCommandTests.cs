@@ -62,6 +62,12 @@ public class DeleteCommandTests : IDisposable
 
     private static FakePrompts Confirmed() => new() { YesNoResponse = true };
 
+    /// <summary>
+    /// The first numbered question in the delete step is now how to work through the list. These
+    /// tests are about the question after it, so they take "all of them" and carry on.
+    /// </summary>
+    private static Queue<string> AllOfThemThen(string answer) => new(new[] { "2", answer });
+
     [Fact]
     public async Task Deletes_the_old_vendor_file_and_the_old_documentfile_row()
     {
@@ -101,6 +107,101 @@ public class DeleteCommandTests : IDisposable
 
         Assert.Contains(prompts.Questions, q => q.Contains("Delete 1 old file(s) from dev now?"));
         Assert.DoesNotContain(prompts.Questions, q => q.Contains("DELETE", StringComparison.Ordinal));
+    }
+
+    // ---- what is about to be deleted is stated, document by document ----
+
+    /// <summary>
+    /// A list of paths is not something anyone can check. What can be checked is the pairing:
+    /// for each document, the file and record about to be destroyed beside the file and record
+    /// it will be left using. Said after the first yes, while it can still change the answer.
+    /// </summary>
+    [Fact]
+    public async Task Every_document_is_stated_before_anything_is_deleted()
+    {
+        var prompts = Confirmed();
+
+        await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        var said = string.Join("\n", prompts.Messages);
+
+        Assert.Contains("What will be deleted — 1 document(s)", said);
+        Assert.Contains("cert.jpg", said);                    // which file it is
+        Assert.Contains(DocumentId.ToString(), said);          // which document
+        Assert.Contains($"GOES   file    {OldPath}", said);    // what is destroyed
+        Assert.Contains($"GOES   record  {OldFileId}", said);
+        Assert.Contains($"STAYS  file    {NewPath}", said);    // and what it will use
+        Assert.Contains($"STAYS  record  {NewFileId}", said);
+    }
+
+    [Fact]
+    public async Task The_statement_comes_after_the_yes_and_before_any_deleting()
+    {
+        var prompts = Confirmed();
+
+        await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        var briefing = prompts.Messages.FindIndex(m => m.Contains("What will be deleted"));
+        var goneFromServer = prompts.Messages.FindIndex(m => m.Contains("Deleted", StringComparison.Ordinal));
+
+        Assert.True(briefing >= 0);
+        Assert.True(goneFromServer < 0 || briefing < goneFromServer,
+            "the account of what goes must be printed before anything goes");
+    }
+
+    [Fact]
+    public async Task Stopping_after_reading_the_list_deletes_nothing()
+    {
+        var prompts = Confirmed();
+        prompts.ReadLineQueue = new Queue<string>(new[] { "3" });   // stop
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.True(summary.Aborted);
+        Assert.Empty(_files.Deleted);
+        Assert.Empty(_write.DeletedFiles);
+        Assert.False(States().IsAtLeast(DocumentId, MigrationState.Deleted));
+    }
+
+    [Fact]
+    public async Task One_at_a_time_asks_again_for_each_document()
+    {
+        var prompts = new FakePrompts { YesNoQueue = new Queue<bool>(new[] { true, true }) };
+        prompts.ReadLineQueue = new Queue<string>(new[] { "1" });   // one at a time
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(1, summary.Deleted);
+        Assert.Contains(prompts.Questions, q => q.Contains("Delete this one?"));
+    }
+
+    [Fact]
+    public async Task Saying_no_to_one_document_leaves_that_one_entirely_alone()
+    {
+        // Yes to the whole step, no to this document.
+        var prompts = new FakePrompts { YesNoQueue = new Queue<bool>(new[] { true, false }) };
+        prompts.ReadLineQueue = new Queue<string>(new[] { "1" });   // one at a time
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Equal(1, summary.Skipped);
+        Assert.Empty(_files.Deleted);
+        Assert.Empty(_write.DeletedFiles);
+        Assert.False(summary.Aborted);          // the step ran; this one was simply left
+    }
+
+    [Fact]
+    public async Task All_of_them_does_not_ask_per_document()
+    {
+        var prompts = Confirmed();
+        prompts.ReadLineQueue = new Queue<string>(new[] { "2" });   // all of them
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(1, summary.Deleted);
+        Assert.DoesNotContain(prompts.Questions, q => q.Contains("Delete this one?"));
     }
 
     [Fact]
@@ -401,7 +502,7 @@ public class DeleteCommandTests : IDisposable
             "{\"mocd_filepath\":\"DigitalServices\\\\somewhere-else\\\\20260401\\\\other.jpg\"}";
 
         var prompts = Confirmed();
-        prompts.ReadLineQueue = new Queue<string>(new[] { "2" });   // would delete the CRM record
+        prompts.ReadLineQueue = AllOfThemThen("2");   // then: would delete the CRM record
 
         var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
 
@@ -431,7 +532,7 @@ public class DeleteCommandTests : IDisposable
     {
         _read.FilesByPath[OldPath] = new List<Guid> { OldFileId, Guid.NewGuid() };
         var prompts = Confirmed();
-        prompts.ReadLineQueue = new Queue<string>(new[] { "1" });   // leave everything
+        prompts.ReadLineQueue = AllOfThemThen("1");   // then: leave everything
 
         var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
 
@@ -447,7 +548,7 @@ public class DeleteCommandTests : IDisposable
         var other = Guid.NewGuid();
         _read.FilesByPath[OldPath] = new List<Guid> { OldFileId, other };
         var prompts = Confirmed();
-        prompts.ReadLineQueue = new Queue<string>(new[] { "1" });
+        prompts.ReadLineQueue = AllOfThemThen("1");
 
         await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
 
@@ -462,7 +563,7 @@ public class DeleteCommandTests : IDisposable
     {
         _read.FilesByPath[OldPath] = new List<Guid> { OldFileId, Guid.NewGuid() };
         var prompts = Confirmed();
-        prompts.ReadLineQueue = new Queue<string>(new[] { "2" });   // CRM record only
+        prompts.ReadLineQueue = AllOfThemThen("2");   // then: CRM record only
 
         var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
 
