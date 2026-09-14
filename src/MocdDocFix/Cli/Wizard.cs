@@ -40,7 +40,13 @@ public sealed record WizardActions(
     Func<Task<StepOutcome>> MigrateAsync,
     Func<Task<StepOutcome>> DeleteAsync,
     Func<Task<StepOutcome>> VerifyAsync,
-    Func<IReadOnlyList<string>, Task<StepOutcome>>? LookAsync = null);
+    Func<IReadOnlyList<string>, Task<StepOutcome>>? LookAsync = null,
+
+    /// <summary>
+    /// How many old files still need removing. Asked before the delete step, so a run that
+    /// removed them as it went is not walked through that step — and asked to confirm it — twice.
+    /// </summary>
+    Func<Task<int>>? AwaitingDeleteAsync = null);
 
 public enum WizardExit { Finished, ChangeEnvironment }
 
@@ -292,14 +298,35 @@ public sealed class Wizard
         if (!ConfirmMigrate()) return;
 
         var migrate = await _actions.MigrateAsync();
-        if (!Gate("3 and 4", "Upload, verify and repoint", migrate.Headline, migrate.Details,
-                "delete the old files — IRREVERSIBLE"))
-            return;
 
-        if (!ConfirmDelete()) return;
+        // Step 3 and 4 offers to remove each old file the moment its document is repointed, and
+        // an operator who takes that offer every time has already finished step 5. Asking them
+        // to confirm a delete, twice, for work that is done — and then reporting "nothing is
+        // awaiting deletion" as though something had gone wrong — is three questions and a
+        // false alarm about a run that went perfectly.
+        var awaiting = _actions.AwaitingDeleteAsync is { } count2 ? await count2() : -1;
 
-        var delete = await _actions.DeleteAsync();
-        Report("5", "Delete old files", delete.Headline, delete.Details);
+        if (awaiting == 0)
+        {
+            Report("3 and 4", "Upload, verify and repoint", migrate.Headline, migrate.Details);
+
+            _prompts.Blank();
+            _prompts.Say("Every old file was removed as its document was repointed, so there is " +
+                         "nothing left for the delete step.", Tone.Good);
+        }
+        else
+        {
+            if (!Gate("3 and 4", "Upload, verify and repoint", migrate.Headline, migrate.Details,
+                    awaiting > 0
+                        ? $"delete {Files(awaiting)} — IRREVERSIBLE"
+                        : "delete the old files — IRREVERSIBLE"))
+                return;
+
+            if (!ConfirmDelete()) return;
+
+            var delete = await _actions.DeleteAsync();
+            Report("5", "Delete old files", delete.Headline, delete.Details);
+        }
 
         // Always finish by asking both systems what is actually true, rather than trusting the
         // five steps that just ran.

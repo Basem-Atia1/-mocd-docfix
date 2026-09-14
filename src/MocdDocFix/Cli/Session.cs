@@ -252,6 +252,12 @@ public sealed class Session : IDisposable
                 details);
         },
 
+        // Counted before the delete step is offered, so a run whose old files were removed as it
+        // went does not walk through that step with nothing in it.
+        AwaitingDeleteAsync: () =>
+            new DeleteCommand(_files, _read, _write, _backups, _state, _prompts, _docReports)
+                .AwaitingDeletionAsync(ct),
+
         LookAsync: async asked =>
         {
             var reports = await new LookupCommand(_files, _read, _backups, _state, _prompts)

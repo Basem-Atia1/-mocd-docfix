@@ -36,6 +36,25 @@ public sealed class DeleteCommand
         _reports = reports;
     }
 
+    /// <summary>
+    /// How many documents still have an old file to remove — asked before the step runs, so a
+    /// run whose old files were all deleted as it went is not marched through a delete step with
+    /// nothing in it, and asked to confirm it twice.
+    /// </summary>
+    public async Task<int> AwaitingDeletionAsync(CancellationToken ct)
+    {
+        var manifest = _backups.LoadManifest().ToDictionary(m => m.DocumentId);
+        await ReconcileWithCrmAsync(manifest.Values, ct);
+
+        return Candidates(_state.LoadLatest(), manifest).Count;
+    }
+
+    private static List<StateRecord> Candidates(
+        IReadOnlyDictionary<Guid, StateRecord> latest, IReadOnlyDictionary<Guid, ManifestEntry> manifest) =>
+        latest.Values
+            .Where(r => r.State == MigrationState.Repointed && manifest.ContainsKey(r.DocumentId))
+            .ToList();
+
     public async Task<DeleteSummary> RunAsync(string env, bool isProduction, CancellationToken ct)
     {
         var manifest = _backups.LoadManifest().ToDictionary(m => m.DocumentId);
@@ -47,10 +66,7 @@ public sealed class DeleteCommand
         await ReconcileWithCrmAsync(manifest.Values, ct);
 
         var latest = _state.LoadLatest();
-
-        var candidates = latest.Values
-            .Where(r => r.State == MigrationState.Repointed && manifest.ContainsKey(r.DocumentId))
-            .ToList();
+        var candidates = Candidates(latest, manifest);
 
         if (candidates.Count == 0)
         {
@@ -314,14 +330,28 @@ public sealed class DeleteCommand
     private void ExplainWhyNothingIsEligible(
         IReadOnlyDictionary<Guid, StateRecord> latest, IReadOnlyDictionary<Guid, ManifestEntry> manifest)
     {
-        _prompts.Section("Nothing is awaiting deletion");
-
         if (latest.Count == 0)
         {
+            _prompts.Section("Nothing is awaiting deletion");
             _prompts.Say("Nothing has been migrated yet — there is nothing that could be deleted.",
                 Tone.Muted);
             return;
         }
+
+        // Everything already done is a success, not a shortfall. Saying "nothing is awaiting
+        // deletion — put right whatever stopped them" about a run where every old file was
+        // removed as it went reads as a failure report for work that went perfectly.
+        var done = latest.Values.Count(r => r.State == MigrationState.Deleted);
+
+        if (done == latest.Count)
+        {
+            _prompts.Section("Nothing left to delete", Tone.Good);
+            _prompts.Say($"All {done} old file(s) have already been removed, with their CRM " +
+                         "records. There is nothing outstanding.");
+            return;
+        }
+
+        _prompts.Section("Nothing is awaiting deletion");
 
         _prompts.Say("Only a document that has been repointed can have its old file removed. " +
                      "Here is where each one actually got to:");
