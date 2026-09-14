@@ -13,9 +13,14 @@ public sealed class FakeAdoClient : IAdoClient
 
     public Exception? Throws { get; set; }
 
+    /// <summary>Called on every search, with the phrase and how many searches have now run —
+    /// so a test can change what the backlog holds between one look and the next.</summary>
+    public Action<string, int>? OnSearched { get; set; }
+
     public Task<IReadOnlyList<AdoHit>> FindByTitleAsync(string phrase, CancellationToken ct)
     {
         Searched.Add(phrase);
+        OnSearched?.Invoke(phrase, Searched.Count);
 
         if (Throws is not null) throw Throws;
 

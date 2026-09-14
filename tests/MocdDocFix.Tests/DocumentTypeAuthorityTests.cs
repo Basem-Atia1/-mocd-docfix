@@ -48,13 +48,42 @@ public class DocumentTypeAuthorityTests
     /// zero work items live, while "good conduct" returned four. So the phrase has to relax.
     /// </summary>
     [Fact]
-    public void The_search_relaxes_from_the_full_name_towards_its_distinctive_words()
+    public void The_search_relaxes_into_shorter_phrases_that_really_appear()
     {
         var terms = DocumentTypeAuthority.SearchTerms("A Copy of Certificate of Good Conduct and Behavior");
 
         Assert.Equal("A Copy of Certificate of Good Conduct and Behavior", terms[0]);
-        Assert.Contains("Certificate Good Conduct Behavior", terms);
         Assert.True(terms.Count >= 3, "it should get shorter, not just try the one phrasing");
+
+        // Every term is a run of words out of the original, in order. WIQL CONTAINS matches a
+        // run of characters, so a reshuffled bag of words — "Certificate Behavior" — is a phrase
+        // that appears in no title anywhere, and searching it found nothing at all.
+        foreach (var term in terms)
+            Assert.Contains(term, "A Copy of Certificate of Good Conduct and Behavior");
+    }
+
+    /// <summary>
+    /// The phrase that matters: CRM's full wording finds nothing live, and "Good Conduct" finds
+    /// four work items. It has to be among the terms tried, or the check is silent on a document
+    /// type DevOps can actually answer for.
+    /// </summary>
+    [Fact]
+    public void A_phrase_devops_really_uses_is_among_the_terms_tried()
+    {
+        var terms = DocumentTypeAuthority.SearchTerms("A Copy of Certificate of Good Conduct and Behavior");
+
+        Assert.Contains("Good Conduct", terms);
+    }
+
+    [Fact]
+    public void No_term_begins_or_ends_on_a_word_that_carries_nothing()
+    {
+        foreach (var term in DocumentTypeAuthority.SearchTerms("A Copy of Academic Qualification Certificate"))
+        {
+            Assert.False(term.StartsWith("of ", StringComparison.OrdinalIgnoreCase));
+            Assert.False(term.EndsWith(" of", StringComparison.OrdinalIgnoreCase));
+            Assert.False(term.EndsWith(" and", StringComparison.OrdinalIgnoreCase));
+        }
     }
 
     /// <summary>

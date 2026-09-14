@@ -77,27 +77,54 @@ public static class DocumentTypeAuthority
             .Where(w => w.Length > 0)
             .ToList();
 
-        var meaningful = words
-            .Where(w => !Noise.Contains(w, StringComparer.OrdinalIgnoreCase))
-            .ToList();
+        // WIQL CONTAINS matches a run of characters, not a bag of words, so a term has to be a
+        // phrase that really appears. Reshuffling "A Copy of Certificate of Good Conduct and
+        // Behavior" into "Certificate Behavior" produced a phrase in no title anywhere and found
+        // nothing, while the contiguous "Good Conduct" finds four work items.
+        var windows = new List<(string Term, bool AllMeaningful, int Length)>();
 
-        if (meaningful.Count > 0 && meaningful.Count < words.Count)
-            Add(string.Join(' ', meaningful));
+        for (var length = words.Count - 1; length >= 2; length--)
+        {
+            for (var start = 0; start + length <= words.Count; start++)
+            {
+                var window = words.Skip(start).Take(length).ToList();
 
-        // The two longest words carry the most identity: "certificate good conduct behavior"
-        // becomes "certificate behavior", which still finds the right tests.
-        if (meaningful.Count > 2)
-            Add(string.Join(' ', meaningful.OrderByDescending(w => w.Length).Take(2)));
+                // A window has to begin and end on a word that carries identity — "of Good" and
+                // "Conduct and" are as useless as the reshuffled version.
+                if (IsNoise(window[0]) || IsNoise(window[^1])) continue;
+
+                windows.Add((string.Join(' ', window), window.All(w => !IsNoise(w)), length));
+            }
+        }
+
+        // Windows of nothing but meaningful words come first, longest of those first. For "A Copy
+        // of Certificate of Good Conduct and Behavior" that is "Good Conduct" — the phrase DevOps
+        // actually uses, and four work items deep. Working strictly longest-first instead spent
+        // the whole budget on long phrasings nobody wrote and never reached it.
+        foreach (var window in windows.OrderBy(w => w.AllMeaningful ? 0 : 1).ThenByDescending(w => w.Length))
+            Add(window.Term);
 
         // A single short word is an acronym or a category, never an identity. "FAHR" matches 694
         // work items; searching it would produce noise and nothing else.
-        return terms.Where(t => t.Length >= 6 && t.Contains(' ')).ToList();
+        return terms
+            .Where(t => t.Length >= 6 && t.Contains(' '))
+            .Take(MostTermsWeWillTry)
+            .ToList();
 
         void Add(string term)
         {
             if (!terms.Contains(term, StringComparer.OrdinalIgnoreCase)) terms.Add(term);
         }
     }
+
+    /// <summary>
+    /// How many phrasings are worth a live query before giving up and asking the operator. Each
+    /// one is a round trip, and by the fourth the phrase is short enough to be meaningless.
+    /// </summary>
+    public const int MostTermsWeWillTry = 6;
+
+    private static bool IsNoise(string word) =>
+        Noise.Contains(word, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// The service a work item title names. Titles are pipe-delimited and lead with the channel

@@ -133,7 +133,7 @@ public class DocumentTypeCheckTests : IDisposable
     [Fact]
     public async Task Skipping_remembers_nothing_and_leaves_the_verdict_open()
     {
-        _prompts.ReadLineQueue = new Queue<string>(new[] { "4" });
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "6" });   // skip is the last option
 
         var ruling = await Check().RuleOnAsync("Odd Type", Emap, CancellationToken.None);
 
@@ -272,5 +272,92 @@ public class DocumentTypeCheckTests : IDisposable
 
             Assert.Equal(AdoVerdict.NotChecked, ruling.Verdict);
         }
+    }
+
+    // ---- going away and coming back with an answer ----
+
+    /// <summary>
+    /// CRM and the backlog rarely word a document the same way, so the operator can hand over a
+    /// phrasing the search would never have tried and get an answer from it.
+    /// </summary>
+    [Fact]
+    public async Task The_operator_can_hand_over_a_better_phrase_and_get_an_answer_from_it()
+    {
+        // A phrasing nothing in the name would have produced: the backlog calls this document
+        // something else entirely, which is the whole reason for handing the search over.
+        _ado.Titles["staff clearance"] = new()
+        {
+            "NPOP|Employee Appointment Request|Documents|Verify staff clearance",
+            "Portal | Confirm Employment | Verify staff clearance"
+        };
+
+        // Option 4: search for my own words, then the words themselves.
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "4", "staff clearance" });
+
+        var ruling = await Check().RuleOnAsync("Zed Marker Sheet", Emap, CancellationToken.None);
+
+        Assert.Equal(AdoVerdict.Agrees, ruling.Verdict);
+        Assert.Contains("staff clearance", ruling.Source);
+        Assert.Contains("staff clearance", _ado.Searched);
+    }
+
+    [Fact]
+    public async Task A_phrase_that_settles_nothing_brings_the_same_question_back()
+    {
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "4", "nothing matches this", "6" });
+
+        var ruling = await Check().RuleOnAsync("Odd Type", Emap, CancellationToken.None);
+
+        // Asked twice: once before the search, once after it came back empty.
+        Assert.Equal(2, _prompts.Messages.Count(m => m.Contains("What should I do with this document type?")));
+        Assert.Equal(AdoVerdict.CannotTell, ruling.Verdict);
+    }
+
+    /// <summary>
+    /// Nothing runs while the operator is away, and what they changed in the backlog while they
+    /// were gone is picked up — the search is run again from scratch, not replayed from memory.
+    /// </summary>
+    [Fact]
+    public async Task Waiting_pauses_and_then_searches_again_from_scratch()
+    {
+        _ado.Titles["Odd Type"] = new();
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "5", "" });
+
+        // While the operator is away, the backlog gains the work items that answer it — which is
+        // the point of waiting, so the second look has to be a real second look.
+        _ado.OnSearched = (phrase, count) =>
+        {
+            if (count >= 2)
+                _ado.Titles[phrase] = new List<string>
+                {
+                    "NPOP|Employee Appointment Request|Documents|Verify odd type",
+                    "Portal | Confirm Employment | Verify odd type"
+                };
+        };
+
+        var ruling = await Check().RuleOnAsync("Odd Type", Emap, CancellationToken.None);
+
+        Assert.Contains(_prompts.Questions, q => q.Contains("Press Enter when you are ready"));
+        Assert.Equal(2, _ado.Searched.Count(s => s == "Odd Type"));
+        Assert.Equal(AdoVerdict.Agrees, ruling.Verdict);
+    }
+
+    [Fact]
+    public async Task What_the_local_backlog_copy_holds_is_shown_before_the_question()
+    {
+        var folder = Path.Combine(_root, "stories");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, "us-27628.md"),
+            "---\ntitle: 1.1.6 NPOP- Employee Appointment Request Form- Documents\n---\n" +
+            "A Copy of Certificate of Good Conduct and Behavior\n");
+
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "6" });
+
+        await new DocumentTypeCheck(_ado, Decisions(), _prompts, folder)
+            .RuleOnAsync("A Copy of Certificate of Good Conduct and Behavior", Emap, CancellationToken.None);
+
+        var said = string.Join("\n", _prompts.Messages);
+        Assert.Contains("local backlog copy", said);
+        Assert.Contains("Employee Appointment Request", said);
     }
 }

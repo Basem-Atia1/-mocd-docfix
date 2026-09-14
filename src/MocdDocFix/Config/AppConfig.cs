@@ -49,6 +49,15 @@ public sealed class AdoConfig
     /// <summary>Blank unless the account needs one — the workstation domain differs from MOCD's.</summary>
     public string Domain { get; set; } = "";
 
+    /// <summary>
+    /// A local copy of the backlog: the synced user stories and the files attached to them.
+    /// The live search can only see work item titles, because this server refuses a full-text
+    /// query, and the document lists are in the story bodies and in the attached spreadsheets.
+    /// Blank turns it off.
+    /// </summary>
+    public string LocalCopy { get; set; } =
+        @"D:\Claude code for mocd\mocd-knowledge-base\kb\user-stories";
+
     /// <summary>False turns the cross-check off without forgetting the settings.</summary>
     public bool Enabled { get; set; } = true;
 }

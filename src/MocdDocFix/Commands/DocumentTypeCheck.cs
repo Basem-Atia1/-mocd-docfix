@@ -40,12 +40,22 @@ public sealed class DocumentTypeCheck
     /// <summary>Why DevOps stopped answering, once it has. Set means: do not try again this run.</summary>
     private string? _unreachable;
 
+    /// <summary>Where a local copy of the backlog lives, if there is one.</summary>
+    private readonly string? _localBacklog;
+
     /// <param name="ado">Null when DevOps is not configured; every type then reads "not checked".</param>
-    public DocumentTypeCheck(IAdoClient? ado, DocumentTypeDecisions decisions, IPrompts prompts)
+    /// <param name="localBacklog">
+    /// A folder holding a local copy of the backlog — the synced user stories and the files
+    /// attached to them. Searched only when the live look-up cannot settle a name, because it is
+    /// the one place the document lists are actually written down.
+    /// </param>
+    public DocumentTypeCheck(IAdoClient? ado, DocumentTypeDecisions decisions, IPrompts prompts,
+        string? localBacklog = null)
     {
         _ado = ado;
         _decisions = decisions;
         _prompts = prompts;
+        _localBacklog = localBacklog;
     }
 
     /// <summary>Document types asked about in this run, in the order they were first seen.</summary>
@@ -177,6 +187,12 @@ public sealed class DocumentTypeCheck
                 _prompts.Info($"      {hit.WorkItemId}  {Trim(hit.Title, 60)}", Tone.Muted);
         }
 
+        // The titles are only half the backlog. The document lists live in the bodies of the
+        // stories and in the workbooks attached to them — this name appears verbatim in user
+        // story 27628 and in no title anywhere — and the live search cannot reach either,
+        // because this server refuses a full-text query. So the local copy is read as well.
+        ShowLocalHits(name);
+
         var answer = new Asker(_prompts).Ask("What should I do with this document type?", new[]
         {
             new Choice("Take CRM's answer", $"treat {crmService ?? "the document type's catalogue"} as correct",
@@ -191,12 +207,22 @@ public sealed class DocumentTypeCheck
                 "Type the service name as CRM spells it. If it matches the document type's " +
                 "catalogue the documents carry on; if it does not, they go to group 6."),
 
+            new Choice("Search DevOps for my own words", "I will give you a better phrase to look for",
+                "CRM and the backlog rarely word a document the same way. Type any phrase you " +
+                "think the backlog uses — part of the name, a screen, a work item — and it is " +
+                "searched live and shown to you, then this question comes back."),
+
+            new Choice("Wait — I will go and look", "pause while I check, then search again",
+                "Nothing happens until you come back. Go and read the story, the spreadsheet or " +
+                "the backlog; when you press Enter everything is searched again from scratch, so " +
+                "anything you changed in DevOps in the meantime is picked up."),
+
             new Choice("Skip for now", "decide later; ask me again next run",
                 "Nothing is remembered. The documents keep the verdict the path gave them, and " +
                 "this question comes back on the next scan.")
         }, defaultIndex: 0, allowBack: false, confirm: true);
 
-        var index = answer.Kind == AnswerKind.Chosen ? answer.Index : 3;
+        var index = answer.Kind == AnswerKind.Chosen ? answer.Index : 5;
 
         switch (index)
         {
@@ -225,8 +251,93 @@ public sealed class DocumentTypeCheck
                         : $"You said '{typed}', but CRM says {crmService ?? "(nothing)"}.",
                     opinion.Evidence, "you");
 
+            case 3:
+                return SearchAgain(name, crmService, MyOwnWords(), opinion);
+
+            case 4:
+                _prompts.Blank();
+                _prompts.Say("Take your time. Nothing is running and nothing has been changed.",
+                    Tone.Muted);
+                _prompts.ReadLine("  Press Enter when you are ready");
+
+                return SearchAgain(name, crmService, null, opinion);
+
             default:
                 return Skipped(name, opinion);
+        }
+    }
+
+    private string? MyOwnWords()
+    {
+        _prompts.Blank();
+        _prompts.Say("Type a phrase the backlog might use. It is matched inside work item " +
+                     "titles, so a few words out of the middle work better than the whole name.",
+                     Tone.Muted);
+
+        var typed = _prompts.ReadLine("  Search DevOps for").Trim();
+
+        return typed.Length == 0 || typed.Equals("q", StringComparison.OrdinalIgnoreCase) ? null : typed;
+    }
+
+    /// <summary>
+    /// Goes back to the backlog — with the operator's phrase, or with the original search run
+    /// again — and returns to the same question carrying whatever came back. The point is that
+    /// the question can be left and come back better informed, rather than answered blind.
+    /// </summary>
+    private TypeRuling SearchAgain(string name, string? crmService, string? phrase, AdoOpinion before)
+    {
+        if (_ado is null) return Skipped(name, before);
+
+        // A fresh look means a fresh look: anything settled a moment ago by an outage or by a
+        // thin result should not be held against the new answer.
+        _unreachable = null;
+
+        var opinion = phrase is null
+            ? AskDevOpsAsync(name, crmService, CancellationToken.None).GetAwaiter().GetResult()
+            : WeighOneTerm(name, crmService, phrase);
+
+        _prompts.Blank();
+        _prompts.Say(opinion.Detail, opinion.Verdict == AdoVerdict.CannotTell ? Tone.Warn : Tone.Good);
+
+        if (opinion.Verdict != AdoVerdict.CannotTell)
+            return new TypeRuling(name, opinion.Verdict, opinion.Service, opinion.Detail,
+                opinion.Evidence, phrase is null ? "DevOps, looked at again" : $"DevOps, searched for '{phrase}'");
+
+        return Ask(name, crmService, opinion);
+    }
+
+    private AdoOpinion WeighOneTerm(string name, string? crmService, string phrase)
+    {
+        try
+        {
+            var hits = _ado!.FindByTitleAsync(phrase, CancellationToken.None).GetAwaiter().GetResult();
+            return DocumentTypeAuthority.Weigh(name, crmService, hits);
+        }
+        catch (Exception ex)
+        {
+            return new AdoOpinion(AdoVerdict.CannotTell, null, Array.Empty<AdoHit>(),
+                $"That search could not be run — {ex.GetType().Name}: {Innermost(ex)}");
+        }
+    }
+
+    /// <summary>
+    /// What the local copy of the backlog has — the story bodies and the spreadsheets attached
+    /// to them, which is where the document lists actually live.
+    /// </summary>
+    private void ShowLocalHits(string name)
+    {
+        var hits = LocalBacklogSearch.Find(_localBacklog, name);
+
+        if (hits.Count == 0) return;
+
+        _prompts.Blank();
+        _prompts.Say($"The name does appear in {hits.Count} file(s) of the local backlog copy:");
+
+        foreach (var hit in hits)
+        {
+            _prompts.Info($"      {Trim(hit.Title ?? Path.GetFileName(hit.File), 62)}", Tone.Muted);
+            if (hit.Service is not null)
+                _prompts.Info($"        service: {hit.Service}", Tone.Good);
         }
     }
 

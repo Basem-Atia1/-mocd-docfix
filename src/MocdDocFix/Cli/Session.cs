@@ -91,7 +91,7 @@ public sealed class Session : IDisposable
         _scan = new ScanCommand(_read, _reporter, env.CrmUrl, appConfig.ServiceCatalogues,
             new GroupedReportWriter(runRoot),
             new GuidListWriter(runRoot),
-            new DocumentTypeCheck(ado, _typeDecisions, prompts));
+            new DocumentTypeCheck(ado, _typeDecisions, prompts, appConfig.Ado.LocalCopy));
     }
 
     public void Dispose()
