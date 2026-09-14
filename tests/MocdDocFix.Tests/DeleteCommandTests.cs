@@ -60,7 +60,7 @@ public class DeleteCommandTests : IDisposable
     private DeleteCommand Command(FakePrompts prompts) =>
         new(_files, _read, _write, Backups(), States(), prompts);
 
-    private static FakePrompts Confirmed() => new() { TypedWordResponse = "DELETE" };
+    private static FakePrompts Confirmed() => new() { YesNoResponse = true };
 
     [Fact]
     public async Task Deletes_the_old_vendor_file_and_the_old_documentfile_row()
@@ -75,9 +75,9 @@ public class DeleteCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task Without_the_typed_word_nothing_is_deleted()
+    public async Task Answering_no_deletes_nothing()
     {
-        var prompts = new FakePrompts { TypedWordResponse = "yes" };
+        var prompts = new FakePrompts { YesNoResponse = false };
 
         var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
 
@@ -85,6 +85,22 @@ public class DeleteCommandTests : IDisposable
         Assert.True(summary.Aborted);
         Assert.Empty(_files.Deleted);
         Assert.Empty(_write.DeletedFiles);
+    }
+
+    /// <summary>
+    /// The confirmation used to be the word DELETE, typed back exactly. Typing "delete" aborted
+    /// a whole run — no file touched, no explanation beyond "did not type DELETE". A question
+    /// that punishes the right answer in the wrong case is not a safety feature.
+    /// </summary>
+    [Fact]
+    public async Task The_delete_is_confirmed_with_a_plain_yes_or_no()
+    {
+        var prompts = Confirmed();
+
+        await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Contains(prompts.Questions, q => q.Contains("Delete 1 old file(s) from dev now?"));
+        Assert.DoesNotContain(prompts.Questions, q => q.Contains("DELETE", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -137,14 +153,14 @@ public class DeleteCommandTests : IDisposable
     [Fact]
     public async Task Production_additionally_requires_typing_the_exact_count()
     {
-        var prompts = new FakePrompts { TypedWordResponse = "DELETE" };
+        // Yes to the delete question, but the count is never typed, so production still aborts.
+        var prompts = new FakePrompts { YesNoResponse = true, TypedWordResponse = "whatever" };
 
-        // TypedWordResponse only matches one word, so the count prompt fails and aborts.
         var summary = await Command(prompts).RunAsync("prod", isProduction: true, CancellationToken.None);
 
         Assert.True(summary.Aborted);
         Assert.Empty(_files.Deleted);
-        Assert.Contains(prompts.Questions, q => q.Contains("1", StringComparison.Ordinal));
+        Assert.Contains(prompts.Questions, q => q.Contains("PRODUCTION", StringComparison.Ordinal));
     }
 
     [Fact]

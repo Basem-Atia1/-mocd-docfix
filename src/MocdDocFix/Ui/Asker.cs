@@ -31,6 +31,13 @@ public sealed record Answer(AnswerKind Kind, int Index)
 /// </summary>
 public sealed class Asker
 {
+    /// <summary>
+    /// How far a long label may push the description column out before it is left to have its
+    /// description on the line below instead. Past this there is too little room left to say
+    /// anything useful in the description.
+    /// </summary>
+    private const int WidestLabelColumn = 36;
+
     private readonly IPrompts _prompts;
 
     public Asker(IPrompts prompts) => _prompts = prompts;
@@ -62,7 +69,7 @@ public sealed class Asker
 
                 case "b" or "back":
                     if (allowBack) return Answer.Back;
-                    _prompts.Info("  There is nothing to go back to from here.");
+                    _prompts.Info("  There is nothing to go back to from here.", Tone.Warn);
                     continue;
             }
 
@@ -75,44 +82,80 @@ public sealed class Asker
             var choice = choices[number - 1];
             if (choice.Enabled) return Answer.Choose(number - 1);
 
-            _prompts.Info("");
-            _prompts.Info($"  {choice.Label} is not available: " +
+            _prompts.Blank();
+            _prompts.Warn($"{choice.Label} is not available: " +
                           (choice.DisabledNote ?? "it is not set up."));
         }
     }
 
     private void Show(string question, IReadOnlyList<Choice> choices, int? defaultIndex)
     {
-        _prompts.Info("");
-        _prompts.Info($"  {question}");
-        _prompts.Info("");
+        _prompts.Section(question);
+        _prompts.Blank();
+
+        // One column for this question's descriptions, wide enough for its own longest label.
+        // Fixing it in advance would either waste the width of every short-labelled question or
+        // push the one long label in a list onto a line of its own.
+        var heads = choices
+            .Select((c, i) => $"   {Marker(c, defaultIndex == i)}{i + 1,2}  {c.Label}")
+            .ToList();
+
+        var column = Math.Min(WidestLabelColumn, heads.Max(h => h.Length) + 2);
 
         for (var i = 0; i < choices.Count; i++)
         {
             var c = choices[i];
-            var marker = c.Enabled ? " " : "-";
-            var isDefault = defaultIndex == i ? "   [default]" : "";
-            _prompts.Info($"   {marker}{i + 1,2}  {c.Label,-18} {c.Description}{isDefault}");
+            var tone = c.Enabled ? Tone.Normal : Tone.Muted;
+            var wrapped = Screen.Wrap(c.Description, Screen.Width - column);
+
+            if (heads[i].Length >= column)
+            {
+                // Too long even for the widened column: the description goes underneath rather
+                // than shunting every other row across to meet it.
+                _prompts.Info(heads[i], tone);
+                foreach (var line in wrapped) _prompts.Info(new string(' ', column) + line, tone);
+                continue;
+            }
+
+            _prompts.Info(heads[i].PadRight(column) + wrapped[0], tone);
+            foreach (var line in wrapped.Skip(1))
+                _prompts.Info(new string(' ', column) + line, tone);
         }
 
-        _prompts.Info("");
+        // Said once, under the list, rather than tacked onto one description — where it used to
+        // push that one row's text onto a second line and make the list look ragged.
+        if (defaultIndex is { } d && choices[d].Enabled)
+            _prompts.Info($"   > Enter chooses {d + 1}, {choices[d].Label} (default).", Tone.Muted);
+
+        _prompts.Blank();
     }
+
+    /// <summary>
+    /// The column before the number: '-' for a choice that cannot be picked, '>' for the one
+    /// Enter would take, blank otherwise. A marker as well as a colour, so the list still reads
+    /// where there is none.
+    /// </summary>
+    private static string Marker(Choice choice, bool isDefault) =>
+        !choice.Enabled ? "-" : isDefault ? ">" : " ";
 
     private void Explain(IReadOnlyList<Choice> choices)
     {
-        _prompts.Info("");
-        for (var i = 0; i < choices.Count; i++)
+        foreach (var (c, i) in choices.Select((c, i) => (c, i)))
         {
-            var c = choices[i];
-            _prompts.Info($"   {i + 1,2}  {c.Label}");
-            _prompts.Info($"       {c.LongHelp ?? c.Description}");
+            _prompts.Blank();
+            _prompts.Info($"   {i + 1,2}  {c.Label}", Tone.Strong);
+
+            foreach (var line in Screen.Wrap(c.LongHelp ?? c.Description, Screen.Width - 8))
+                _prompts.Info("       " + line, Tone.Muted);
+
             if (!c.Enabled && c.DisabledNote is not null)
-                _prompts.Info($"       Not available: {c.DisabledNote}");
+                foreach (var line in Screen.Wrap("Not available: " + c.DisabledNote, Screen.Width - 8))
+                    _prompts.Info("       " + line, Tone.Warn);
         }
     }
 
     private void Hint(int count, bool allowBack) =>
         _prompts.Info($"  Type the number of a choice, 1 to {count}" +
                       (allowBack ? ", or b to go back" : "") +
-                      ", ? for more detail, or q to quit.");
+                      ", ? for more detail, or q to quit.", Tone.Warn);
 }

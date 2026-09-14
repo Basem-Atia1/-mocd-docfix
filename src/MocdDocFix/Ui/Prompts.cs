@@ -2,31 +2,69 @@ namespace MocdDocFix.Ui;
 
 public enum ConfirmChoice { Yes, No, Skip, Quit }
 
+/// <summary>
+/// What a line is for, so the console can colour it. Everything still reads correctly with no
+/// colour at all — a tone is emphasis, never the only thing carrying the meaning.
+/// </summary>
+public enum Tone
+{
+    /// <summary>Ordinary prose.</summary>
+    Normal,
+
+    /// <summary>Supporting detail: paths, ids, counts, the small print under a heading.</summary>
+    Muted,
+
+    /// <summary>A heading or a line the eye should land on first.</summary>
+    Strong,
+
+    /// <summary>Something worked.</summary>
+    Good,
+
+    /// <summary>Worth reading before answering, but nothing is lost either way.</summary>
+    Warn,
+
+    /// <summary>Irreversible, refused, or failed.</summary>
+    Danger
+}
+
 public interface IPrompts
 {
     ConfirmChoice Confirm(string question);
+
+    /// <summary>
+    /// A plain yes or no. Case does not matter and neither does the long form: y, Y, yes and YES
+    /// all mean yes. Anything else re-asks.
+    /// </summary>
+    /// <param name="defaultYes">What a bare Enter means. False everywhere that matters.</param>
+    bool YesNo(string question, bool defaultYes = false, Tone tone = Tone.Normal);
+
     bool TypedWord(string question, string requiredWord);
     string ReadLine(string question);
-    void Info(string message);
+    void Info(string message, Tone tone = Tone.Normal);
 }
 
 public sealed class ConsolePrompts : IPrompts
 {
     private readonly TextReader _in;
     private readonly TextWriter _out;
+    private readonly bool _coloured;
 
     /// <summary>The reader and writer are injectable only so the end-of-input path can be tested.</summary>
     public ConsolePrompts(TextReader? input = null, TextWriter? output = null)
     {
         _in = input ?? Console.In;
         _out = output ?? Console.Out;
+
+        // Colour only when we own a real console. A redirected stream gets plain text, so piping
+        // the tool into a file or a test still produces something readable.
+        _coloured = output is null && SafeToColour();
     }
 
     public ConfirmChoice Confirm(string question)
     {
         while (true)
         {
-            _out.Write($"{question} [y / n / skip / quit]: ");
+            Ask($"{question} [y / n / skip / quit]: ", Tone.Normal);
 
             if (ReadOrEndOfInput() is not { } answer) return ConfirmChoice.Quit;
 
@@ -36,23 +74,49 @@ public sealed class ConsolePrompts : IPrompts
                 case "n" or "no": return ConfirmChoice.No;
                 case "s" or "skip": return ConfirmChoice.Skip;
                 case "q" or "quit": return ConfirmChoice.Quit;
-                default: _out.WriteLine("  Please answer y, n, skip or quit."); break;
+                default: Info("  Please answer y, n, skip or quit.", Tone.Warn); break;
             }
         }
     }
 
-    /// <summary>Used where a keypress is not enough — deletion, and selecting production.</summary>
+    public bool YesNo(string question, bool defaultYes = false, Tone tone = Tone.Normal)
+    {
+        while (true)
+        {
+            Ask($"{question} [{(defaultYes ? "Y/n" : "y/N")}]: ", tone);
+
+            if (ReadOrEndOfInput() is not { } answer) return false;
+
+            var typed = answer.Trim().ToLowerInvariant();
+
+            if (typed.Length == 0) return defaultYes;
+
+            switch (typed)
+            {
+                case "y" or "yes": return true;
+                case "n" or "no" or "q" or "quit": return false;
+                default: Info("  Please answer y or n.", Tone.Warn); break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Used where a keypress is not enough — choosing production, and confirming a count.
+    /// Deliberately not case-sensitive: the friction that matters is having to type the word at
+    /// all, and a right answer in the wrong case reads as a rejected answer, not as a caps-lock
+    /// mistake.
+    /// </summary>
     public bool TypedWord(string question, string requiredWord)
     {
-        _out.Write($"{question} (type {requiredWord} to proceed): ");
+        Ask($"{question}{Environment.NewLine}  Type {requiredWord} to go ahead: ", Tone.Warn);
 
         return ReadOrEndOfInput() is { } answer &&
-               string.Equals(answer.Trim(), requiredWord, StringComparison.Ordinal);
+               string.Equals(answer.Trim(), requiredWord, StringComparison.OrdinalIgnoreCase);
     }
 
     public string ReadLine(string question)
     {
-        _out.Write($"{question}: ");
+        Ask($"{question}: ", Tone.Normal);
 
         // End of input is an answer, not an absence of one. Without this, a question that
         // re-asks on unusable input spins forever the moment stdin closes — which is exactly
@@ -60,7 +124,45 @@ public sealed class ConsolePrompts : IPrompts
         return ReadOrEndOfInput() is { } answer ? answer.Trim() : "q";
     }
 
-    public void Info(string message) => _out.WriteLine(message);
+    public void Info(string message, Tone tone = Tone.Normal) => Write(message, tone, newLine: true);
+
+    private void Ask(string prompt, Tone tone) => Write(prompt, tone, newLine: false);
+
+    private void Write(string text, Tone tone, bool newLine)
+    {
+        if (!_coloured || tone == Tone.Normal)
+        {
+            if (newLine) _out.WriteLine(text); else _out.Write(text);
+            return;
+        }
+
+        var previous = Console.ForegroundColor;
+        try
+        {
+            Console.ForegroundColor = ColourFor(tone);
+            if (newLine) _out.WriteLine(text); else _out.Write(text);
+        }
+        finally
+        {
+            try { Console.ForegroundColor = previous; } catch (IOException) { /* console gone */ }
+        }
+    }
+
+    private static ConsoleColor ColourFor(Tone tone) => tone switch
+    {
+        Tone.Muted => ConsoleColor.DarkGray,
+        Tone.Strong => ConsoleColor.White,
+        Tone.Good => ConsoleColor.Green,
+        Tone.Warn => ConsoleColor.Yellow,
+        Tone.Danger => ConsoleColor.Red,
+        _ => Console.ForegroundColor
+    };
+
+    private static bool SafeToColour()
+    {
+        try { return !Console.IsOutputRedirected; }
+        catch (IOException) { return false; }
+    }
 
     /// <returns>The line, or null once there is no more input to be had.</returns>
     private string? ReadOrEndOfInput()
@@ -69,7 +171,7 @@ public sealed class ConsolePrompts : IPrompts
         if (line is not null) return line;
 
         _out.WriteLine();
-        _out.WriteLine("  (end of input — stopping)");
+        Info("  (end of input — stopping)", Tone.Muted);
         return null;
     }
 }

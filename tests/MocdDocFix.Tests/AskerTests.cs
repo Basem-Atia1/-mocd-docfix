@@ -61,11 +61,11 @@ public class AskerTests
     public void The_default_is_marked_so_the_operator_knows_what_Enter_does()
     {
         new Asker(new ScriptedPrompts("")).Ask("What now?", Three, defaultIndex: 0);
-        // rendered as "[default]" next to the choice — checked via a fresh run
+        // rendered as "(default)" next to the choice — checked via a fresh run
         var prompts = new ScriptedPrompts("");
         new Asker(prompts).Ask("What now?", Three, defaultIndex: 0);
 
-        Assert.True(prompts.Said("[default]"));
+        Assert.True(prompts.Said("(default)"));
     }
 
     [Fact]

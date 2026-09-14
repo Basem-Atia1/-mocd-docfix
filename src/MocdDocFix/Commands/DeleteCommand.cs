@@ -58,20 +58,34 @@ public sealed class DeleteCommand
             return new DeleteSummary(0, 0, 0, false, null);
         }
 
-        _prompts.Info("");
-        _prompts.Info($"About to permanently delete {candidates.Count} old file(s) from {env}:");
+        _prompts.Section($"About to permanently delete {candidates.Count} old file(s) from {env}",
+            Tone.Danger);
+        _prompts.Blank();
+
         foreach (var c in candidates.Take(20))
-            _prompts.Info($"  {manifest[c.DocumentId].OldFilePath}");
-        if (candidates.Count > 20) _prompts.Info($"  … and {candidates.Count - 20} more");
-        _prompts.Info("");
-        _prompts.Info("This cannot be undone. Local backups keep the bytes, but a restored file");
-        _prompts.Info("cannot return to its original path.");
+            _prompts.Info($"    {manifest[c.DocumentId].OldFilePath}", Tone.Muted);
+        if (candidates.Count > 20)
+            _prompts.Info($"    … and {candidates.Count - 20} more", Tone.Muted);
 
-        if (!_prompts.TypedWord($"Delete {candidates.Count} old file(s) from {env}?", "DELETE"))
-            return new DeleteSummary(0, 0, 0, true, "Operator did not type DELETE.");
+        _prompts.Blank();
+        _prompts.Warn("This cannot be undone. Local backups keep the bytes, but a restored file " +
+                      "cannot return to its original path.", Tone.Danger);
+        _prompts.Blank();
 
+        // A yes/no question, not a word to be typed back. The typed word was meant as friction
+        // and turned into a trap: "delete" in the wrong case read as a refusal and abandoned the
+        // whole run, which teaches the operator to distrust the answer rather than to weigh it.
+        // The weight belongs in what is shown above the question, and it is all still shown.
+        if (!_prompts.YesNo($"  Delete {candidates.Count} old file(s) from {env} now?",
+                defaultYes: false, Tone.Danger))
+        {
+            return new DeleteSummary(0, 0, 0, true, "Answered no at the delete confirmation.");
+        }
+
+        // Production keeps a second question that cannot be answered by reflex: the count has to
+        // be read off the screen and typed. It is digits, so there is no case to get wrong.
         if (isProduction &&
-            !_prompts.TypedWord($"PRODUCTION. Confirm the number of files to delete ({candidates.Count})",
+            !_prompts.TypedWord($"  PRODUCTION. Confirm the number of files to delete ({candidates.Count})",
                 candidates.Count.ToString()))
         {
             return new DeleteSummary(0, 0, 0, true, "Operator did not confirm the production count.");
@@ -91,7 +105,7 @@ public sealed class DeleteCommand
             var identity = await WhoseRecordIsThisAsync(entry, candidate, ct);
             if (identity is not null)
             {
-                _prompts.Info($"  REFUSED {entry.OldFilePath} — {identity}");
+                _prompts.Info($"  REFUSED {entry.OldFilePath} — {identity}", Tone.Danger);
                 _state.Append(new StateRecord(candidate.DocumentId, MigrationState.Failed,
                     DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
                     $"Delete refused: {identity}"));
@@ -103,13 +117,13 @@ public sealed class DeleteCommand
             switch (await AskAboutSharedPathAsync(entry, ct))
             {
                 case SharedPathChoice.LeaveEverything:
-                    _prompts.Info("    Left alone. Nothing was deleted for this document.");
+                    _prompts.Info("    Left alone. Nothing was deleted for this document.", Tone.Warn);
                     refused++;
                     continue;
 
                 case SharedPathChoice.CrmRecordOnly:
                     await _write.DeleteDocumentFileAsync(entry.OldFileId, ct);
-                    _prompts.Info($"    Removed the old CRM record {entry.OldFileId}. The file stays.");
+                    _prompts.Info($"    Removed the old CRM record {entry.OldFileId}. The file stays.", Tone.Good);
                     _state.Append(new StateRecord(candidate.DocumentId, MigrationState.Deleted,
                         DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
                         $"Deleted documentfile {entry.OldFileId} only — the file is shared, so it was kept."));
@@ -120,7 +134,7 @@ public sealed class DeleteCommand
             var refusal = await WhyNotSafeAsync(candidate, entry, ct);
             if (refusal is not null)
             {
-                _prompts.Info($"  REFUSED {entry.OldFilePath} — {refusal}");
+                _prompts.Info($"  REFUSED {entry.OldFilePath} — {refusal}", Tone.Danger);
                 _state.Append(new StateRecord(candidate.DocumentId, MigrationState.Failed,
                     DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
                     $"Delete refused: {refusal}"));
@@ -159,21 +173,22 @@ public sealed class DeleteCommand
         var corrected = await Reconciler.SweepAsync(_read, _write, _state, manifest, ct);
         if (corrected.Count == 0) return;
 
-        _prompts.Info("");
-        _prompts.Info($"Asked CRM about every backed-up document first. {corrected.Count} " +
-                      "disagreed with what this tool had written down:");
+        _prompts.Section("Checked against CRM first");
+        _prompts.Say($"{corrected.Count} document(s) disagreed with what this tool had written " +
+                     "down. CRM is the authority, so its answer wins.");
 
         foreach (var fix in corrected)
         {
-            _prompts.Info("");
-            _prompts.Info($"  {fix.FileName ?? fix.DocumentId.ToString()}");
-            _prompts.Info($"    recorded as   {fix.Was}");
-            _prompts.Info($"    CRM says      the document points at {fix.Now.RecordId}");
-            _prompts.Info($"    its path      {fix.Now.FilePath}");
-            _prompts.Info("    CORRECTED     the migration did finish. Now eligible for deletion.");
+            _prompts.Blank();
+            _prompts.Info($"    {fix.FileName ?? fix.DocumentId.ToString()}", Tone.Strong);
+            _prompts.Info($"      recorded as   {fix.Was}", Tone.Muted);
+            _prompts.Info($"      CRM says      the document points at {fix.Now.RecordId}", Tone.Muted);
+            _prompts.Info($"      its path      {fix.Now.FilePath}", Tone.Muted);
+            _prompts.Info("      CORRECTED     the migration did finish. Now eligible for deletion.",
+                Tone.Good);
         }
 
-        _prompts.Info("");
+        _prompts.Blank();
     }
 
     /// <summary>
@@ -184,22 +199,29 @@ public sealed class DeleteCommand
     private void ExplainWhyNothingIsEligible(
         IReadOnlyDictionary<Guid, StateRecord> latest, IReadOnlyDictionary<Guid, ManifestEntry> manifest)
     {
-        _prompts.Info("");
-        _prompts.Info("Nothing is awaiting deletion.");
+        _prompts.Section("Nothing is awaiting deletion");
 
         if (latest.Count == 0)
         {
-            _prompts.Info("  Nothing has been migrated yet — there is nothing that could be deleted.");
+            _prompts.Say("Nothing has been migrated yet — there is nothing that could be deleted.",
+                Tone.Muted);
             return;
         }
 
-        _prompts.Info("  Only a document that has been repointed can have its old file removed.");
-        _prompts.Info("  Here is where each one actually got to:");
-        _prompts.Info("");
+        _prompts.Say("Only a document that has been repointed can have its old file removed. " +
+                     "Here is where each one actually got to:");
+        _prompts.Blank();
 
         foreach (var group in latest.Values.GroupBy(r => r.State).OrderBy(g => g.Key))
         {
-            _prompts.Info($"    {group.Count(),4}  {Describe(group.Key)}");
+            var tone = group.Key switch
+            {
+                MigrationState.Failed or MigrationState.Quarantined => Tone.Danger,
+                MigrationState.Repointed or MigrationState.Deleted => Tone.Good,
+                _ => Tone.Normal
+            };
+
+            _prompts.Info($"    {group.Count(),4}  {Describe(group.Key)}", tone);
 
             // The reason matters most where something went wrong, so name those individually.
             if (group.Key is not (MigrationState.Failed or MigrationState.Quarantined)) continue;
@@ -210,15 +232,16 @@ public sealed class DeleteCommand
                     ? entry.FileName ?? record.DocumentId.ToString()
                     : record.DocumentId.ToString();
 
-                _prompts.Info($"          {name}");
+                _prompts.Info($"          {name}", Tone.Muted);
                 if (!string.IsNullOrWhiteSpace(record.Detail))
-                    _prompts.Info($"            {record.Detail}");
+                    foreach (var line in Screen.Wrap(record.Detail!, Screen.Width - 12))
+                        _prompts.Info($"            {line}", Tone.Muted);
             }
         }
 
-        _prompts.Info("");
-        _prompts.Info("  Put right whatever stopped them, run the upload step again, and the old");
-        _prompts.Info("  files become eligible. Nothing has been lost in the meantime.");
+        _prompts.Blank();
+        _prompts.Say("Put right whatever stopped them, run the upload step again, and the old " +
+                     "files become eligible. Nothing has been lost in the meantime.");
     }
 
     private static string Describe(MigrationState state) => state switch
@@ -255,22 +278,22 @@ public sealed class DeleteCommand
 
         if (sharers.Count == 0) return SharedPathChoice.NotShared;
 
-        _prompts.Info("");
-        _prompts.Info($"  PROBLEM — {entry.FileName}");
-        _prompts.Info($"    {entry.OldFilePath}");
-        _prompts.Info($"    is also referenced by {sharers.Count} other mocd_documentfile record(s):");
-        foreach (var id in sharers.Take(10)) _prompts.Info($"      {id}");
-        if (sharers.Count > 10) _prompts.Info($"      … and {sharers.Count - 10} more");
-        _prompts.Info("");
-        _prompts.Info("    Deleting the file would leave those records pointing at nothing, and");
-        _prompts.Info("    their documents would stop opening. So the file will NOT be deleted.");
-        _prompts.Info("");
-        _prompts.Info("    Two things can be done instead:");
-        _prompts.Info("      1  Leave everything. The old file and its CRM record both stay.");
-        _prompts.Info("         Costs nothing; the old row remains as clutter.");
-        _prompts.Info("      2  Delete only this document's old CRM record, and keep the file.");
-        _prompts.Info("         This document is already repointed, so it loses nothing, and the");
-        _prompts.Info("         other records keep working because the file is still there.");
+        _prompts.Section($"PROBLEM — {entry.FileName} is a shared file", Tone.Warn);
+        _prompts.Info($"    {entry.OldFilePath}", Tone.Muted);
+        _prompts.Blank();
+        _prompts.Say($"is also referenced by {sharers.Count} other mocd_documentfile record(s):");
+        foreach (var id in sharers.Take(10)) _prompts.Info($"      {id}", Tone.Muted);
+        if (sharers.Count > 10) _prompts.Info($"      … and {sharers.Count - 10} more", Tone.Muted);
+        _prompts.Blank();
+        _prompts.Warn("Deleting the file would leave those records pointing at nothing, and their " +
+                      "documents would stop opening. So the file will NOT be deleted.");
+        _prompts.Blank();
+        _prompts.Say("Two things can be done instead:");
+        _prompts.Bullet("Leave everything. The old file and its CRM record both stay. Costs " +
+                        "nothing; the old row remains as clutter.", Tone.Muted);
+        _prompts.Bullet("Delete only this document's old CRM record, and keep the file. This " +
+                        "document is already repointed, so it loses nothing, and the other " +
+                        "records keep working because the file is still there.", Tone.Muted);
 
         var answer = new Asker(_prompts).Ask("What should happen to this one?", new[]
         {

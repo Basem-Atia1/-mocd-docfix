@@ -81,10 +81,59 @@ public class ConsolePromptsTests
         Assert.False(Build(Array.Empty<string>()).Prompts.TypedWord("Confirm", "prod"));
     }
 
+    /// <summary>
+    /// Case is forgiven; a different word is not. The friction worth asking for is having to
+    /// read the word off the screen and type it — not getting the shift key right. A correct
+    /// answer rejected over its case reads as the tool being broken, and it cost a whole run.
+    /// </summary>
     [Fact]
-    public void TypedWord_is_case_sensitive_and_exact()
+    public void TypedWord_forgives_the_case_but_not_the_word()
     {
         Assert.True(Build(new[] { "prod" }).Prompts.TypedWord("Confirm", "prod"));
-        Assert.False(Build(new[] { "PROD" }).Prompts.TypedWord("Confirm", "prod"));
+        Assert.True(Build(new[] { "PROD" }).Prompts.TypedWord("Confirm", "prod"));
+        Assert.True(Build(new[] { "  Prod  " }).Prompts.TypedWord("Confirm", "prod"));
+        Assert.False(Build(new[] { "prd" }).Prompts.TypedWord("Confirm", "prod"));
+    }
+
+    // ---- yes / no ----
+
+    [Fact]
+    public void YesNo_takes_yes_in_any_case_or_length()
+    {
+        Assert.True(Build(new[] { "y" }).Prompts.YesNo("Go?"));
+        Assert.True(Build(new[] { "Y" }).Prompts.YesNo("Go?"));
+        Assert.True(Build(new[] { "yes" }).Prompts.YesNo("Go?"));
+        Assert.True(Build(new[] { "  YES " }).Prompts.YesNo("Go?"));
+    }
+
+    [Fact]
+    public void YesNo_takes_no_the_same_way_and_treats_quit_as_no()
+    {
+        Assert.False(Build(new[] { "n" }).Prompts.YesNo("Go?"));
+        Assert.False(Build(new[] { "NO" }).Prompts.YesNo("Go?"));
+        Assert.False(Build(new[] { "q" }).Prompts.YesNo("Go?"));
+    }
+
+    [Fact]
+    public void YesNo_on_a_bare_Enter_uses_the_default_which_is_no()
+    {
+        Assert.False(Build(new[] { "" }).Prompts.YesNo("Go?"));
+        Assert.True(Build(new[] { "" }).Prompts.YesNo("Go?", defaultYes: true));
+    }
+
+    [Fact]
+    public void YesNo_re_asks_on_anything_else_rather_than_guessing()
+    {
+        var (prompts, output) = Build(new[] { "maybe" });
+
+        Assert.False(prompts.YesNo("Delete everything?"));
+        Assert.Contains("Please answer y or n", output.ToString());
+    }
+
+    /// <summary>Even where Enter means yes, no input at all must never mean yes.</summary>
+    [Fact]
+    public void YesNo_at_end_of_input_is_a_no()
+    {
+        Assert.False(Build(Array.Empty<string>()).Prompts.YesNo("Delete everything?", defaultYes: true));
     }
 }

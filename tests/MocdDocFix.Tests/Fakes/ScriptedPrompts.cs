@@ -41,8 +41,15 @@ public sealed class ScriptedPrompts : IPrompts
             _ => ConfirmChoice.No
         };
 
-    public bool TypedWord(string question, string requiredWord) =>
-        string.Equals(ReadLine(question).Trim(), requiredWord, StringComparison.Ordinal);
+    public bool YesNo(string question, bool defaultYes = false, Tone tone = Tone.Normal)
+    {
+        var typed = ReadLine(question).Trim().ToLowerInvariant();
 
-    public void Info(string message) => Messages.Add(message);
+        return typed.Length == 0 ? defaultYes : typed is "y" or "yes";
+    }
+
+    public bool TypedWord(string question, string requiredWord) =>
+        string.Equals(ReadLine(question).Trim(), requiredWord, StringComparison.OrdinalIgnoreCase);
+
+    public void Info(string message, Tone tone = Tone.Normal) => Messages.Add(message);
 }

@@ -116,8 +116,8 @@ public sealed class Wizard
                 case 4: await DeleteOnlyAsync(); break;
                 case 5: return WizardExit.ChangeEnvironment;
                 default:
-                    _prompts.Info("");
-                    _prompts.Info("Nothing further was done. Bye.");
+                    _prompts.Blank();
+                    _prompts.Say("Nothing further was done. Bye.");
                     return WizardExit.Finished;
             }
         }
@@ -127,15 +127,15 @@ public sealed class Wizard
 
     private void Banner()
     {
-        _prompts.Info("");
-        _prompts.Info("======================================================================");
-        _prompts.Info("  MoCD — document file path remediation");
-        _prompts.Info("======================================================================");
-        _prompts.Info($"  Environment  {_envName}{(_isProduction ? "    *** PRODUCTION ***" : "")}");
-        _prompts.Info($"  CRM          {_crmUrl}");
-        _prompts.Info($"  File server  {_fileServerUrl}");
-        _prompts.Info("");
-        _prompts.Info("  Type ? at any question for a fuller explanation, b to go back, q to quit.");
+        _prompts.Title("MoCD — document file path remediation");
+        _prompts.Blank();
+        _prompts.Field("Environment", _envName + (_isProduction ? "   *** PRODUCTION ***" : ""),
+            _isProduction ? Tone.Danger : Tone.Normal);
+        _prompts.Field("CRM", _crmUrl, Tone.Muted);
+        _prompts.Field("File server", _fileServerUrl, Tone.Muted);
+        _prompts.Blank();
+        _prompts.Say("Type ? at any question for a fuller explanation, b to go back, q to quit.",
+            Tone.Muted);
     }
 
     // ---- modes ----
@@ -145,8 +145,9 @@ public sealed class Wizard
         var scan = await ScanAsync();
         Report("1", "Scan", scan.Headline, scan.Details);
 
-        _prompts.Info("");
-        _prompts.Info("Nothing was changed. The reports are on disk whenever you want them.");
+        _prompts.Blank();
+        _prompts.Say("Nothing was changed. The reports are on disk whenever you want them.",
+            Tone.Good);
     }
 
     private async Task FullAsync(CancellationToken ct)
@@ -156,9 +157,9 @@ public sealed class Wizard
 
     private async Task VerifyOnlyAsync()
     {
-        _prompts.Info("");
-        _prompts.Info("Asking the file server and CRM about every document already migrated.");
-        _prompts.Info("This reads only — nothing is changed, whatever it finds.");
+        _prompts.Section("Check it all");
+        _prompts.Say("Asking the file server and CRM about every document already migrated.");
+        _prompts.Say("This reads only — nothing is changed, whatever it finds.", Tone.Muted);
 
         var verify = await _actions.VerifyAsync();
         Report("", "Final check", verify.Headline, verify.Details);
@@ -172,19 +173,21 @@ public sealed class Wizard
     /// </summary>
     private async Task DeleteOnlyAsync()
     {
-        _prompts.Info("");
-        _prompts.Info("This goes straight to the delete step. Nothing is scanned or uploaded.");
-        _prompts.Info("First it asks CRM about every backed-up document, and corrects its own");
-        _prompts.Info("notes where they disagree — that read changes nothing.");
-        _prompts.Info("Then it lists what is eligible and asks before deleting anything.");
+        _prompts.Section("Finish off old files");
+        _prompts.Say("This goes straight to the delete step. Nothing is scanned or uploaded.");
+        _prompts.Blank();
+        _prompts.Bullet("First it asks CRM about every backed-up document, and corrects its own " +
+                        "notes where they disagree — that read changes nothing.", Tone.Muted);
+        _prompts.Bullet("Then it lists what is eligible and asks before deleting anything.",
+            Tone.Muted);
 
         if (!ConfirmDelete()) return;
 
         var delete = await _actions.DeleteAsync();
         Report("5", "Delete old files", delete.Headline, delete.Details);
 
-        _prompts.Info("");
-        _prompts.Info("Confirming with the file server and CRM. Reads only.");
+        _prompts.Blank();
+        _prompts.Say("Confirming with the file server and CRM. Reads only.", Tone.Muted);
         var verify = await _actions.VerifyAsync();
         Report("", "Final check", verify.Headline, verify.Details);
     }
@@ -194,13 +197,13 @@ public sealed class Wizard
         var identifiers = await ChooseFilesAsync();
         if (identifiers.Count == 0) return;
 
-        _prompts.Info("");
-        _prompts.Info($"{identifiers.Count} file(s) chosen:");
-        foreach (var id in identifiers.Take(20)) _prompts.Info($"    {id}");
-        if (identifiers.Count > 20) _prompts.Info($"    … and {identifiers.Count - 20} more");
+        _prompts.Section($"{identifiers.Count} file(s) chosen");
+        foreach (var id in identifiers.Take(20)) _prompts.Info($"    {id}", Tone.Muted);
+        if (identifiers.Count > 20)
+            _prompts.Info($"    … and {identifiers.Count - 20} more", Tone.Muted);
 
-        _prompts.Info("");
-        _prompts.Info("Checking them against CRM first. This reads only.");
+        _prompts.Blank();
+        _prompts.Say("Checking them against CRM first. This reads only.", Tone.Muted);
 
         await PipelineAsync(await _actions.ClassifyAsync(identifiers), "1", "Check", ct);
     }
@@ -215,8 +218,9 @@ public sealed class Wizard
 
         if (count == 0)
         {
-            _prompts.Info("");
-            _prompts.Info("Nothing here needs fixing. Stopping — no file server call, no writes.");
+            _prompts.Blank();
+            _prompts.Say("Nothing here needs fixing. Stopping — no file server call, no writes.",
+                Tone.Good);
             return;
         }
 
@@ -247,8 +251,8 @@ public sealed class Wizard
 
         // Always finish by asking both systems what is actually true, rather than trusting the
         // five steps that just ran.
-        _prompts.Info("");
-        _prompts.Info("Checking the file server and CRM to confirm everything landed. Reads only.");
+        _prompts.Blank();
+        _prompts.Say("Checking the file server and CRM to confirm everything landed. Reads only.", Tone.Muted);
         var verify = await _actions.VerifyAsync();
         Report("", "Final check", verify.Headline, verify.Details);
 
@@ -281,9 +285,11 @@ public sealed class Wizard
 
     private IReadOnlyList<string> Typed()
     {
-        _prompts.Info("");
-        _prompts.Info("Type one or more, separated by commas. For example:");
-        _prompts.Info("   2c9d5572-a77b-f111-b10f-00505601095a, cert.jpg");
+        _prompts.Section("Type the documents to work on");
+        _prompts.Say("One or more, separated by commas. A document GUID, a document-file GUID, " +
+                     "or a file name. For example:");
+        _prompts.Info("      2c9d5572-a77b-f111-b10f-00505601095a, cert.jpg", Tone.Muted);
+        _prompts.Blank();
 
         return _prompts.ReadLine("Documents")
             .Split(',', StringSplitOptions.RemoveEmptyEntries)
@@ -328,19 +334,24 @@ public sealed class Wizard
 
     private IReadOnlyList<string> PickWithin(IReadOnlyList<PickableFile> files, int group)
     {
-        _prompts.Info("");
-        _prompts.Info($"  Group {group} — {Label(group)} — {files.Count} file(s)");
-        _prompts.Info("");
+        _prompts.Section($"Group {group} — {Label(group)} — {files.Count} file(s)");
+        _prompts.Blank();
+
+        // Columns add up to the wrap width, so nothing folds onto a second line and the numbers
+        // stay in one place however long a service name happens to be.
+        var header = $"   {"#",4}  {"File",-30}  {"Service",-16}  {"Document type",-16}";
+        _prompts.Info(header.TrimEnd(), Tone.Muted);
+        _prompts.Info("   " + new string('─', header.Length - 3), Tone.Muted);
 
         for (var i = 0; i < files.Count; i++)
         {
             var f = files[i];
-            _prompts.Info($"   {i + 1,4}  {Trim(f.FileName ?? "(no name)", 34)}  " +
-                          $"{Trim(f.ServiceName, 30)}  {Trim(f.DocumentTypeName, 40)}");
+            _prompts.Info($"   {i + 1,4}  {Trim(f.FileName ?? "(no name)", 30)}  " +
+                          $"{Trim(f.ServiceName, 16)}  {Trim(f.DocumentTypeName, 16)}");
         }
 
-        _prompts.Info("");
-        _prompts.Info("  Type numbers (1,3,5), a range (1-10), all, or b to go back.");
+        _prompts.Blank();
+        _prompts.Say("Type numbers (1,3,5), a range (1-10), all, or b to go back.", Tone.Muted);
 
         while (true)
         {
@@ -383,8 +394,8 @@ public sealed class Wizard
     /// </summary>
     private async Task<ScanOutcome> ScanAsync()
     {
-        _prompts.Info("");
-        _prompts.Info("Reading CRM. This writes nothing.");
+        _prompts.Blank();
+        _prompts.Say("Reading CRM. This writes nothing.", Tone.Muted);
 
         _lastScan = await _actions.ScanAsync();
         return _lastScan;
@@ -401,30 +412,41 @@ public sealed class Wizard
 
     private bool ConfirmFileServer(string what)
     {
-        _prompts.Info("");
-        _prompts.Info(what);
-        _prompts.Info($"It will contact the file server at {_fileServerUrl}.");
-        return _prompts.Confirm("Contact the file server now?") == ConfirmChoice.Yes;
+        _prompts.Section("Step 2 — Backup", Tone.Normal);
+        _prompts.Say(what);
+        _prompts.Blank();
+        _prompts.Field("File server", _fileServerUrl, Tone.Muted);
+        _prompts.Blank();
+        return _prompts.YesNo("  Contact the file server now?", defaultYes: false);
     }
 
     private bool ConfirmMigrate()
     {
-        _prompts.Info("");
-        _prompts.Info("This uploads a corrected copy of every backed-up file and repoints CRM at it.");
-        _prompts.Info("It contacts the file server, and it WRITES to CRM.");
-        _prompts.Info("You will still be shown both files and asked before each document is repointed.");
-        _prompts.Info("The old files are not touched — this stays reversible until you run Delete.");
-        return _prompts.Confirm("Start uploading?") == ConfirmChoice.Yes;
+        _prompts.Section("Steps 3 and 4 — Upload and repoint", Tone.Warn);
+        _prompts.Say("This uploads a corrected copy of every backed-up file and repoints CRM at it.");
+        _prompts.Blank();
+        _prompts.Warn("It contacts the file server, and it WRITES to CRM.");
+        _prompts.Blank();
+        _prompts.Bullet("You will still be shown both files and asked before each document is " +
+                        "repointed.", Tone.Muted);
+        _prompts.Bullet("The old files are not touched — this stays reversible until you run " +
+                        "Delete.", Tone.Muted);
+        _prompts.Blank();
+        return _prompts.YesNo("  Start uploading?", defaultYes: false, Tone.Warn);
     }
 
     private bool ConfirmDelete()
     {
-        _prompts.Info("");
-        _prompts.Info("Delete removes the OLD files from the file server and their CRM records.");
-        _prompts.Info("This cannot be undone. Your local backups keep the bytes, but a restored");
-        _prompts.Info("file gets a new id and today's date folder — it cannot go back to its old path.");
-        _prompts.Info("Only files that were migrated and verified are eligible, and each one is");
-        _prompts.Info("re-checked against CRM immediately before it is deleted.");
-        return _prompts.Confirm("Go to the delete step?") == ConfirmChoice.Yes;
+        _prompts.Section("Step 5 — Delete old files", Tone.Danger);
+        _prompts.Say("Delete removes the OLD files from the file server and their CRM records.");
+        _prompts.Blank();
+        _prompts.Warn("This cannot be undone.", Tone.Danger);
+        _prompts.Blank();
+        _prompts.Bullet("Your local backups keep the bytes, but a restored file gets a new id and " +
+                        "today's date folder — it cannot go back to its old path.", Tone.Muted);
+        _prompts.Bullet("Only files that were migrated and verified are eligible, and each one is " +
+                        "re-checked against CRM immediately before it is deleted.", Tone.Muted);
+        _prompts.Blank();
+        return _prompts.YesNo("  Go to the delete step?", defaultYes: false, Tone.Danger);
     }
 }

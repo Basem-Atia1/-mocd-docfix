@@ -20,12 +20,17 @@ public sealed class StepGate
     /// <param name="step">"1", "2", "3 and 4", "5" — or empty for a phase outside the sequence.</param>
     public void Report(string step, string name, string headline, IReadOnlyList<string> details)
     {
-        _prompts.Info("");
-        _prompts.Info(step.Length > 0
-            ? $"  Step {step} of {TotalSteps} — {name} — done"
-            : $"  {name} — done");
-        _prompts.Info($"    {headline}");
-        foreach (var line in details) _prompts.Info($"    {line}");
+        _prompts.Section(step.Length > 0
+            ? $"Step {step} of {TotalSteps} — {name} — done"
+            : $"{name} — done");
+
+        _prompts.Say(headline);
+
+        if (details.Count > 0)
+        {
+            _prompts.Blank();
+            foreach (var line in details) _prompts.Info("    " + line, Tone.Muted);
+        }
     }
 
     /// <returns>True to carry on to the next step.</returns>
@@ -47,15 +52,16 @@ public sealed class StepGate
                 case 0: return true;
 
                 case 1:
-                    _prompts.Info("");
-                    if (details.Count == 0) _prompts.Info("    (nothing further to show)");
-                    foreach (var line in details) _prompts.Info($"    {line}");
+                    _prompts.Blank();
+                    if (details.Count == 0) _prompts.Info("    (nothing further to show)", Tone.Muted);
+                    foreach (var line in details) _prompts.Info("    " + line, Tone.Muted);
                     continue;
 
                 default:
-                    _prompts.Info("");
-                    _prompts.Info("Stopped. Nothing further was run.");
-                    _prompts.Info("The old files are untouched, so this is always safe to stop at.");
+                    _prompts.Blank();
+                    _prompts.Say("Stopped. Nothing further was run.", Tone.Strong);
+                    _prompts.Say("The old files are untouched, so this is always safe to stop at.",
+                        Tone.Muted);
                     return false;
             }
         }

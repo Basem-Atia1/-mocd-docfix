@@ -190,9 +190,23 @@ public class EnvironmentPickerTests
     {
         Configure("dev");
         Configure("prod", isProduction: true);
-        var prompts = new ScriptedPrompts("4", "PROD", "1");   // wrong case, back to the list
+        var prompts = new ScriptedPrompts("4", "prd", "1");   // wrong name, back to the list
 
         Assert.Equal("dev", Picker(prompts).Choose(null, confirmProductionFlag: true));
+    }
+
+    /// <summary>
+    /// The point of typing the name is that it cannot be answered by reflex. Capitals are not
+    /// part of that, and rejecting the right name in the wrong case only teaches the operator
+    /// that the prompt is unreliable.
+    /// </summary>
+    [Fact]
+    public void The_production_name_may_be_typed_in_any_case()
+    {
+        Configure("prod", isProduction: true);
+        var prompts = new ScriptedPrompts("4", "PROD");
+
+        Assert.Equal("prod", Picker(prompts).Choose(null, confirmProductionFlag: true));
     }
 
     [Fact]
