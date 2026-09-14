@@ -86,7 +86,20 @@ public sealed class DeleteCommand
             var entry = manifest[candidate.DocumentId];
             if (_state.IsAtLeast(candidate.DocumentId, MigrationState.Deleted)) { skipped++; continue; }
 
-            // Asked first, so a shared file becomes a decision rather than a bare refusal.
+            // Before the question, not after it: the shared-path answer can itself delete the old
+            // CRM record, so the proof that it IS the old record has to come first.
+            var identity = await WhoseRecordIsThisAsync(entry, candidate, ct);
+            if (identity is not null)
+            {
+                _prompts.Info($"  REFUSED {entry.OldFilePath} — {identity}");
+                _state.Append(new StateRecord(candidate.DocumentId, MigrationState.Failed,
+                    DateTimeOffset.UtcNow, candidate.NewFileId, candidate.NewFilePath,
+                    $"Delete refused: {identity}"));
+                refused++;
+                continue;
+            }
+
+            // Asked second, so a shared file becomes a decision rather than a bare refusal.
             switch (await AskAboutSharedPathAsync(entry, ct))
             {
                 case SharedPathChoice.LeaveEverything:
@@ -411,11 +424,36 @@ public sealed class DeleteCommand
         return null;
     }
 
+    /// <summary>
+    /// Proves the thing about to be removed is the thing that was backed up. Null means it is.
+    ///
+    /// Every other check in this step reasons about the NEW file — does it download, does it
+    /// hash, does the document point at it. These two are the only ones that look at what is
+    /// being DELETED, by the two facts written down at backup time: the old record's id and the
+    /// old file's path. They are checked together because either alone can be satisfied by the
+    /// wrong thing.
+    /// </summary>
+    private async Task<string?> WhoseRecordIsThisAsync(
+        ManifestEntry entry, StateRecord candidate, CancellationToken ct)
+    {
+        var notTheSame = Verifier.OldAndNewAreDifferentFiles(
+            entry.OldFilePath, candidate.NewFilePath, entry.OldFileId, candidate.NewFileId);
+        if (!notTheSame.Passed) return notTheSame.Detail;
+
+        var stillOurs = Verifier.OldRecordIsStillTheOneWeBackedUp(
+            entry.OldFileId, entry.OldFilePath,
+            await _read.GetRawRecordAsync("mocd_documentfiles", entry.OldFileId, ct));
+
+        return stillOurs.Passed ? null : stillOurs.Detail;
+    }
+
     /// <summary>Re-runs the safety checks against live state. Null means safe to delete.</summary>
     private async Task<string?> WhyNotSafeAsync(StateRecord candidate, ManifestEntry entry, CancellationToken ct)
     {
         if (candidate.NewFileId is null || string.IsNullOrWhiteSpace(candidate.NewFilePath))
             return "no new file recorded";
+
+        if (await WhoseRecordIsThisAsync(entry, candidate, ct) is { } wrongThing) return wrongThing;
 
         var download = await _files.DownloadAsync(candidate.NewFilePath, ct);
         if (!download.Success || download.Data?.File is null)

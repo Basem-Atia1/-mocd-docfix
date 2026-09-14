@@ -134,6 +134,90 @@ public static class Verifier
     }
 
     /// <summary>
+    /// Before the delete — proves the row about to be removed is the row that was backed up.
+    ///
+    /// Everything else in the delete step reasons about the NEW file. This is the only check that
+    /// looks at the OLD one, and it is the one that matters most, because the delete is what
+    /// cannot be undone. It re-reads the old record by the id saved at backup time and requires
+    /// its mocd_filepath still to be the path saved at backup time.
+    ///
+    /// The two can drift apart. A record can be edited by hand between the backup and the delete
+    /// — which has already happened once in dev — or repointed by another run. Once they have
+    /// drifted, deleting by the saved path removes a file the record no longer claims, and
+    /// deleting the record removes a row that now describes something else. Neither is recoverable
+    /// and neither would be noticed.
+    /// </summary>
+    /// <param name="recordJson">The old record as CRM returns it now, or null if it has gone.</param>
+    public static CheckResult OldRecordIsStillTheOneWeBackedUp(
+        Guid oldFileId, string backedUpPath, string? recordJson)
+    {
+        if (string.IsNullOrWhiteSpace(recordJson))
+            return new CheckResult("old-record-identity", false,
+                $"The old documentfile {oldFileId} is no longer in CRM. Nothing here is safe to " +
+                "delete by this record's say-so — the row that described this file has gone, so " +
+                "the path saved at backup time can no longer be confirmed to belong to it.", true);
+
+        var actualPath = ReadFilePath(recordJson);
+
+        if (string.IsNullOrWhiteSpace(actualPath))
+            return new CheckResult("old-record-identity", false,
+                $"The old documentfile {oldFileId} no longer holds any mocd_filepath, so it " +
+                $"cannot be confirmed as the record for '{backedUpPath}'.", true);
+
+        var ok = string.Equals(Normalise(backedUpPath), Normalise(actualPath!),
+            StringComparison.OrdinalIgnoreCase);
+
+        return new CheckResult("old-record-identity", ok,
+            ok ? $"The old record {oldFileId} still holds the path that was backed up."
+               : $"The old documentfile {oldFileId} now holds '{actualPath}', but the backup " +
+                 $"recorded '{backedUpPath}'. It has been changed since the backup, so this is no " +
+                 "longer certainly the same file. Nothing was deleted.",
+            true);
+    }
+
+    /// <summary>
+    /// Before the delete — proves the old file and the new file are not the same file.
+    ///
+    /// If the two paths have converged, by a hand-edit or by the vendor deduplicating, then
+    /// deleting "the old file" destroys the file the document now depends on. Every other check
+    /// passes in that case, because the new file downloads, hashes correctly, and the record
+    /// points at it — right up to the moment it is deleted.
+    /// </summary>
+    public static CheckResult OldAndNewAreDifferentFiles(
+        string oldPath, string? newPath, Guid oldFileId, Guid? newFileId)
+    {
+        if (string.IsNullOrWhiteSpace(newPath))
+            return new CheckResult("old-is-not-new", false,
+                "No new file is recorded for this document, so there is nothing proving the old " +
+                "file is safe to remove.", true);
+
+        if (string.Equals(Normalise(oldPath), Normalise(newPath!), StringComparison.OrdinalIgnoreCase))
+            return new CheckResult("old-is-not-new", false,
+                $"The old and new paths are the same file ('{newPath}'). Deleting it would destroy " +
+                "the copy the document now uses. Nothing was deleted.", true);
+
+        if (newFileId is not null && oldFileId == newFileId)
+            return new CheckResult("old-is-not-new", false,
+                $"The old and new documentfile are the same record ({oldFileId}). Deleting it " +
+                "would remove the record the document now points at. Nothing was deleted.", true);
+
+        return new CheckResult("old-is-not-new", true,
+            $"The old file '{oldPath}' is a different file from the new one.", true);
+    }
+
+    private static string? ReadFilePath(string recordJson)
+    {
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(recordJson);
+            return json.RootElement.TryGetProperty("mocd_filepath", out var v) &&
+                   v.ValueKind == System.Text.Json.JsonValueKind.String
+                ? v.GetString() : null;
+        }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
+
+    /// <summary>
     /// The vendor returns a UNC-rooted path on download and a relative one on upload, so compare
     /// on the part that identifies the file rather than on the prefix.
     /// </summary>

@@ -106,10 +106,25 @@ public static class FileRecordCopier
         if (ReadString(oldRecordJson, "mocd_fileid") is not null)
             payload["mocd_fileid"] = vendorFileId.ToString();
 
-        if (ReadString(oldRecordJson, "mocd_filename") is not null && newVendorFileName is not null)
-            payload["mocd_filename"] = newVendorFileName;
+        if (ReadString(oldRecordJson, "mocd_filename") is not null)
+            payload["mocd_filename"] = FileNameOnTheServer(newFilePath) ?? newVendorFileName;
 
         return payload;
+    }
+
+    /// <summary>
+    /// What the file is actually called on the server: the last segment of its path.
+    ///
+    /// The plugin writes whatever the vendor returns as fileName, and the vendor is not
+    /// consistent about it — observed in dev returning the bare id with no extension while the
+    /// path in the same response ended ".png". Records created the normal way have mocd_filename
+    /// equal to their path's last segment, and several portal data services read this column as
+    /// the name to show, so the path is the more reliable of the two sources.
+    /// </summary>
+    private static string? FileNameOnTheServer(string newFilePath)
+    {
+        var leaf = newFilePath.Replace('/', '\\').Split('\\').LastOrDefault();
+        return string.IsNullOrWhiteSpace(leaf) ? null : leaf;
     }
 
     /// <summary>

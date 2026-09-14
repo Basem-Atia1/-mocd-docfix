@@ -9,7 +9,9 @@ public class FileRecordCopierTests
     private static readonly Guid NewFileId = Guid.Parse("6288910e-0b46-4071-8903-17a12fbea3b1");
     private static readonly Guid DocumentId = Guid.Parse("28ef6a1c-cd1d-f111-b119-005056010908");
 
-    private const string NewPath = @"DigitalServices\cd97bf8d-bea8-f011-b116-005056010908\20260914\6288910e.png";
+    // The vendor names the file after its own id, so the path's last segment is the file's name.
+    private const string NewPath =
+        @"DigitalServices\cd97bf8d-bea8-f011-b116-005056010908\20260914\6288910e-0b46-4071-8903-17a12fbea3b1.png";
 
     /// <summary>A record as the portal leaves it: six columns, no mocd_fileid.</summary>
     private const string PortalRecord = """
@@ -105,6 +107,30 @@ public class FileRecordCopierTests
 
         Assert.Equal(NewFileId.ToString(), payload["mocd_fileid"]);
         Assert.Equal("6288910e-0b46-4071-8903-17a12fbea3b1.png", payload["mocd_filename"]);
+    }
+
+    /// <summary>
+    /// The old record's mocd_filename was its path's last segment, and the new one's must be too.
+    /// Taking the vendor's fileName instead produced a record naming a file that does not exist:
+    /// in dev it returned the bare id while the path it returned in the same response ended
+    /// ".png". Several portal data services read this column as the name to show.
+    /// </summary>
+    [Fact]
+    public void The_new_filename_is_the_new_paths_own_last_segment()
+    {
+        var payload = FileRecordCopier.BuildPayload(PluginRecord, NewFileId, NewPath, "NEWHASH",
+            Correct, newVendorFileName: "6288910e-0b46-4071-8903-17a12fbea3b1");   // no extension
+
+        Assert.Equal("6288910e-0b46-4071-8903-17a12fbea3b1.png", payload["mocd_filename"]);
+    }
+
+    [Fact]
+    public void The_vendors_name_is_used_only_when_the_path_yields_nothing()
+    {
+        var payload = FileRecordCopier.BuildPayload(PluginRecord, NewFileId, "", "NEWHASH",
+            Correct, newVendorFileName: "fallback.png");
+
+        Assert.Equal("fallback.png", payload["mocd_filename"]);
     }
 
     [Fact]

@@ -48,6 +48,11 @@ public class DeleteCommandTests : IDisposable
         // The new documentfile record, as CRM would return it after the repoint.
         _read.RawRecords[$"mocd_documentfiles:{NewFileId}"] =
             "{\"mocd_filepath\":\"" + NewPath.Replace("\\", "\\\\") + "\"}";
+
+        // And the old one, still holding the path that was backed up. The delete step re-reads it
+        // to prove the row it is about to remove is the row the backup captured.
+        _read.RawRecords[$"mocd_documentfiles:{OldFileId}"] =
+            "{\"mocd_filepath\":\"" + OldPath.Replace("\\", "\\\\") + "\"}";
     }
 
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
@@ -287,6 +292,119 @@ public class DeleteCommandTests : IDisposable
 
     /// <summary>CRM still has the document on its original file — nothing was ever migrated.</summary>
     private void StillOnTheOldFile() => _write.Links[DocumentId] = OldFileId;
+
+    // ---- proving it is about to delete the right thing ----
+
+    /// <summary>
+    /// The old record is re-read by the id saved at backup time, and its path must still be the
+    /// path saved at backup time. A record edited by hand between the two — which has happened
+    /// once in dev — no longer describes the file the backup captured.
+    /// </summary>
+    [Fact]
+    public async Task An_old_record_whose_path_changed_since_the_backup_is_never_deleted()
+    {
+        _read.RawRecords[$"mocd_documentfiles:{OldFileId}"] =
+            "{\"mocd_filepath\":\"DigitalServices\\\\somewhere-else\\\\20260401\\\\other.jpg\"}";
+
+        var summary = await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Equal(1, summary.Refused);
+        Assert.Empty(_files.Deleted);
+        Assert.Empty(_write.DeletedFiles);
+    }
+
+    [Fact]
+    public async Task The_refusal_says_which_path_it_expected_and_which_it_found()
+    {
+        _read.RawRecords[$"mocd_documentfiles:{OldFileId}"] =
+            "{\"mocd_filepath\":\"DigitalServices\\\\somewhere-else\\\\20260401\\\\other.jpg\"}";
+
+        var prompts = Confirmed();
+        await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        var said = string.Join("|", prompts.Messages);
+        Assert.Contains("REFUSED", said);
+        Assert.Contains("somewhere-else", said);        // what CRM holds now
+        Assert.Contains("goodConductCertificate", said); // what the backup recorded
+    }
+
+    [Fact]
+    public async Task An_old_record_that_has_gone_from_crm_is_never_deleted_by_path_alone()
+    {
+        _read.RawRecords.Remove($"mocd_documentfiles:{OldFileId}");
+        _read.MissingRecords.Add($"mocd_documentfiles:{OldFileId}");
+
+        var summary = await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Empty(_files.Deleted);
+    }
+
+    /// <summary>
+    /// If the two paths have converged — a hand-edit, or the vendor deduplicating by content —
+    /// then "delete the old file" destroys the file the document now depends on. Every other
+    /// check passes in that case, because the new file downloads and hashes correctly.
+    /// </summary>
+    [Fact]
+    public async Task A_new_file_at_the_same_path_as_the_old_one_is_never_deleted()
+    {
+        States().Append(new StateRecord(DocumentId, MigrationState.Repointed,
+            DateTimeOffset.UtcNow, NewFileId, OldPath, null));
+
+        var summary = await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Equal(1, summary.Refused);
+        Assert.Empty(_files.Deleted);
+        Assert.Empty(_write.DeletedFiles);
+    }
+
+    [Fact]
+    public async Task The_old_and_new_documentfile_being_one_record_is_never_deleted()
+    {
+        _write.Links[DocumentId] = OldFileId;
+        States().Append(new StateRecord(DocumentId, MigrationState.Repointed,
+            DateTimeOffset.UtcNow, OldFileId, NewPath, null));
+
+        var summary = await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Empty(_write.DeletedFiles);
+    }
+
+    /// <summary>
+    /// The shared-path question can itself delete the old CRM record, so it must not be asked
+    /// until the record has been proved to be the one that was backed up.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_identity_is_caught_before_the_shared_path_question_is_asked()
+    {
+        _read.FilesByPath[OldPath] = new List<Guid> { OldFileId, Guid.NewGuid() };
+        _read.RawRecords[$"mocd_documentfiles:{OldFileId}"] =
+            "{\"mocd_filepath\":\"DigitalServices\\\\somewhere-else\\\\20260401\\\\other.jpg\"}";
+
+        var prompts = Confirmed();
+        prompts.ReadLineQueue = new Queue<string>(new[] { "2" });   // would delete the CRM record
+
+        var summary = await Command(prompts).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Empty(_write.DeletedFiles);
+        Assert.DoesNotContain(prompts.Questions, q => q.Contains("What should happen", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task The_identity_check_is_made_before_anything_is_removed()
+    {
+        _read.RawRecords[$"mocd_documentfiles:{OldFileId}"] =
+            "{\"mocd_filepath\":\"DigitalServices\\\\somewhere-else\\\\20260401\\\\other.jpg\"}";
+
+        await Command(Confirmed()).RunAsync("dev", isProduction: false, CancellationToken.None);
+
+        // Not even the file-server delete was attempted.
+        Assert.Empty(_files.Deleted);
+    }
 
     // ---- the delete step shows its working ----
 
