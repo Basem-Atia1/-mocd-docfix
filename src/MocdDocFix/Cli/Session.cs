@@ -60,10 +60,14 @@ public sealed class Session : IDisposable
         var backupRoot = Path.Combine(appConfig.DataRoot, "backup", envName);
         var reportsRoot = Path.Combine(appConfig.DataRoot, "reports", envName);
 
-        _reporter = new Reporter(reportsRoot);
-        _repointedList = new RepointedListWriter(reportsRoot);
+        // Whole-run files go in their own folder, so the reports root holds nothing but one
+        // folder per document.
+        var runRoot = Path.Combine(reportsRoot, "_whole-run");
+
+        _reporter = new Reporter(runRoot);
+        _repointedList = new RepointedListWriter(runRoot);
         _docReports = new DocumentReportStore(reportsRoot);
-        _reportsRoot = reportsRoot;
+        _reportsRoot = runRoot;
         _backups = new BackupStore(backupRoot);
         _state = new StateStore(Path.Combine(dataRoot, "state", $"state-{envName}.jsonl"));
 
@@ -75,8 +79,8 @@ public sealed class Session : IDisposable
         _files = new FileServiceClient(_fileHttp, env);
 
         _scan = new ScanCommand(_read, _reporter, env.CrmUrl, appConfig.ServiceCatalogues,
-            new GroupedReportWriter(reportsRoot),
-            new GuidListWriter(reportsRoot));
+            new GroupedReportWriter(runRoot),
+            new GuidListWriter(runRoot));
     }
 
     public void Dispose()

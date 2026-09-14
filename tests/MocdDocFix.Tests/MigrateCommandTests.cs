@@ -64,7 +64,7 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task Happy_path_uploads_verifies_creates_and_repoints()
     {
-        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.Equal(1, summary.Migrated);
@@ -85,7 +85,7 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task Both_files_are_opened_for_the_operator_before_the_question()
     {
-        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes)).RunAsync("dev", CancellationToken.None);
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes)).RunAsync("dev", CancellationToken.None);
 
         Assert.Equal(2, _opener.Opened.Count);
         Assert.Contains(_opener.Opened, p => p.Contains(OldFileId.ToString()));
@@ -124,7 +124,7 @@ public class MigrateCommandTests : IDisposable
                 new FileData(NewFileId, path, "VHASH", "cert.jpg", "image/jpeg", null), null);
         };
 
-        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.Equal(0, summary.Migrated);
@@ -136,7 +136,7 @@ public class MigrateCommandTests : IDisposable
     public async Task The_operator_is_never_asked_when_verification_already_failed()
     {
         _files.UploadResponder = _ => ApiResponse<FileData>.Fail("vendor exploded");
-        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
 
         await Command(prompts).RunAsync("dev", CancellationToken.None);
 
@@ -153,7 +153,7 @@ public class MigrateCommandTests : IDisposable
                 new FileData(OldFileId, OldPath, "VHASH", "cert.jpg", "image/jpeg", null), null);
         };
 
-        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.True(summary.Halted);
@@ -166,7 +166,7 @@ public class MigrateCommandTests : IDisposable
     {
         _write.ForceLinkReadback = OldFileId;      // the repoint did not stick
 
-        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.True(summary.Halted);
@@ -178,7 +178,7 @@ public class MigrateCommandTests : IDisposable
     {
         _read.ModifiedOn = DateTimeOffset.UtcNow.AddYears(1);
 
-        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.Equal(0, summary.Migrated);
@@ -188,10 +188,10 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task Already_repointed_documents_are_skipped_on_a_re_run()
     {
-        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes)).RunAsync("dev", CancellationToken.None);
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes)).RunAsync("dev", CancellationToken.None);
         _files.Uploads.Clear();
 
-        var second = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        var second = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.Equal(0, second.Migrated);
@@ -202,7 +202,7 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task A_migration_report_records_both_sides()
     {
-        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.True(File.Exists(summary.ReportPath));
@@ -210,6 +210,67 @@ public class MigrateCommandTests : IDisposable
         Assert.Equal(OldFileId, row.OldFileId);
         Assert.Equal(NewFileId, row.NewFileId);
         Assert.Contains($"id={DocumentId}", row.OldCrmLink);
+    }
+
+    // ---- creating the record and repointing are separate decisions ----
+
+    [Fact]
+    public async Task Refusing_to_create_the_record_writes_nothing()
+    {
+        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+
+        var summary = await Command(prompts).RunAsync("dev", CancellationToken.None);
+
+        Assert.Contains(prompts.Questions, q => q.Contains("Create the new documentfile", StringComparison.Ordinal));
+        Assert.Empty(_write.CreatedFiles);
+        Assert.Empty(_write.Links);
+        Assert.Equal(0, summary.Migrated);
+    }
+
+    [Fact]
+    public async Task The_record_can_be_created_without_repointing_the_document()
+    {
+        var prompts = new FakePrompts().Answer(
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+
+        var summary = await Command(prompts).RunAsync("dev", CancellationToken.None);
+
+        Assert.Single(_write.CreatedFiles);          // the row exists
+        Assert.Empty(_write.Links);                  // but the document has not moved
+        Assert.Equal(0, summary.Migrated);
+        Assert.False(States().IsAtLeast(DocumentId, MigrationState.Repointed));
+    }
+
+    [Fact]
+    public async Task The_operator_is_told_the_document_has_not_moved_yet()
+    {
+        var prompts = new FakePrompts().Answer(
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+
+        await Command(prompts).RunAsync("dev", CancellationToken.None);
+
+        var said = string.Join("|", prompts.Messages);
+        Assert.Contains("still points at the OLD one", said);
+        Assert.Contains("has NOT moved yet", said);
+    }
+
+    // ---- a document that is already correct is left alone ----
+
+    [Fact]
+    public async Task A_document_already_pointing_at_a_correctly_filed_record_is_not_migrated_again()
+    {
+        // As if an earlier run finished the work and then failed a later check.
+        var already = Guid.NewGuid();
+        _write.Links[DocumentId] = already;
+        _read.RawRecords[$"mocd_documentfiles:{already}"] =
+            "{\"mocd_filepath\":\"" + NewPath(NewFileId).Replace("\\", "\\\\") + "\"}";
+
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes)).RunAsync("dev", CancellationToken.None);
+
+        Assert.Empty(_files.Uploads);                // nothing re-uploaded
+        Assert.Empty(_write.CreatedFiles);           // no duplicate row
+        Assert.Equal(1, summary.Skipped);
+        Assert.True(States().IsAtLeast(DocumentId, MigrationState.Repointed));
     }
 
     // ---- a plugin-created record stays plugin-shaped ----
@@ -242,7 +303,7 @@ public class MigrateCommandTests : IDisposable
     {
         BackedUpAsPluginRecord();
 
-        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         var created = Assert.Single(_write.CreatedFiles);
@@ -258,7 +319,7 @@ public class MigrateCommandTests : IDisposable
     {
         BackedUpAsPluginRecord();
 
-        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         var created = Assert.Single(_write.CreatedFiles);
@@ -272,7 +333,7 @@ public class MigrateCommandTests : IDisposable
     {
         BackedUpAsPluginRecord();
 
-        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         var upload = Assert.Single(_files.Uploads);
@@ -284,7 +345,7 @@ public class MigrateCommandTests : IDisposable
     public async Task A_portal_created_record_still_uses_the_vendor_id_as_its_key()
     {
         // The default setup has no snapshot at all, which reads as the portal shape.
-        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+        await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         var created = Assert.Single(_write.CreatedFiles);
@@ -300,7 +361,7 @@ public class MigrateCommandTests : IDisposable
     {
         // No per-document deleter is supplied, so the run ends right after the repoint.
         var summary = await Command(new FakePrompts().Answer(
-                ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+                ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.Equal(1, summary.Migrated);
@@ -312,7 +373,7 @@ public class MigrateCommandTests : IDisposable
     public async Task Declining_the_delete_removes_neither_the_file_nor_the_record()
     {
         var prompts = new FakePrompts().Answer(
-            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
 
         await Command(prompts, (_, _) => Task.FromResult<string?>(null))
             .RunAsync("dev", CancellationToken.None);
@@ -325,7 +386,7 @@ public class MigrateCommandTests : IDisposable
     public async Task The_delete_question_says_it_removes_the_crm_record_too()
     {
         var prompts = new FakePrompts().Answer(
-            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
 
         await Command(prompts, (_, _) => Task.FromResult<string?>(null))
             .RunAsync("dev", CancellationToken.None);
@@ -345,7 +406,7 @@ public class MigrateCommandTests : IDisposable
 
         var summary = await new MigrateCommand(_files, _read, _write, Backups(), States(),
                 new Reporter(Path.Combine(_root, "reports")),
-                new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes),
+                new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes),
                 _opener, "https://crm/MoCD", null,
                 new RepointedListWriter(Path.Combine(_root, "reports")), reports)
             .RunAsync("dev", CancellationToken.None);
@@ -369,7 +430,7 @@ public class MigrateCommandTests : IDisposable
 
         await new MigrateCommand(_files, _read, _write, Backups(), States(),
                 new Reporter(Path.Combine(_root, "reports")),
-                new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes),
+                new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes),
                 _opener, "https://crm/MoCD", null, null, reports)
             .RunAsync("dev", CancellationToken.None);
 
@@ -399,7 +460,7 @@ public class MigrateCommandTests : IDisposable
         };
 
         var summary = await Command(new FakePrompts().Answer(
-                ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
+                ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.True(summary.Halted);
@@ -438,7 +499,7 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task The_comparison_is_shown_before_the_operator_is_asked_about_it()
     {
-        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.No);
+        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
 
         await Command(prompts).RunAsync("dev", CancellationToken.None);
 
@@ -452,7 +513,7 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task Saying_the_files_do_not_match_writes_nothing_to_crm()
     {
-        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.No))
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No))
             .RunAsync("dev", CancellationToken.None);
 
         Assert.Empty(_write.CreatedFiles);
@@ -464,7 +525,7 @@ public class MigrateCommandTests : IDisposable
     [Fact]
     public async Task Repointing_is_a_separate_question_from_the_comparison()
     {
-        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+        var prompts = new FakePrompts().Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
 
         var summary = await Command(prompts).RunAsync("dev", CancellationToken.None);
 
@@ -478,7 +539,7 @@ public class MigrateCommandTests : IDisposable
     {
         var deleted = new List<Guid>();
         var prompts = new FakePrompts().Answer(
-            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
 
         await Command(prompts, (id, _) => { deleted.Add(id); return Task.FromResult<string?>(null); })
             .RunAsync("dev", CancellationToken.None);
@@ -493,7 +554,7 @@ public class MigrateCommandTests : IDisposable
     {
         var deleted = new List<Guid>();
         var prompts = new FakePrompts().Answer(
-            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
 
         var summary = await Command(prompts, (id, _) => { deleted.Add(id); return Task.FromResult<string?>(null); })
             .RunAsync("dev", CancellationToken.None);
@@ -506,7 +567,7 @@ public class MigrateCommandTests : IDisposable
     public async Task A_refused_delete_is_reported_and_does_not_fail_the_migration()
     {
         var prompts = new FakePrompts().Answer(
-            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
 
         var summary = await Command(prompts,
                 (_, _) => Task.FromResult<string?>("the document points somewhere else"))
@@ -522,7 +583,7 @@ public class MigrateCommandTests : IDisposable
     public async Task Without_a_deleter_the_old_file_question_is_not_asked_at_all()
     {
         var prompts = new FakePrompts().Answer(
-            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
 
         await Command(prompts).RunAsync("dev", CancellationToken.None);
 

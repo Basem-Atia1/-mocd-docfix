@@ -88,6 +88,19 @@ public sealed class MigrateCommand
                 continue;
             }
 
+            // The document may already be correct: an earlier run can complete the work and then
+            // fail a later check, and a hand-fix looks the same. Uploading again would create a
+            // second file on the server and a second record in CRM, for nothing.
+            if (await AlreadyCorrectAsync(entry, ct) is { } settled)
+            {
+                _prompts.Info($"  {entry.FileName}: already points at a correctly filed record " +
+                              $"({settled}). Nothing to do.");
+                _state.Append(new StateRecord(entry.DocumentId, MigrationState.Repointed,
+                    DateTimeOffset.UtcNow, settled, null, "Already correct — not migrated again."));
+                skipped++;
+                continue;
+            }
+
             var oldBytes = _backups.Read(entry.LocalPath);
 
             // Say what is about to happen, in the operator's terms, BEFORE uploading: which
@@ -199,9 +212,16 @@ public sealed class MigrateCommand
                 continue;
             }
 
-            var choice = _prompts.Confirm("Repoint the document to the new file?");
-            if (choice == ConfirmChoice.Quit) break;
-            if (choice is ConfirmChoice.No or ConfirmChoice.Skip) { skipped++; continue; }
+            // Two writes, two questions. Creating the record changes nothing the document can
+            // see; repointing is what actually moves it. Asking once for both would hide that.
+            _prompts.Info("");
+            _prompts.Info("  Next: create the new mocd_documentfile record in CRM.");
+            _prompts.Info("  It is a new row. The document still points at the OLD one afterwards,");
+            _prompts.Info("  so nothing changes for anyone until the step after this.");
+
+            var createIt = _prompts.Confirm("Create the new documentfile record?");
+            if (createIt == ConfirmChoice.Quit) break;
+            if (createIt is ConfirmChoice.No or ConfirmChoice.Skip) { skipped++; continue; }
 
             // The new record is the old one with only the file's whereabouts replaced, created
             // with the same key convention. Anything the original code path filled in — and
@@ -212,6 +232,25 @@ public sealed class MigrateCommand
 
             var newRecordId = await _write.CreateDocumentFileAsync(
                 FileRecordCopier.NewRecordId(style, newFile.FileId), payload, ct);
+
+            _prompts.Info("");
+            _prompts.Info($"  Created mocd_documentfile {newRecordId}");
+            _prompts.Info($"    open it   {RepointedListWriter.DocumentFileLink(_crmUrl, newRecordId)}");
+            _prompts.Info($"    its path  {newFile.FilePath}");
+            _prompts.Info("  The document has NOT moved yet — it still points at the old record.");
+
+            var repoint = _prompts.Confirm("Repoint the document to this new record?");
+            if (repoint == ConfirmChoice.Quit) break;
+            if (repoint is ConfirmChoice.No or ConfirmChoice.Skip)
+            {
+                _prompts.Info("  Left as it was. The new record exists but nothing points at it;");
+                _prompts.Info("  delete it by hand if you do not want it.");
+                _state.Append(new StateRecord(entry.DocumentId, MigrationState.Verified,
+                    DateTimeOffset.UtcNow, newFile.FileId, newFile.FilePath,
+                    $"Record {newRecordId} created; operator did not repoint."));
+                skipped++;
+                continue;
+            }
 
             await _write.RepointDocumentAsync(entry.DocumentId, newRecordId, ct);
 
@@ -228,8 +267,9 @@ public sealed class MigrateCommand
 
             // Check 7 — and that record points at the new file. Check 6 alone would pass while
             // mocd_filepath still named the old file, which is invisible until the old file goes.
+            // By the record's own key, which is not the vendor's file id when CRM generated it.
             var recordPath = ReadString(
-                await _read.GetRawRecordAsync("mocd_documentfiles", newFile.FileId, ct), "mocd_filepath");
+                await _read.GetRawRecordAsync("mocd_documentfiles", newRecordId, ct), "mocd_filepath");
             var pathStuck = Verifier.FileRecordPointsAtTheNewFile(newFile.FilePath, recordPath);
             checks.Add(pathStuck);
 
@@ -304,6 +344,26 @@ public sealed class MigrateCommand
     private void Fail(ManifestEntry entry, string detail) =>
         _state.Append(new StateRecord(entry.DocumentId, MigrationState.Failed,
             DateTimeOffset.UtcNow, null, null, detail));
+
+    /// <summary>
+    /// The id of the record this document already points at, when that record is filed under the
+    /// right catalogue — meaning the work is done, whoever did it. Null means there is work to do.
+    /// </summary>
+    private async Task<Guid?> AlreadyCorrectAsync(ManifestEntry entry, CancellationToken ct)
+    {
+        var linked = await _write.GetDocumentFileLinkAsync(entry.DocumentId, ct);
+        if (linked is not { } linkedId || linkedId == entry.OldFileId) return null;
+
+        var path = ReadString(
+            await _read.GetRawRecordAsync("mocd_documentfiles", linkedId, ct), "mocd_filepath");
+        if (path is null) return null;
+
+        var segment = FilePathParser.Parse(path).CategorySegment;
+
+        return Guid.TryParse(segment, out var catalogue) && catalogue == entry.CorrectCatalogueId
+            ? linkedId
+            : null;
+    }
 
     /// <summary>Pulls one string attribute out of a raw record snapshot.</summary>
     private static string? ReadString(string? recordJson, string attribute)
