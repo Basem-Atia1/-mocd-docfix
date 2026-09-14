@@ -135,4 +135,37 @@ public class ScanDevOpsTests : IDisposable
 
         Assert.Single(_ado.Searched);
     }
+
+    /// <summary>
+    /// A full run IS the scan, so the backlog's answer has to reach where a full run's operator
+    /// actually reads: the document's own folder, not only a column in a spreadsheet.
+    /// </summary>
+    [Fact]
+    public async Task A_full_run_writes_the_backlogs_answer_into_each_documents_own_report()
+    {
+        _ado.Titles["Medical Certificate"] = new()
+        {
+            "NPOP|Employee Appointment Request|Documents|Verify the medical certificate",
+            "Portal | Confirm Employment | Verify the medical certificate"
+        };
+
+        _crm.Documents.Add(Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", "Medical Certificate"));
+
+        var reports = new DocumentReportStore(Path.Combine(_dir, "reports"));
+
+        var scan = new ScanCommand(_crm, new Reporter(_dir), "https://crm/MoCD",
+            new[] { EmployeeAppointment }, null, null,
+            new DocumentTypeCheck(_ado, new DocumentTypeDecisions(Path.Combine(_dir, "d.json")), _prompts),
+            reports, new BackupStore(Path.Combine(_dir, "backup")));
+
+        var result = await scan.RunAsync("dev", CancellationToken.None);
+        var row = Assert.Single(result.Fix);
+
+        var text = File.ReadAllText(
+            Path.Combine(reports.FolderFor(row.DocumentId, row.FileName), "01-check.txt"));
+
+        Assert.Contains("DevOps says", text);
+        Assert.Contains("agrees", text);
+        Assert.Contains("1000", text);              // the work item the answer rests on
+    }
 }
