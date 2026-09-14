@@ -107,6 +107,11 @@ public class ReporterTests : IDisposable
         Assert.Contains("a41c0b77-1111-2222-3333-444444444444", text);
         Assert.Contains("round-trip", text);
         Assert.Contains("Repointed", text);
+
+        // The operator is handed the readable one; the spreadsheet is still written beside it
+        // for anything that wants to sort a hundred rows.
+        Assert.EndsWith(".txt", path);
+        Assert.NotEmpty(Directory.GetFiles(_dir, "migration-report-*.csv"));
     }
 
     [Fact]

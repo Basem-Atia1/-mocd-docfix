@@ -54,6 +54,34 @@ public sealed class FakeCrmReadClient : ICrmReadClient
             : $$"""{"stub":true,"entitySet":"{{entitySet}}","id":"{{id}}"}""");
     }
 
+    /// <summary>
+    /// Record ids CRM cannot be asked about at all — a dropped connection, an error status.
+    /// Distinct from <see cref="MissingRecords"/>, which is CRM answering "no such record".
+    /// </summary>
+    public Dictionary<Guid, string> UnreachableRecords { get; } = new();
+
+    public Task<CrmRecordAnswer> GetDocumentFileAsync(Guid id, CancellationToken ct)
+    {
+        if (UnreachableRecords.TryGetValue(id, out var problem))
+            return Task.FromResult(CrmRecordAnswer.Failed(problem));
+
+        var key = $"mocd_documentfiles:{id}";
+
+        if (MissingRecords.Contains(key)) return Task.FromResult(CrmRecordAnswer.NotThere);
+
+        return Task.FromResult(CrmRecordAnswer.Found(
+            RawRecords.TryGetValue(key, out var json)
+                ? json
+                : $$"""{"mocd_documentfileid":"{{id}}"}"""));
+    }
+
+    /// <summary>file id → the documentfile records whose path carries it.</summary>
+    public Dictionary<Guid, List<Guid>> FilesByFileId { get; } = new();
+
+    public Task<IReadOnlyList<Guid>> FindDocumentFilesByFileIdAsync(Guid fileId, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<Guid>>(
+            FilesByFileId.TryGetValue(fileId, out var ids) ? ids : new List<Guid>());
+
     /// <summary>path → the documentfile ids that reference it. Empty unless a test sets it.</summary>
     public Dictionary<string, List<Guid>> FilesByPath { get; } = new(StringComparer.OrdinalIgnoreCase);
 

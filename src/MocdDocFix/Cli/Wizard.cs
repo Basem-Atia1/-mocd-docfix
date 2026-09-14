@@ -46,7 +46,14 @@ public sealed record WizardActions(
     /// How many old files still need removing. Asked before the delete step, so a run that
     /// removed them as it went is not walked through that step — and asked to confirm it — twice.
     /// </summary>
-    Func<Task<int>>? AwaitingDeleteAsync = null);
+    Func<Task<int>>? AwaitingDeleteAsync = null,
+
+    /// <summary>
+    /// Asks both systems about the OLD file of every document the run touched — the same check
+    /// as <see cref="LookAsync"/>, run unasked at the end of a run so it closes on what is true
+    /// rather than on what the steps believed.
+    /// </summary>
+    Func<Task<StepOutcome>>? OldFileCheckAsync = null);
 
 public enum WizardExit { Finished, ChangeEnvironment }
 
@@ -334,6 +341,21 @@ public sealed class Wizard
         _prompts.Say("Checking the file server and CRM to confirm everything landed. Reads only.", Tone.Muted);
         var verify = await _actions.VerifyAsync();
         Report("", "Final check", verify.Headline, verify.Details);
+
+        // And then the old file itself, one document at a time. The final check compares the
+        // run against its own records; this asks the two systems the plain question an operator
+        // would ask by hand afterwards — is the old file off the server, and is its record out
+        // of CRM — which is the only answer that settles it.
+        if (_actions.OldFileCheckAsync is { } askAboutOldFiles)
+        {
+            _prompts.Blank();
+            _prompts.Say("Last, the old files. Asking the file server and CRM about each one by " +
+                         "name — the same check as \"Is this file still there?\" in the menu. " +
+                         "Reads only.", Tone.Muted);
+
+            var oldFiles = await askAboutOldFiles();
+            Report("", "The old files", oldFiles.Headline, oldFiles.Details);
+        }
 
         _ = ct;
     }

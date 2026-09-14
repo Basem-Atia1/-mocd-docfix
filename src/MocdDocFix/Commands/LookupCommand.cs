@@ -32,7 +32,19 @@ public sealed record LookupReport(
     string? VendorHash,
     IReadOnlyList<Guid> PointingAtThePath,
     ManifestEntry? Backup,
-    StateRecord? State);
+    StateRecord? State,
+
+    /// <summary>Why CRM could not be asked, when it could not. Not the same as "not there".</summary>
+    string? CrmProblem = null,
+
+    /// <summary>Why the file server could not be asked, when it could not.</summary>
+    string? ServerProblem = null,
+
+    /// <summary>
+    /// Records whose path carries the GUID that was typed — filled in when that GUID turns out
+    /// to be the file server's file id rather than a CRM record id.
+    /// </summary>
+    IReadOnlyList<Guid>? UsingThisFileId = null);
 
 /// <summary>
 /// Answers one question, for one file: is it still there?
@@ -70,12 +82,33 @@ public sealed class LookupCommand
         {
             ct.ThrowIfCancellationRequested();
 
-            var report = await FindAsync(identifier, ct);
-            Write(report);
-            reports.Add(report);
+            // One identifier that cannot be looked up must not throw away the answers for the
+            // others. Whatever went wrong is said here, under that identifier, and the next one
+            // is asked about as though nothing had happened.
+            try
+            {
+                var report = await FindAsync(identifier, ct);
+                Write(report);
+                reports.Add(report);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _prompts.Section($"Look-up — {identifier}");
+                _prompts.Warn($"Could not be looked up: {Innermost(e)}");
+                _prompts.Say("Nothing was changed. The other identifiers are still being asked about.",
+                    Tone.Muted);
+            }
         }
 
         return reports;
+    }
+
+    private static string Innermost(Exception e)
+    {
+        var innermost = e;
+        while (innermost.InnerException is not null) innermost = innermost.InnerException;
+
+        return $"{innermost.GetType().Name}: {innermost.Message}";
     }
 
     /// <summary>Reads only — the file server, CRM, and this tool's own notes.</summary>
@@ -86,16 +119,19 @@ public sealed class LookupCommand
 
         CrmFileRecord? record = null;
         var recordIsGone = false;
+        string? crmProblem = null;
         string? path = askedId is null ? FilePaths.Normalise(asked) : null;
+        IReadOnlyList<Guid>? usingThisFileId = null;
 
         if (askedId is { } id)
         {
-            var json = await _read.GetRawRecordAsync("mocd_documentfiles", id, ct);
+            var answer = await _read.GetDocumentFileAsync(id, ct);
 
-            if (json is null) recordIsGone = true;
+            if (!answer.Answered) crmProblem = answer.Problem;
+            else if (answer.Json is null) recordIsGone = true;
             else
             {
-                record = ReadRecord(id, json);
+                record = ReadRecord(id, answer.Json);
                 path = record.FilePath;
             }
         }
@@ -105,30 +141,78 @@ public sealed class LookupCommand
         var backup = FindBackup(askedId, path);
         path ??= backup?.OldFilePath;
 
+        // Still nothing, and a GUID was typed. The GUID on a file is the file server's id, not
+        // the CRM record's, and it is the one an operator reads off a path — so ask which
+        // records use it before concluding that there is nothing to find.
+        if (path is null && askedId is { } fileId)
+        {
+            usingThisFileId = await Safely(() => _read.FindDocumentFilesByFileIdAsync(fileId, ct),
+                Array.Empty<Guid>(), p => crmProblem ??= p);
+
+            if (usingThisFileId.Count > 0)
+            {
+                var answer = await _read.GetDocumentFileAsync(usingThisFileId[0], ct);
+
+                if (answer.Json is { } json)
+                {
+                    record = ReadRecord(usingThisFileId[0], json);
+                    path = record.FilePath;
+                    recordIsGone = false;
+                    backup ??= FindBackup(null, path);
+                }
+            }
+        }
+
         bool? onTheServer = null;
         long bytes = 0;
         string? vendorHash = null;
+        string? serverProblem = null;
 
         if (!string.IsNullOrWhiteSpace(path))
         {
-            var download = await _files.DownloadAsync(path!, ct);
-            var content = download.Data?.File;
+            var download = await Safely<ApiResponse<FileData>?>(
+                async () => await _files.DownloadAsync(path!, ct), null, p => serverProblem = p);
 
-            // A 200 with an empty file means "no such path" — the vendor does not 404.
-            onTheServer = download.Success && !string.IsNullOrEmpty(content);
-            if (onTheServer is true)
+            if (download is not null)
             {
-                bytes = SizeOf(content!);
-                vendorHash = download.Data?.Hash;
+                var content = download.Data?.File;
+
+                // A 200 with an empty file means "no such path" — the vendor does not 404.
+                onTheServer = download.Success && !string.IsNullOrEmpty(content);
+                if (onTheServer is true)
+                {
+                    bytes = SizeOf(content!);
+                    vendorHash = download.Data?.Hash;
+                }
             }
         }
 
         var pointing = string.IsNullOrWhiteSpace(path)
             ? Array.Empty<Guid>()
-            : await _read.FindDocumentFilesByPathAsync(path!, ct);
+            : await Safely(() => _read.FindDocumentFilesByPathAsync(path!, ct),
+                Array.Empty<Guid>(), p => crmProblem ??= p);
 
         return new LookupReport(asked, askedId, path, record, recordIsGone, onTheServer,
-            bytes, vendorHash, pointing, backup, StateOf(backup, path));
+            bytes, vendorHash, pointing, backup, StateOf(backup, path),
+            crmProblem, serverProblem, usingThisFileId);
+    }
+
+    /// <summary>
+    /// Runs one question, and on failure records why rather than abandoning the rest. A look-up
+    /// asks three things of two systems; one of them being unreachable is worth saying plainly,
+    /// but it is no reason to withhold the two answers that did come back.
+    /// </summary>
+    private static async Task<T> Safely<T>(Func<Task<T>> ask, T fallback, Action<string> problem)
+    {
+        try
+        {
+            return await ask();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            problem(Innermost(e));
+            return fallback;
+        }
     }
 
     /// <summary>
@@ -176,9 +260,26 @@ public sealed class LookupCommand
 
         if (report.Path is null)
         {
-            _prompts.Warn("Nothing here to check: that id is not in CRM and was never backed " +
-                          "up by this tool, so there is no path to ask the file server about.");
+            if (report.CrmProblem is { } why)
+            {
+                _prompts.Warn($"CRM could not be asked: {why}");
+                _prompts.Say("So nothing can be said about this one — it is NOT a statement that " +
+                             "the record has gone. Try it again, or check the VPN.", Tone.Muted);
+                return;
+            }
+
+            _prompts.Warn("Nothing here to check: that id is not a documentfile record, no " +
+                          "record's path carries it as a file id, and it was never backed up by " +
+                          "this tool — so there is no path to ask the file server about.");
+            _prompts.Say("If it came off a file name, the whole path finds it: " +
+                         @"DigitalServices\<date>\<id>.png", Tone.Muted);
             return;
+        }
+
+        if (report.UsingThisFileId is { Count: > 0 } sharing)
+        {
+            _prompts.Say($"That GUID is the file server's file id, not a record id. " +
+                         $"{sharing.Count} CRM record(s) use it; the first is shown below.", Tone.Muted);
         }
 
         if (!FilePaths.Same(report.Path, report.Asked))
@@ -193,6 +294,9 @@ public sealed class LookupCommand
     private void WriteCrm(LookupReport report)
     {
         _prompts.Section("IN CRM", Tone.Normal);
+
+        if (report.CrmProblem is { } why)
+            _prompts.Info($"    could not be asked — {why}", Tone.Danger);
 
         if (report.RecordIsGone)
             _prompts.Info($"    the record {report.AskedId} is NOT in CRM — it has been deleted",
@@ -229,6 +333,12 @@ public sealed class LookupCommand
     private void WriteServer(LookupReport report)
     {
         _prompts.Section("ON THE FILE SERVER", Tone.Normal);
+
+        if (report.ServerProblem is { } why)
+        {
+            _prompts.Info($"    could not be asked — {why}", Tone.Danger);
+            return;
+        }
 
         switch (report.OnTheServer)
         {
@@ -287,6 +397,17 @@ public sealed class LookupCommand
     private void WriteVerdict(LookupReport report)
     {
         _prompts.Blank();
+
+        // "GONE" means both systems said no. If one of them never answered, saying so is the
+        // only honest verdict — an unreachable server is not evidence that a file was removed.
+        if (report.CrmProblem is not null || report.ServerProblem is not null)
+        {
+            _prompts.Say("NOT ANSWERED — " +
+                         (report.CrmProblem is not null ? "CRM" : "the file server") +
+                         " could not be asked, so this file's whereabouts are unknown. " +
+                         "Nothing here says it has gone.", Tone.Warn);
+            return;
+        }
 
         var inCrm = report.Record is not null || report.PointingAtThePath.Count > 0;
 

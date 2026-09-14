@@ -64,7 +64,54 @@ public sealed class Reporter
     public string WriteScan(string env, IEnumerable<ScanRow> rows) => Write("scan", env, rows);
     public string WriteReview(string env, IEnumerable<ScanRow> rows) => Write("review", env, rows);
     public string WriteQuarantine(string env, IEnumerable<ScanRow> rows) => Write("quarantine", env, rows);
-    public string WriteMigration(string env, IEnumerable<MigrationRow> rows) => Write("migration-report", env, rows);
+    /// <summary>
+    /// Writes both: a plain-text account to read, and the CSV beside it for anything that wants
+    /// to sort a hundred rows. The path returned — the one the operator is shown — is the text
+    /// one, because being sent to a spreadsheet to find out what just happened is no answer.
+    /// </summary>
+    public string WriteMigration(string env, IEnumerable<MigrationRow> rows)
+    {
+        var all = rows as IReadOnlyList<MigrationRow> ?? rows.ToList();
+        Write("migration-report", env, all);
+        return WriteMigrationText(env, all);
+    }
+
+    private string WriteMigrationText(string env, IReadOnlyList<MigrationRow> rows)
+    {
+        Directory.CreateDirectory(_reportsDir);
+        var path = Path.Combine(_reportsDir, $"migration-report-{env}-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+
+        var text = new StringBuilder();
+        text.AppendLine($"Upload, verify and repoint — {env} — {DateTime.Now:yyyy-MM-dd HH:mm}");
+        text.AppendLine(new string('=', 78));
+        text.AppendLine();
+        text.AppendLine($"  {rows.Count} document(s) repointed in this run.");
+        text.AppendLine();
+        text.AppendLine("An index. Each document's own account is in its own folder, in");
+        text.AppendLine("03-upload-repoint.txt, with every check it passed.");
+        text.AppendLine();
+
+        foreach (var row in rows)
+        {
+            text.AppendLine(new string('-', 78));
+            text.AppendLine(Path.GetFileName(row.NewFilePath));
+            text.AppendLine($"       document    {row.DocumentId}");
+            text.AppendLine($"       old file    {row.OldFilePath}");
+            text.AppendLine($"       old record  {row.OldFileId}");
+            text.AppendLine($"       new file    {row.NewFilePath}");
+            text.AppendLine($"       new record  {row.NewFileId}");
+            text.AppendLine($"       size        {row.Bytes:N0} bytes");
+            text.AppendLine($"       our hash    {row.OurHash}");
+            text.AppendLine($"       checks      {row.ChecksPassed.Replace(";", ", ")}");
+            text.AppendLine($"       state       {row.State}");
+            text.AppendLine($"       at          {row.At.LocalDateTime:yyyy-MM-dd HH:mm:ss}");
+            text.AppendLine($"       in CRM      {row.NewCrmLink}");
+            text.AppendLine();
+        }
+
+        File.WriteAllText(path, text.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        return path;
+    }
 
     public static string CrmLink(string crmUrl, Guid documentId) =>
         $"{crmUrl.TrimEnd('/')}/main.aspx?etn=mocd_document&pagetype=entityrecord&id={documentId}";

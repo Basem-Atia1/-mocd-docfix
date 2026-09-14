@@ -15,7 +15,19 @@ public sealed record MigrateSummary(
     string ReportPath,
     IReadOnlyList<MigrationRow> Rows,
     /// <summary>Readable list of what was repointed: new file id and its CRM link.</summary>
-    string RepointedPath = "");
+    string RepointedPath = "",
+
+    /// <summary>
+    /// Why the skipped ones were skipped, counted by reason. A bare "5 skipped" covers
+    /// everything from "already done last week" to "you said no", which are not the same news.
+    /// </summary>
+    IReadOnlyList<SkipTally>? Skips = null,
+
+    /// <summary>How many old files were removed here, when the operator took the offer.</summary>
+    int OldFilesRemoved = 0);
+
+/// <param name="Why">Said as it should appear on screen, without a count.</param>
+public sealed record SkipTally(string Why, int Count);
 
 /// <summary>
 /// Phase 3. Upload, verify, show the operator, ask, then write CRM — in that order, so the
@@ -65,16 +77,28 @@ public sealed class MigrateCommand
     {
         var manifest = _backups.LoadManifest();
         var rows = new List<MigrationRow>();
-        int migrated = 0, skipped = 0, failed = 0;
+        int migrated = 0, skipped = 0, failed = 0, oldFilesRemoved = 0;
         string? haltReason = null;
+
+        // Counted by reason, not just counted. See SkipTally.
+        var why = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        void Skip(string reason)
+        {
+            skipped++;
+            why[reason] = why.TryGetValue(reason, out var n) ? n + 1 : 1;
+        }
 
         for (var i = 0; i < manifest.Count && haltReason is null; i++)
         {
             ct.ThrowIfCancellationRequested();
             var entry = manifest[i];
 
-            if (_state.IsAtLeast(entry.DocumentId, MigrationState.Repointed)) { skipped++; continue; }
-            if (!_state.IsAtLeast(entry.DocumentId, MigrationState.BackedUp)) { skipped++; continue; }
+            if (_state.IsAtLeast(entry.DocumentId, MigrationState.Repointed))
+            { Skip("already done in an earlier run"); continue; }
+
+            if (!_state.IsAtLeast(entry.DocumentId, MigrationState.BackedUp))
+            { Skip("not backed up, so there was nothing to upload"); continue; }
 
             // Somebody else may have edited the record since the scan.
             var modifiedOn = await _read.GetDocumentModifiedOnAsync(entry.DocumentId, ct);
@@ -85,7 +109,7 @@ public sealed class MigrateCommand
                               $"after its backup at {entry.At}.");
                 _state.Append(new StateRecord(entry.DocumentId, MigrationState.Failed,
                     DateTimeOffset.UtcNow, null, null, "Modified after backup — skipped."));
-                skipped++;
+                Skip("changed in CRM after its backup");
                 continue;
             }
 
@@ -105,7 +129,7 @@ public sealed class MigrateCommand
                 _state.Append(new StateRecord(entry.DocumentId, MigrationState.Repointed,
                     DateTimeOffset.UtcNow, settled.RecordId, settled.FilePath,
                     "Already correct — not migrated again."));
-                skipped++;
+                Skip("already correct — the document points at a properly filed record");
                 continue;
             }
 
@@ -123,7 +147,7 @@ public sealed class MigrateCommand
             if (goAhead is ConfirmChoice.No or ConfirmChoice.Skip)
             {
                 _prompts.Say("Not uploaded. Nothing was changed for this document.", Tone.Muted);
-                skipped++;
+                Skip("you chose not to upload it");
                 continue;
             }
 
@@ -245,7 +269,7 @@ public sealed class MigrateCommand
                 _state.Append(new StateRecord(entry.DocumentId, MigrationState.Uploaded,
                     DateTimeOffset.UtcNow, null, newFile.FilePath,
                     "Operator did not confirm the two files match."));
-                skipped++;
+                Skip("you said the uploaded copy did not match the original");
                 continue;
             }
 
@@ -258,7 +282,8 @@ public sealed class MigrateCommand
 
             var createIt = _prompts.Confirm("Create the new documentfile record?");
             if (createIt == ConfirmChoice.Quit) break;
-            if (createIt is ConfirmChoice.No or ConfirmChoice.Skip) { skipped++; continue; }
+            if (createIt is ConfirmChoice.No or ConfirmChoice.Skip)
+            { Skip("you chose not to create the new CRM record"); continue; }
 
             // The new record is the old one with only the file's whereabouts replaced, created
             // with the same key convention. Anything the original code path filled in — and
@@ -287,7 +312,7 @@ public sealed class MigrateCommand
                 _state.Append(new StateRecord(entry.DocumentId, MigrationState.Verified,
                     DateTimeOffset.UtcNow, newRecordId, newFile.FilePath,
                     $"Record {newRecordId} created; operator did not repoint."));
-                skipped++;
+                Skip("you chose not to repoint the document");
                 continue;
             }
 
@@ -386,7 +411,7 @@ public sealed class MigrateCommand
             _prompts.Blank();
             _prompts.Say("The View button on the document now serves the corrected copy.", Tone.Good);
 
-            await OfferToDeleteOldAsync(entry, ct);
+            if (await OfferToDeleteOldAsync(entry, ct)) oldFilesRemoved++;
 
             rows.Add(new MigrationRow(
                 DocumentId: entry.DocumentId,
@@ -410,8 +435,13 @@ public sealed class MigrateCommand
         var repointedPath = _repointed?.Write(env, _crmUrl, rows,
             _reports is null ? null : id => _reports.FolderFor(id)) ?? string.Empty;
 
+        // Most first, so the headline reason is the first thing read.
+        var skips = why.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal)
+            .Select(p => new SkipTally(p.Key, p.Value))
+            .ToList();
+
         return new MigrateSummary(migrated, skipped, failed, haltReason is not null, haltReason,
-            reportPath, rows, repointedPath);
+            reportPath, rows, repointedPath, skips, oldFilesRemoved);
     }
 
     /// <summary>
@@ -536,9 +566,10 @@ public sealed class MigrateCommand
     /// Offers to remove this document's old file straight away, rather than leaving every
     /// deletion to the end. Declining is always safe: the separate delete step can still do it.
     /// </summary>
-    private async Task OfferToDeleteOldAsync(ManifestEntry entry, CancellationToken ct)
+    /// <returns>True when the old file and its record were removed here and now.</returns>
+    private async Task<bool> OfferToDeleteOldAsync(ManifestEntry entry, CancellationToken ct)
     {
-        if (_deleteOldAsync is null) return;
+        if (_deleteOldAsync is null) return false;
 
         _prompts.Section("The old file — still there", Tone.Warn);
         _prompts.Say("CRM now points at the new file. Nothing about the old one has been touched " +
@@ -555,7 +586,7 @@ public sealed class MigrateCommand
         if (_prompts.Confirm("  Delete the old file AND its CRM record now?") != ConfirmChoice.Yes)
         {
             _prompts.Say("Left in place.", Tone.Muted);
-            return;
+            return false;
         }
 
         var refusal = await _deleteOldAsync(entry.DocumentId, ct);
@@ -570,12 +601,13 @@ public sealed class MigrateCommand
                     ("At", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss")),
                     ("Recoverable", "the bytes are in old\\, but a restore lands on a new path")
                 });
+
+            return true;
         }
-        else
-        {
-            _prompts.Info($"  REFUSED — {refusal}", Tone.Danger);
-            _prompts.Say("The old file is still there. Nothing was lost.", Tone.Muted);
-        }
+
+        _prompts.Info($"  REFUSED — {refusal}", Tone.Danger);
+        _prompts.Say("The old file is still there. Nothing was lost.", Tone.Muted);
+        return false;
     }
 
     private void WriteSummary(int index, int total, ManifestEntry entry, FileData newFile,

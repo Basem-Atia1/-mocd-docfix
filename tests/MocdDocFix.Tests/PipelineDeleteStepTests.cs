@@ -28,7 +28,12 @@ public class PipelineDeleteStepTests
                 MigrateAsync: () => { _ran.Add("migrate"); return Task.FromResult(StepOutcome.Of("1 migrated")); },
                 DeleteAsync: () => { _ran.Add("delete"); return Task.FromResult(StepOutcome.Of("1 deleted")); },
                 VerifyAsync: () => { _ran.Add("verify"); return Task.FromResult(StepOutcome.Of("all correct")); },
-                AwaitingDeleteAsync: () => Task.FromResult(_awaiting)));
+                AwaitingDeleteAsync: () => Task.FromResult(_awaiting),
+                OldFileCheckAsync: () =>
+                {
+                    _ran.Add("old-files");
+                    return Task.FromResult(StepOutcome.Of("1 old file correctly gone"));
+                }));
 
     [Fact]
     public async Task With_the_old_files_already_gone_the_delete_step_is_not_offered_at_all()
@@ -41,9 +46,27 @@ public class PipelineDeleteStepTests
 
         await Build(prompts).RunAsync(CancellationToken.None);
 
-        Assert.Equal(new[] { "backup", "migrate", "verify" }, _ran);
+        Assert.Equal(new[] { "backup", "migrate", "verify", "old-files" }, _ran);
         Assert.True(prompts.Said("nothing left for the delete step"));
         Assert.DoesNotContain(prompts.Questions, q => q.Contains("Go to the delete step?"));
+    }
+
+    /// <summary>
+    /// A run ends on what both systems say about the OLD file, not on what the steps believed —
+    /// and it is announced before it happens, like every other call out of this tool.
+    /// </summary>
+    [Fact]
+    public async Task A_run_finishes_by_asking_both_systems_about_the_old_files()
+    {
+        _awaiting = 0;
+
+        var prompts = new ScriptedPrompts("2", "1", "y", "1", "y", "q");
+
+        await Build(prompts).RunAsync(CancellationToken.None);
+
+        Assert.Equal("old-files", _ran[^1]);
+        Assert.True(prompts.Said("Is this file still there?"),
+            "the operator should be told it is the same check as the menu's, before it runs");
     }
 
     [Fact]

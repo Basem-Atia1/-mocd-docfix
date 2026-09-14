@@ -250,4 +250,74 @@ public class LookupCommandTests : IDisposable
 
         Assert.Equal(2, reports.Count);
     }
+
+    // ---- when a system cannot be asked at all ----
+
+    /// <summary>
+    /// The failure that started this: an id typed in, and the connection dropped underneath the
+    /// CRM call. It used to abandon the whole look-up with a stack of transport exceptions. What
+    /// it must never do instead is quietly report the record as deleted — nobody answered.
+    /// </summary>
+    [Fact]
+    public async Task An_id_crm_could_not_be_asked_about_is_never_called_gone()
+    {
+        _read.UnreachableRecords[OldFileId] =
+            "An existing connection was forcibly closed by the remote host.";
+
+        var report = await Look(OldFileId.ToString());
+
+        Assert.False(report.RecordIsGone);
+        Assert.NotNull(report.CrmProblem);
+
+        var said = string.Join("\n", _prompts.Messages);
+        Assert.Contains("CRM could not be asked", said);
+        Assert.DoesNotContain("GONE", said);
+    }
+
+    [Fact]
+    public async Task A_file_server_that_drops_the_connection_is_said_plainly_not_read_as_deleted()
+    {
+        _files.DownloadThrows[OldPath] = "An existing connection was forcibly closed by the remote host.";
+
+        var report = await Look(OldPath);
+
+        Assert.Null(report.OnTheServer);
+        Assert.NotNull(report.ServerProblem);
+
+        var said = string.Join("\n", _prompts.Messages);
+        Assert.Contains("NOT ANSWERED", said);
+        Assert.DoesNotContain("GONE", said);
+    }
+
+    /// <summary>
+    /// The GUID an operator has to hand is usually the one written on the file — the file
+    /// server's id, which is not the CRM record's id. Looked up as a record it is simply absent,
+    /// which reads as "deleted" for a record that is in fact perfectly well.
+    /// </summary>
+    [Fact]
+    public async Task A_file_id_off_the_path_finds_the_record_that_uses_it()
+    {
+        var fileId = Guid.Parse("35687738-986f-413d-8846-6dc1a720a1ec");
+        _read.MissingRecords.Add($"mocd_documentfiles:{fileId}");
+        _read.FilesByFileId[fileId] = new List<Guid> { OldFileId };
+
+        var report = await Look(fileId.ToString());
+
+        Assert.Equal(OldPath, report.Path);
+        Assert.True(report.OnTheServer);
+        Assert.Contains("file server's file id", string.Join("\n", _prompts.Messages));
+    }
+
+    [Fact]
+    public async Task One_identifier_that_cannot_be_looked_up_does_not_stop_the_rest()
+    {
+        var other = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        _read.MissingRecords.Add($"mocd_documentfiles:{other}");
+        _files.DownloadThrows[OldPath] = "boom";
+
+        var reports = await Command().RunAsync(
+            new[] { OldPath, other.ToString() }, CancellationToken.None);
+
+        Assert.Equal(2, reports.Count);
+    }
 }

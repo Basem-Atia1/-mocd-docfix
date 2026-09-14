@@ -206,12 +206,37 @@ public sealed class Session : IDisposable
             var summary = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
                 _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports).RunAsync(_envName, ct);
 
-            var details = new List<string>
-            {
-                $"new files → {summary.RepointedPath}   (id and CRM link of each new documentfile)",
-                $"report    → {summary.ReportPath}",
-                "the old files and their CRM records are still in place"
-            };
+            // Each document's own account first — that is where the detail is, and it is the
+            // folder the operator wants open. The whole-run files are an index across them.
+            var details = new List<string>();
+
+            foreach (var row in summary.Rows.Take(10))
+                details.Add($"{Path.Combine(_docReports.FolderFor(row.DocumentId), "03-upload-repoint.txt")}");
+            if (summary.Rows.Count > 10) details.Add($"… and {summary.Rows.Count - 10} more");
+
+            if (summary.Rows.Count > 0) details.Add("");
+
+            // A bare count of skips reads as a shortfall whatever caused it. Saying why turns
+            // "5 skipped" into "5 were done last time", which is not the same news at all.
+            foreach (var skip in summary.Skips ?? Array.Empty<SkipTally>())
+                details.Add($"skipped: {skip.Count} {skip.Why}");
+
+            if ((summary.Skips?.Count ?? 0) > 0) details.Add("");
+
+            details.Add($"index of new files → {summary.RepointedPath}");
+            details.Add($"index of the run   → {summary.ReportPath}");
+
+            // Only said when it is true. Printing it unconditionally contradicted the very next
+            // line of a run whose old files were removed as each document was repointed.
+            var left = summary.Migrated - summary.OldFilesRemoved;
+            if (summary.OldFilesRemoved > 0 && left <= 0)
+                details.Add($"each old file was removed as its document was repointed " +
+                            $"({summary.OldFilesRemoved} in all)");
+            else if (summary.OldFilesRemoved > 0)
+                details.Add($"{summary.OldFilesRemoved} old file(s) removed here; {left} still in place");
+            else if (summary.Migrated > 0)
+                details.Add("the old files and their CRM records are still in place");
+
             if (summary.Halted) details.Add($"RUN HALTED: {summary.HaltReason}");
 
             return new StepOutcome(
@@ -238,9 +263,20 @@ public sealed class Session : IDisposable
                 _env.CrmUrl, _reportsRoot, _docReports)
                 .RunAsync(_envName, ct);
 
-            var details = new List<string> { $"report → {summary.ReportPath}" };
+            // The per-document file is the report; the whole-run one is an index over them.
+            var details = new List<string>();
+
+            foreach (var verdict in summary.Verdicts.Take(10))
+                details.Add(Path.Combine(
+                    _docReports.FolderFor(verdict.DocumentId, verdict.FileName), "05-final-check.txt"));
+            if (summary.Verdicts.Count > 10) details.Add($"… and {summary.Verdicts.Count - 10} more");
+
+            details.Add("");
+            details.Add($"index of all of them → {summary.ReportPath}");
+
             foreach (var bad in summary.Verdicts.Where(v => !v.Ok).Take(10))
             {
+                details.Add("");
                 details.Add($"  {bad.FileName}");
                 foreach (var p in bad.Problems) details.Add($"      {p}");
             }
@@ -250,6 +286,46 @@ public sealed class Session : IDisposable
                     ? $"{summary.Checked} checked, all correct."
                     : $"{summary.Checked} checked, {summary.Ok} correct, {summary.WithProblems} WITH PROBLEMS.",
                 details);
+        },
+
+        // The closing question, asked of the OLD file for every document the run touched: the
+        // same check the menu's "Is this file still there?" runs, so a run ends by proving what
+        // it claims rather than reporting its own belief.
+        OldFileCheckAsync: async () =>
+        {
+            var summary = await new OldFileCheckCommand(
+                    new LookupCommand(_files, _read, _backups, _state, _prompts),
+                    _backups, _state, _prompts, _docReports)
+                .RunAsync(ct);
+
+            if (summary.Checked == 0)
+                return StepOutcome.Of("No old files to ask about — no document got as far as " +
+                                      "having a new one.");
+
+            var gone = summary.Results.Count(r => r.State == MigrationState.Deleted && r.AsExpected);
+            var waiting = summary.Results.Count(r => r.State == MigrationState.Repointed && r.AsExpected);
+
+            var headline = $"{summary.Checked} old file(s) asked about — {gone} correctly gone " +
+                           $"from the file server and CRM";
+            if (waiting > 0) headline += $", {waiting} still there awaiting the delete step";
+            headline += summary.NotAsExpected > 0
+                ? $", {summary.NotAsExpected} NOT AS EXPECTED."
+                : ".";
+
+            var details = new List<string>();
+            foreach (var wrong in summary.Results.Where(r => !r.AsExpected).Take(10))
+            {
+                details.Add($"  {wrong.FileName}");
+                details.Add($"      {wrong.Verdict}");
+            }
+
+            if (summary.NotAsExpected == 0)
+                details.Add("both systems agree with what the run recorded, for every document");
+
+            details.Add("");
+            details.Add("each document's answer is in its own folder, in 06-old-file.txt");
+
+            return new StepOutcome(headline, details);
         },
 
         // Counted before the delete step is offered, so a run whose old files were removed as it
@@ -271,6 +347,11 @@ public sealed class Session : IDisposable
     /// <summary>One line per look-up, for the summary under the step.</summary>
     private static string Summarise(LookupReport report)
     {
+        // A system that never answered is not a system that said no.
+        if (report.CrmProblem is { } crm) return $"{report.Asked} — CRM could not be asked: {crm}";
+        if (report.ServerProblem is { } server)
+            return $"{report.Asked} — the file server could not be asked: {server}";
+
         var onDisk = report.OnTheServer switch
         {
             true => "on the file server",

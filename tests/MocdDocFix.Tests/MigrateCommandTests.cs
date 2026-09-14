@@ -706,4 +706,62 @@ public class MigrateCommandTests : IDisposable
         Assert.DoesNotContain(prompts.Questions,
             q => q.Contains("Delete the old file AND its CRM record", StringComparison.OrdinalIgnoreCase));
     }
+
+    // ---- why, not just how many ----
+
+    /// <summary>
+    /// "5 skipped" is the same number whether the work was finished last week or the operator
+    /// said no to all of it, and the two are not the same news. The reason travels with the count.
+    /// </summary>
+    [Fact]
+    public async Task A_document_finished_in_an_earlier_run_is_skipped_with_that_said()
+    {
+        States().Append(new StateRecord(DocumentId, MigrationState.Repointed,
+            DateTimeOffset.UtcNow, NewFileId, NewPath(NewFileId), null));
+
+        var summary = await Command(new FakePrompts()).RunAsync("dev", CancellationToken.None);
+
+        Assert.Equal(1, summary.Skipped);
+        var skip = Assert.Single(summary.Skips!);
+        Assert.Equal(1, skip.Count);
+        Assert.Contains("earlier run", skip.Why);
+    }
+
+    [Fact]
+    public async Task Declining_the_upload_is_recorded_as_the_operators_choice_not_as_a_gap()
+    {
+        var summary = await Command(new FakePrompts().Answer(ConfirmChoice.No))
+            .RunAsync("dev", CancellationToken.None);
+
+        var skip = Assert.Single(summary.Skips!);
+        Assert.Contains("you chose not to upload it", skip.Why);
+    }
+
+    /// <summary>
+    /// What lets a run stop claiming "the old files are still in place" after removing them.
+    /// </summary>
+    [Fact]
+    public async Task Removing_the_old_file_as_it_goes_is_counted()
+    {
+        var prompts = new FakePrompts().Answer(
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+
+        var summary = await Command(prompts, (_, _) => Task.FromResult<string?>(null))
+            .RunAsync("dev", CancellationToken.None);
+
+        Assert.Equal(1, summary.Migrated);
+        Assert.Equal(1, summary.OldFilesRemoved);
+    }
+
+    [Fact]
+    public async Task An_old_file_left_alone_is_not_counted_as_removed()
+    {
+        var prompts = new FakePrompts().Answer(
+            ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.No);
+
+        var summary = await Command(prompts, (_, _) => Task.FromResult<string?>(null))
+            .RunAsync("dev", CancellationToken.None);
+
+        Assert.Equal(0, summary.OldFilesRemoved);
+    }
 }

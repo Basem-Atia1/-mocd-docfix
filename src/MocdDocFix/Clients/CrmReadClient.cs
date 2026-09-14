@@ -4,6 +4,23 @@ using MocdDocFix.Domain;
 
 namespace MocdDocFix.Clients;
 
+/// <summary>
+/// What CRM said about one record — keeping "it is not there" apart from "it could not be asked".
+/// The two look the same to a caller that only gets a null back, and reading a failed query as a
+/// deleted record is how a look-up comes to report a file as gone when nobody ever answered.
+/// </summary>
+/// <param name="Json">The record, or null when CRM answered that there is no such record.</param>
+/// <param name="Answered">False when the query itself failed — a dropped connection, an error status.</param>
+/// <param name="Problem">Why it could not be asked, in words, when <paramref name="Answered"/> is false.</param>
+public sealed record CrmRecordAnswer(string? Json, bool Answered, string? Problem = null)
+{
+    public static readonly CrmRecordAnswer NotThere = new(null, true);
+
+    public static CrmRecordAnswer Found(string json) => new(json, true);
+
+    public static CrmRecordAnswer Failed(string problem) => new(null, false, problem);
+}
+
 public interface ICrmReadClient
 {
     Task<IReadOnlyList<DocumentRow>> GetInScopeDocumentsAsync(IReadOnlyList<Guid> catalogues, CancellationToken ct);
@@ -29,6 +46,27 @@ public interface ICrmReadClient
     /// the one being migrated.
     /// </summary>
     Task<IReadOnlyList<Guid>> FindDocumentFilesByPathAsync(string filePath, CancellationToken ct);
+
+    /// <summary>
+    /// One mocd_documentfile, read for a look-up rather than for a backup: three named columns,
+    /// no annotation header, and an answer that distinguishes "no such record" from "could not
+    /// ask". The whole-record read is deliberately not used here — it asks for every attribute
+    /// of the record, which is more than a look-up needs and more for the server to build. The
+    /// default keeps older callers and test doubles working.
+    /// </summary>
+    async Task<CrmRecordAnswer> GetDocumentFileAsync(Guid id, CancellationToken ct) =>
+        await GetRawRecordAsync("mocd_documentfiles", id, ct) is { } json
+            ? CrmRecordAnswer.Found(json)
+            : CrmRecordAnswer.NotThere;
+
+    /// <summary>
+    /// Every mocd_documentfile whose path carries this file id. The GUID in a path is the file
+    /// server's id, not the CRM record's, and it is the one an operator has to hand — it is
+    /// written on the file itself. Looking that up as a record id finds nothing, which reads as
+    /// "deleted" when the record is in fact perfectly well.
+    /// </summary>
+    Task<IReadOnlyList<Guid>> FindDocumentFilesByFileIdAsync(Guid fileId, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<Guid>>(Array.Empty<Guid>());
 
     /// <summary>
     /// Metadata of every annotation (note) attached to the document. Null means the query
@@ -195,9 +233,26 @@ public sealed class CrmReadClient : ICrmReadClient
         var escaped = filePath.Replace("'", "''");
         var url = $"mocd_documentfiles?$select=mocd_documentfileid&$filter=mocd_filepath eq '{Uri.EscapeDataString(escaped)}'";
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        using var response = await _http.SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode) return Array.Empty<Guid>();
+        return await IdsFromAsync(url, ct);
+    }
+
+    public async Task<IReadOnlyList<Guid>> FindDocumentFilesByFileIdAsync(Guid fileId, CancellationToken ct)
+    {
+        // contains() rather than an equality test on mocd_fileid: the column holding the vendor's
+        // id is not filled in on every record — the portal's own uploads leave it empty — but the
+        // id is always in the path, because it IS the file name.
+        var url = $"mocd_documentfiles?$select=mocd_documentfileid,mocd_filepath" +
+                  $"&$filter=contains(mocd_filepath,'{fileId}')";
+
+        return await IdsFromAsync(url, ct);
+    }
+
+    private async Task<IReadOnlyList<Guid>> IdsFromAsync(string url, CancellationToken ct)
+    {
+        using var response = await SendWithRetryAsync(
+            () => new HttpRequestMessage(HttpMethod.Get, url), ct);
+
+        if (response is null || !response.IsSuccessStatusCode) return Array.Empty<Guid>();
 
         var body = await response.Content.ReadAsStringAsync(ct);
         using var json = JsonDocument.Parse(body);
@@ -211,16 +266,90 @@ public sealed class CrmReadClient : ICrmReadClient
             .ToList();
     }
 
+    /// <summary>
+    /// The three columns a look-up shows. Narrow on purpose — see the interface.
+    /// </summary>
+    private const string FileSelect = "mocd_filepath,mocd_name,mocd_category";
+
+    public async Task<CrmRecordAnswer> GetDocumentFileAsync(Guid id, CancellationToken ct)
+    {
+        HttpResponseMessage? response;
+
+        try
+        {
+            response = await SendWithRetryAsync(
+                () => new HttpRequestMessage(HttpMethod.Get, $"mocd_documentfiles({id})?$select={FileSelect}"),
+                ct);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return CrmRecordAnswer.Failed(Describe(e));
+        }
+
+        if (response is null) return CrmRecordAnswer.Failed("CRM did not answer.");
+
+        using (response)
+        {
+            if (response.IsSuccessStatusCode)
+                return CrmRecordAnswer.Found(await response.Content.ReadAsStringAsync(ct));
+
+            // 404 is CRM answering: there is no such record. Anything else is CRM failing to
+            // answer — a column this build does not have, a permissions problem, a server error —
+            // and must not be reported to the operator as a deleted record.
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return CrmRecordAnswer.NotThere;
+
+            return CrmRecordAnswer.Failed($"CRM answered {(int)response.StatusCode} {response.ReasonPhrase}.");
+        }
+    }
+
     public async Task<string?> GetRawRecordAsync(string entitySet, Guid id, CancellationToken ct)
     {
         // No $select — we want every attribute, so a restore does not depend on us having
         // predicted which ones matter. The Prefer header adds formatted values and, crucially,
         // lookuplogicalname: without it a polymorphic lookup is a bare GUID with no entity type.
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{entitySet}({id})");
-        request.Headers.Add("Prefer", "odata.include-annotations=\"*\"");
+        using var response = await SendWithRetryAsync(() =>
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, $"{entitySet}({id})");
+            request.Headers.Add("Prefer", "odata.include-annotations=\"*\"");
+            return request;
+        }, ct);
 
-        using var response = await _http.SendAsync(request, ct);
+        if (response is null) return null;
         return response.IsSuccessStatusCode ? await response.Content.ReadAsStringAsync(ct) : null;
+    }
+
+    /// <summary>
+    /// Sends, and on a dropped connection sends once more on a new one.
+    ///
+    /// On-prem CRM sits behind IIS, which closes an idle keep-alive connection on its own
+    /// schedule and without telling the client. A request that lands on a socket the server has
+    /// just closed fails with "an existing connection was forcibly closed by the remote host" —
+    /// nothing is wrong with the request, and the only cure is to send it again on a fresh
+    /// connection. Retrying is safe because every call here is a GET that changes nothing.
+    /// </summary>
+    private async Task<HttpResponseMessage?> SendWithRetryAsync(
+        Func<HttpRequestMessage> build, CancellationToken ct)
+    {
+        try
+        {
+            using var first = build();
+            return await _http.SendAsync(first, ct);
+        }
+        catch (Exception e) when (e is HttpRequestException or IOException && !ct.IsCancellationRequested)
+        {
+            using var second = build();
+            return await _http.SendAsync(second, ct);
+        }
+    }
+
+    /// <summary>The innermost reason, which is the one that says what actually went wrong.</summary>
+    private static string Describe(Exception e)
+    {
+        var innermost = e;
+        while (innermost.InnerException is not null) innermost = innermost.InnerException;
+
+        return innermost.Message.TrimEnd('.') + ".";
     }
 
     public async Task<string?> GetDocumentAnnotationsAsync(Guid documentId, CancellationToken ct)
