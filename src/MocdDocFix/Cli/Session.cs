@@ -92,7 +92,8 @@ public sealed class Session : IDisposable
             new GroupedReportWriter(runRoot),
             new GuidListWriter(runRoot),
             new DocumentTypeCheck(ado, _typeDecisions, prompts,
-                appConfig.Ado.LocalCopy, appConfig.Ado.DropFolder));
+                appConfig.Ado.LocalCopy, appConfig.Ado.DropFolder),
+            _docReports, _backups);
     }
 
     public void Dispose()
@@ -126,6 +127,10 @@ public sealed class Session : IDisposable
             var result = await ScanAsync(ct);
             _pending = result.Fix;
 
+            // Every document that is wrong, one at a time, the way a targeted run shows them —
+            // so a full run can be read and argued with rather than only counted.
+            WriteEachDocument(result);
+
             var details = result.Banner().Split(Environment.NewLine).ToList();
 
             if (result.DevOpsSummary() is { } devops)
@@ -139,8 +144,19 @@ public sealed class Session : IDisposable
             details.Add("");
             details.Add($"grouped report → {result.GroupsPath}");
             details.Add($"GUIDs by group → {result.GuidsPath}");
-            details.Add($"spreadsheet    → {result.ScanPath}");
-            details.Add($"needs a human  → {result.ReviewPath}");
+
+            if (result.PerDocumentReports > 0)
+            {
+                details.Add("");
+                details.Add($"{result.PerDocumentReports} document(s) have their own folder, " +
+                            "each holding 01-check.txt:");
+
+                foreach (var row in result.Fix.Concat(result.Review).Take(10))
+                    details.Add($"  {Path.Combine(_docReports.FolderFor(row.DocumentId, row.FileName), "01-check.txt")}");
+
+                if (result.PerDocumentReports > 10)
+                    details.Add($"  … and {result.PerDocumentReports - 10} more");
+            }
 
             return new ScanOutcome(
                 $"{result.Fix.Count} to fix, {result.Review.Count} need a human, " +
@@ -343,6 +359,40 @@ public sealed class Session : IDisposable
 
             return new StepOutcome($"{reports.Count} looked up. Nothing was changed.", details);
         });
+
+    /// <summary>
+    /// How many documents a full scan shows in full before it stops listing. A run over the
+    /// whole population can turn up more than anyone will read on one screen; past this the
+    /// grouped report and the per-document folders are the better way in.
+    /// </summary>
+    private const int MostWeWillList = 30;
+
+    /// <summary>
+    /// Each broken document, printed the way a targeted run prints it. A full run that shows
+    /// only totals gives the operator nothing to disagree with — and being able to read the
+    /// console and say "that one is wrong" is the whole point of step 1.
+    /// </summary>
+    private void WriteEachDocument(ScanResult result)
+    {
+        var interesting = result.Fix.Concat(result.Review).ToList();
+        if (interesting.Count == 0) return;
+
+        _prompts.Blank();
+        _prompts.Section($"{interesting.Count} document(s) to look at", Tone.Normal);
+        _prompts.Say("Each one below, with what CRM says, what DevOps says, and what will be " +
+                     "done about it. Nothing has been changed.", Tone.Muted);
+
+        foreach (var row in interesting.Take(MostWeWillList))
+            CheckLines.Write(_prompts, row);
+
+        if (interesting.Count > MostWeWillList)
+        {
+            _prompts.Blank();
+            _prompts.Say($"… and {interesting.Count - MostWeWillList} more, not listed here. " +
+                         "Every one of them has its own folder with 01-check.txt in it, and the " +
+                         "grouped report below covers them all.", Tone.Muted);
+        }
+    }
 
     /// <summary>One line per look-up, for the summary under the step.</summary>
     private static string Summarise(LookupReport report)

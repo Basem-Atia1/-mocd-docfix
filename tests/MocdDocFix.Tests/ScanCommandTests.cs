@@ -202,4 +202,90 @@ public class ScanCommandTests : IDisposable
         Assert.Contains("Re-upload", result.Fix[0].Solution);
         Assert.Contains("Solution", File.ReadAllText(result.ScanPath));
     }
+
+    // ---- a full run writes what a targeted run writes ----
+
+    /// <summary>
+    /// The whole point of the change: a full run's account of a document goes in that document's
+    /// own folder, as text, instead of a spreadsheet in the whole-run folder that has to be
+    /// opened in Excel before anyone can see what is wrong with anything.
+    /// </summary>
+    private (ScanCommand Scan, DocumentReportStore Reports, BackupStore Backups) WithFolders()
+    {
+        var reports = new DocumentReportStore(Path.Combine(_dir, "reports"));
+        var backups = new BackupStore(Path.Combine(_dir, "backup"));
+
+        return (new ScanCommand(_crm, new Reporter(_dir), "https://crm/MoCD",
+                new[] { EmployeeAppointment, GamRequest },
+                new GroupedReportWriter(_dir), new GuidListWriter(_dir), null, reports, backups),
+            reports, backups);
+    }
+
+    [Fact]
+    public async Task A_full_scan_writes_each_broken_document_its_own_check_report()
+    {
+        _crm.Documents.Add(Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment));
+
+        var (scan, reports, _) = WithFolders();
+        var result = await scan.RunAsync("dev", CancellationToken.None);
+
+        var row = Assert.Single(result.Fix);
+        var path = Path.Combine(reports.FolderFor(row.DocumentId, row.FileName), "01-check.txt");
+
+        Assert.True(File.Exists(path), path);
+
+        var text = File.ReadAllText(path);
+        Assert.Contains("STEP 1", text);
+        Assert.Contains("Re-upload", text);
+        Assert.Contains("DevOps", text);
+    }
+
+    [Fact]
+    public async Task A_document_needing_a_human_gets_a_report_but_no_backup_folder()
+    {
+        _crm.KnownCatalogues.Add(GamRequest.ToString());
+        _crm.Documents.Add(Doc(@"DigitalServices\goodConductCertificate\20260330\f.jpg",
+            EmployeeAppointment, GamRequest));
+
+        var (scan, reports, backups) = WithFolders();
+        var result = await scan.RunAsync("dev", CancellationToken.None);
+
+        var row = Assert.Single(result.Review);
+        Assert.True(File.Exists(
+            Path.Combine(reports.FolderFor(row.DocumentId, row.FileName), "01-check.txt")));
+
+        // Nothing was backed up, so nothing should suggest it was.
+        Assert.False(File.Exists(backups.Folder(row.DocumentId, row.FileName).SummaryPath));
+    }
+
+    [Fact]
+    public async Task With_per_document_folders_no_spreadsheet_is_left_in_the_whole_run_folder()
+    {
+        _crm.Documents.Add(Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment));
+
+        var (scan, _, _) = WithFolders();
+        var result = await scan.RunAsync("dev", CancellationToken.None);
+
+        Assert.Equal(string.Empty, result.ScanPath);
+        Assert.Equal(string.Empty, result.ReviewPath);
+        Assert.Empty(Directory.GetFiles(_dir, "*.csv"));
+
+        // The two reports that are about the population rather than one document still get
+        // written — and both are text.
+        Assert.EndsWith(".txt", result.GroupsPath);
+        Assert.EndsWith(".txt", result.GuidsPath);
+        Assert.True(File.Exists(result.GroupsPath));
+        Assert.True(File.Exists(result.GuidsPath));
+    }
+
+    [Fact]
+    public async Task Without_per_document_folders_the_spreadsheets_are_written_as_before()
+    {
+        _crm.Documents.Add(Doc(@"DigitalServices\goodConductCertificate\20260330\a.jpg", EmployeeAppointment));
+
+        var result = await Command().RunAsync("dev", CancellationToken.None);
+
+        Assert.NotEqual(string.Empty, result.ScanPath);
+        Assert.Equal(0, result.PerDocumentReports);
+    }
 }

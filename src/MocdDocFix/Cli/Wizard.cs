@@ -101,13 +101,15 @@ public sealed class Wizard
                     "verified and shown to you before anything in CRM changes."),
 
                 new Choice("Full", "work through every broken file",
-                    "The same five steps, but over the whole population. Every step still stops " +
-                    "and asks before the next one starts, and you still see each file before " +
-                    "its document is repointed."),
+                    "Exactly the same steps, checks and questions as a targeted run, over the " +
+                    "whole population instead of the files you name. It starts by finding every " +
+                    "broken document, shows you each one, and writes the grouped report and the " +
+                    "GUID list that a targeted run has no use for."),
 
-                new Choice("Just report", "scan and write the files, change nothing",
-                    "Reads CRM, classifies every document, writes the CSV and the grouped " +
-                    "report, and stops. Nothing is downloaded, uploaded or written."),
+                new Choice("Just report", "scan and write the reports, change nothing",
+                    "Reads CRM, classifies every document, writes each broken one's check report " +
+                    "into its own folder along with the grouped report and the GUID list, and " +
+                    "stops. Nothing is downloaded, uploaded or written."),
 
                 new Choice("Check it all", "ask the file server and CRM what is actually true",
                     "For every document already migrated: is the old file still on the server, " +

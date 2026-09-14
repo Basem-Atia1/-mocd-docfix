@@ -93,21 +93,15 @@ public sealed class TargetedCommand
             classified.Add(row);
             documents.Add(document);
 
-            _prompts.Section(identifier);
-            _prompts.Field("document", document.DocumentId.ToString(), Tone.Muted);
-            _prompts.Field("document type", document.DocumentTypeName ?? "(not known)", Tone.Muted);
-            _prompts.Field("current path", document.FilePath ?? "(none)", Tone.Muted);
-
-            // Said out loud on every document, agreement included. A check whose agreement is
-            // silent is indistinguishable from a check that never ran — which is exactly how it
-            // read the first time this was used.
-            WriteDevOpsLine(row);
-
-            _prompts.Blank();
+            // The same block the full run prints for every broken document — one writer, so the
+            // two modes cannot drift apart in what they show or in what they check.
+            CheckLines.Write(_prompts, row, identifier,
+                document.CrossCheckSource is null
+                    ? null
+                    : document.CrossCheckCatalogueId == row.CorrectCatalogueId);
 
             if (row.Verdict == nameof(Verdict.Skip))
             {
-                _prompts.Say($"VERDICT  OK — {row.Reason}", Tone.Good);
                 skipped++;
                 continue;
             }
@@ -119,34 +113,20 @@ public sealed class TargetedCommand
                 // the flag is refused rather than silently queuing a row with a null target.
                 if (row.CorrectCatalogueId is null)
                 {
-                    _prompts.Say($"VERDICT  NEEDS A DECISION — {row.Reason}", Tone.Warn);
-                    _prompts.Say("Not touched, and --force-review cannot help: the two authorities " +
-                                 "disagree, so there is no correct catalogue to write. Fix the " +
-                                 "document type or the parent request in CRM, then re-scan.",
-                        Tone.Muted);
+                    _prompts.Say("--force-review cannot help here: the two authorities disagree, " +
+                                 "so there is no correct catalogue to write. Fix the document " +
+                                 "type or the parent request in CRM, then re-scan.", Tone.Muted);
                     reviewed++;
                     continue;
                 }
 
                 if (!forceReview)
                 {
-                    _prompts.Say($"VERDICT  AMBIGUOUS — {row.Reason}", Tone.Warn);
-                    _prompts.Say("Not touched. Re-run with --force-review to act on it anyway.",
-                        Tone.Muted);
+                    _prompts.Say("Re-run with --force-review to act on it anyway.", Tone.Muted);
                     reviewed++;
                     continue;
                 }
             }
-
-            _prompts.Say($"VERDICT  BROKEN — {row.Reason}", Tone.Danger);
-            _prompts.Blank();
-            _prompts.Field("correct", row.CorrectCatalogueId?.ToString() ?? "(none)", Tone.Muted);
-            if (document.CrossCheckSource is not null)
-                _prompts.Field("cross-check", $"{document.CrossCheckSource} " +
-                    $"{(document.CrossCheckCatalogueId == row.CorrectCatalogueId ? "agrees" : "DISAGREES")}",
-                    Tone.Muted);
-            _prompts.Blank();
-            _prompts.Say($"SOLUTION  {row.Solution}");
 
             queued.Add(row);
         }
@@ -184,31 +164,4 @@ public sealed class TargetedCommand
             : _reports.FolderFor(classified[0].DocumentId, classified[0].FileName) + "  (and others)";
     }
 
-    /// <summary>
-    /// What the DevOps backlog made of this document's type — printed whatever it said, because
-    /// "agrees" and "was never asked" look identical when only disagreement is announced.
-    /// </summary>
-    private void WriteDevOpsLine(ScanRow row)
-    {
-        var evidence = string.IsNullOrWhiteSpace(row.AdoEvidence)
-            ? ""
-            : $"   (work items {row.AdoEvidence})";
-
-        var (text, tone) = row.AdoVerdict switch
-        {
-            nameof(AdoVerdict.Agrees) =>
-                ($"agrees — {(row.AdoService.Length > 0 ? row.AdoService : "same service")}{evidence}",
-                    Tone.Good),
-
-            nameof(AdoVerdict.Disagrees) =>
-                ($"DISAGREES — the backlog says {row.AdoService}{evidence}", Tone.Danger),
-
-            nameof(AdoVerdict.CannotTell) =>
-                ("asked, but could not tell — left to the CRM answer", Tone.Warn),
-
-            _ => ("not checked — DevOps is not set up for this run", Tone.Muted)
-        };
-
-        _prompts.Field("DevOps", text, tone);
-    }
 }

@@ -136,7 +136,7 @@ public class TargetedCommandTests : IDisposable
         Assert.Equal(0, summary.Fixed);
         Assert.Equal(1, summary.Reviewed);
         Assert.Contains(prompts.Messages,
-            m => m.Contains("NEEDS A DECISION", StringComparison.OrdinalIgnoreCase));
+            m => m.Contains("NEEDS A HUMAN", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(prompts.Messages,
             m => m.Contains("--force-review cannot help", StringComparison.OrdinalIgnoreCase));
     }
