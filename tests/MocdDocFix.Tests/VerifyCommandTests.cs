@@ -165,6 +165,45 @@ public class VerifyCommandTests : IDisposable
         Assert.Contains(v.Problems, p => p.Contains("document points at", StringComparison.Ordinal));
     }
 
+    // ---- an unfinished run is checked too, not skipped ----
+
+    [Fact]
+    public async Task A_failed_document_that_is_actually_correct_now_is_reported_as_reconcilable()
+    {
+        // What really happened: the work completed, then a check halted and wrote Failed.
+        States().Append(new StateRecord(DocumentId, MigrationState.Failed,
+            DateTimeOffset.UtcNow, NewFileId, NewPath, "a check halted"));
+
+        var v = Assert.Single((await Command().RunAsync("dev", CancellationToken.None)).Verdicts);
+
+        Assert.Equal(MigrationState.Failed, v.State);
+        Assert.Contains(v.Problems, p => p.Contains("already points at a correctly filed record", StringComparison.Ordinal));
+        Assert.Contains(v.Problems, p => p.Contains("eligible for deletion", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_failed_document_that_really_is_unfinished_says_so()
+    {
+        States().Append(new StateRecord(DocumentId, MigrationState.Failed,
+            DateTimeOffset.UtcNow, NewFileId, NewPath, "upload failed"));
+        _write.Links[DocumentId] = OldFileId;                       // never moved
+        _read.RawRecords[$"mocd_documentfiles:{OldFileId}"] =
+            "{\"mocd_filepath\":\"" + OldPath.Replace("\\", "\\\\") + "\"}";
+
+        var v = Assert.Single((await Command().RunAsync("dev", CancellationToken.None)).Verdicts);
+
+        Assert.Contains(v.Problems, p => p.Contains("still not finished", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_document_only_backed_up_is_still_left_out()
+    {
+        States().Append(new StateRecord(DocumentId, MigrationState.BackedUp,
+            DateTimeOffset.UtcNow, null, null, null));
+
+        Assert.Equal(0, (await Command().RunAsync("dev", CancellationToken.None)).Checked);
+    }
+
     // ---- what it checks, and what it does not ----
 
     [Fact]

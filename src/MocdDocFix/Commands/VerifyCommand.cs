@@ -66,7 +66,13 @@ public sealed class VerifyCommand
             ct.ThrowIfCancellationRequested();
 
             if (!latest.TryGetValue(entry.DocumentId, out var record)) continue;
-            if (record.State is not (MigrationState.Repointed or MigrationState.Deleted)) continue;
+
+            // Unfinished states are included deliberately. A document recorded as Failed is the
+            // one most likely to disagree with reality — the tool's own notes can be wrong while
+            // CRM is perfectly fine — and checking only the tidy states means never finding out.
+            if (record.State is not (MigrationState.Repointed or MigrationState.Deleted
+                    or MigrationState.Failed or MigrationState.Uploaded or MigrationState.Verified))
+                continue;
 
             var verdict = await VerifyOneAsync(entry, record, ct);
             verdicts.Add(verdict);
@@ -99,6 +105,36 @@ public sealed class VerifyCommand
     {
         var problems = new List<string>();
         var deleted = record.State == MigrationState.Deleted;
+
+        // A run that stopped part-way. What matters is not what the state file says happened, but
+        // whether the document is actually correct now.
+        var unfinished = record.State is MigrationState.Failed or MigrationState.Uploaded
+            or MigrationState.Verified;
+
+        if (unfinished)
+        {
+            var pointsAtNow = await _write.GetDocumentFileLinkAsync(entry.DocumentId, ct);
+            var pathNow = pointsAtNow is { } id
+                ? ReadFilePath(await _read.GetRawRecordAsync("mocd_documentfiles", id, ct))
+                : null;
+
+            var filedCorrectly = pathNow is not null &&
+                Domain.FilePathParser.Parse(pathNow).CategorySegment is { } seg &&
+                Guid.TryParse(seg, out var cat) && cat == entry.CorrectCatalogueId;
+
+            problems.Add(filedCorrectly
+                ? $"recorded as {record.State}, but the document already points at a correctly " +
+                  "filed record — run the upload step again and it will reconcile itself, then " +
+                  "the old file becomes eligible for deletion"
+                : $"recorded as {record.State} and still not finished — the document points at " +
+                  $"'{pathNow ?? "nothing"}'. Run the upload step again for this document.");
+
+            return new DocumentVerdict(entry.DocumentId, entry.FileName, record.State,
+                await ExistsAsync(entry.OldFilePath, ct),
+                record.NewFilePath is not null && await ExistsAsync(record.NewFilePath, ct),
+                await _read.GetRawRecordAsync("mocd_documentfiles", entry.OldFileId, ct) is not null,
+                pointsAtNow is not null, pathNow, pointsAtNow, problems);
+        }
 
         // ---- the file server ----
 
