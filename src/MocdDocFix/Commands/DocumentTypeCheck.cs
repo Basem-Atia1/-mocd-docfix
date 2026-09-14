@@ -17,7 +17,7 @@ public sealed record TypeRuling(
     string Source)
 {
     public static TypeRuling NotChecked(string documentType) =>
-        new(documentType, AdoVerdict.CannotTell, null, "DevOps was not consulted.",
+        new(documentType, AdoVerdict.NotChecked, null, "DevOps was not consulted.",
             Array.Empty<AdoHit>(), "not checked");
 }
 

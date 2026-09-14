@@ -16,6 +16,13 @@ public static class DocumentRecord
         WriteHeader(backups, row, reports);
     }
 
+    /// <summary>The step-1 account of one document, for whoever is writing it out.</summary>
+    public static (string, string?)[] PointsFor(ScanRow row) =>
+        Points(row, DocumentGroups.Get(row.Group));
+
+    /// <summary>The title that heads a step-1 report.</summary>
+    public const string CheckTitle = "STEP 1 — CHECK: what is wrong with this document";
+
     public static void WriteHeader(BackupStore backups, ScanRow row, DocumentReportStore? reports = null)
     {
         var group = DocumentGroups.Get(row.Group);
@@ -24,8 +31,7 @@ public static class DocumentRecord
         backups.Folder(row.DocumentId, row.FileName).WriteHeader($"DOCUMENT  {row.DocumentId}", points);
 
         // The same account, as step 1 of this document's own reports.
-        reports?.Write(row.DocumentId, row.FileName, "01-check",
-            "STEP 1 — CHECK: what is wrong with this document", points);
+        reports?.Write(row.DocumentId, row.FileName, "01-check", CheckTitle, points);
     }
 
     private static (string, string?)[] Points(ScanRow row, DocumentGroup group) =>
@@ -45,6 +51,9 @@ public static class DocumentRecord
             ("What we will do", row.Solution),
             ("", null),
 
+            ("DevOps says", DevOps(row)),
+            ("", null),
+
             ("Current path", row.OldFilePath),
             ("Filed under", string.IsNullOrWhiteSpace(row.CurrentSegment)
                 ? "(nothing — the date folder sits directly under the root)"
@@ -52,4 +61,29 @@ public static class DocumentRecord
             ("Should be under", row.CorrectCatalogueId?.ToString()),
             ("Checked at", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss"))
         };
+
+    /// <summary>
+    /// What the DevOps backlog made of this document type. Recorded whatever it said, agreement
+    /// included — a check that only speaks up to disagree cannot be told from one that never ran.
+    /// </summary>
+    private static string DevOps(ScanRow row)
+    {
+        var evidence = string.IsNullOrWhiteSpace(row.AdoEvidence)
+            ? ""
+            : $"   (work items {row.AdoEvidence})";
+
+        return row.AdoVerdict switch
+        {
+            nameof(AdoVerdict.Agrees) =>
+                $"agrees — {(row.AdoService.Length > 0 ? row.AdoService : "the same service")}{evidence}",
+
+            nameof(AdoVerdict.Disagrees) =>
+                $"DISAGREES — the backlog says {row.AdoService}{evidence}",
+
+            nameof(AdoVerdict.CannotTell) =>
+                "asked, but could not tell — the CRM answer was used",
+
+            _ => "not checked — DevOps was not set up for this run"
+        };
+    }
 }

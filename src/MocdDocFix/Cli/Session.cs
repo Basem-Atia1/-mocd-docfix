@@ -155,7 +155,7 @@ public sealed class Session : IDisposable
             {
                 _pending = rows;
                 return Task.FromResult(0);
-            }).RunAsync(_envName, identifiers, forceReview: false, _env.IsProduction, ct);
+            }, _docReports).RunAsync(_envName, identifiers, forceReview: false, _env.IsProduction, ct);
 
             foreach (var row in _pending)
             {

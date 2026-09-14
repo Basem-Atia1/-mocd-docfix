@@ -46,11 +46,14 @@ public sealed record ScanResult(
             .Select(g => g.First().AdoVerdict)
             .ToList();
 
-        if (byType.Count == 0 || byType.All(string.IsNullOrEmpty)) return null;
-
         int Count(AdoVerdict v) => byType.Count(x => x == v.ToString());
 
-        var checkedTypes = byType.Count(x => !string.IsNullOrEmpty(x));
+        // Nothing to report when the backlog was never consulted — saying "0 agree, 0 disagree"
+        // would read as a check that ran and found nothing, which is a different thing entirely.
+        var checkedTypes = byType.Count(x => !string.IsNullOrEmpty(x) &&
+                                             x != nameof(AdoVerdict.NotChecked));
+
+        if (checkedTypes == 0) return null;
 
         return $"DevOps cross-check: {checkedTypes} document type(s) — " +
                $"{Count(AdoVerdict.Agrees)} agree, " +

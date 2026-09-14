@@ -10,7 +10,14 @@ public enum AdoVerdict
     Disagrees,
 
     /// <summary>Nothing found, too little found, or too much found. The operator is asked.</summary>
-    CannotTell
+    CannotTell,
+
+    /// <summary>
+    /// DevOps was never consulted — not set up, or switched off. Kept apart from CannotTell on
+    /// purpose: "I asked and could not tell" and "I never asked" are different facts, and
+    /// reporting them with one word is how a check that silently never ran goes unnoticed.
+    /// </summary>
+    NotChecked
 }
 
 /// <param name="WorkItemId">The work item, so the operator can open it and judge for themselves.</param>

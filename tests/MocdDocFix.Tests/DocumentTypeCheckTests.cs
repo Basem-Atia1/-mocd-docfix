@@ -195,7 +195,10 @@ public class DocumentTypeCheckTests : IDisposable
         var ruling = await new DocumentTypeCheck(null, Decisions(), _prompts)
             .RuleOnAsync("Anything", Emap, CancellationToken.None);
 
-        Assert.Equal(AdoVerdict.CannotTell, ruling.Verdict);
+        // NotChecked, not CannotTell: "I never asked" and "I asked and could not tell" are
+        // different facts, and reporting them with one word is how a check that silently never
+        // ran goes unnoticed — which is exactly what happened.
+        Assert.Equal(AdoVerdict.NotChecked, ruling.Verdict);
         Assert.Equal("not checked", ruling.Source);
         Assert.Empty(_prompts.Questions);
     }
