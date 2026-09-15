@@ -8,12 +8,22 @@ using MocdDocFix.Verification;
 namespace MocdDocFix.Commands;
 
 /// <param name="FailedStep">Which of the six broke, for the error log and the ledger.</param>
-public sealed record RowOutcome(bool Corrected, string? FailedStep, string? Failure)
+/// <param name="StopAsked">
+/// The operator answered the eye-check with quit. That is a different thing from saying the
+/// copies do not match, and it must end the run rather than only this document — pressing q
+/// during an upload leaves the keystroke in the buffer for the next prompt to swallow, and
+/// reading it as "they look wrong" would annotate the row with something untrue and then carry
+/// on regardless.
+/// </param>
+public sealed record RowOutcome(bool Corrected, string? FailedStep, string? Failure, bool StopAsked = false)
 {
     public static RowOutcome Ok() => new(true, null, null);
 
     /// <summary>The operator said the two copies do not match. Not a failure — a decision.</summary>
     public static RowOutcome Declined() => new(false, null, null);
+
+    /// <summary>The operator asked to stop. Nothing was written to CRM for this document.</summary>
+    public static RowOutcome Stopped() => new(false, null, null, StopAsked: true);
 
     public static RowOutcome Broke(string step, string why) => new(false, step, why);
 
@@ -140,7 +150,22 @@ public sealed class RepairOneRow
             _opener.Open(saved.LocalPath);
             _opener.Open(staged.LocalPath);
 
-            if (_prompts.Confirm("Do these two files look the same?") != ConfirmChoice.Yes)
+            var looksRight = _prompts.Confirm("Do these two files look the same?");
+
+            // Quit is not "they look wrong". It is also where a q pressed during the upload
+            // lands, because the keystroke waits in the buffer for the next prompt to read.
+            // Either way it means stop, and saying the operator rejected the copy would be
+            // putting words in their mouth.
+            if (looksRight == ConfirmChoice.Quit)
+            {
+                row.Notes = Note(row.Notes,
+                    $"stopped {DateTimeOffset.Now:yyyy-MM-dd HH:mm} before this document was " +
+                    $"corrected — nothing in CRM was changed; the uploaded copy is at " +
+                    $"{newFile.FilePath} and nothing points at it");
+                return RowOutcome.Stopped();
+            }
+
+            if (looksRight != ConfirmChoice.Yes)
             {
                 row.Notes = Note(row.Notes,
                     $"not corrected {DateTimeOffset.Now:yyyy-MM-dd HH:mm} — you said the copies " +

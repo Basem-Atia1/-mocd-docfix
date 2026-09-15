@@ -111,13 +111,22 @@ public sealed class RepairRun
                 _errors.Append(i + 1, working.Count, row, outcome.FailedStep!, outcome.Failure!);
                 _progress.Failed(row, row.Error);
             }
-            else
+            else if (!outcome.StopAsked)
             {
                 declined++;
             }
 
             // Written before the question, so a stop here still leaves the ledger current.
             _ledger.Write(wholeLedger);
+
+            // Asked for at the eye-check — including by a q pressed mid-document, which the
+            // prompt swallows. It means stop, not "skip this one".
+            if (outcome.StopAsked)
+            {
+                _progress.Stopping();
+                stopped = true;
+                break;
+            }
 
             if (outcome.Failed && !KeepGoing()) { stopped = true; break; }
 

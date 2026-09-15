@@ -344,6 +344,28 @@ public class RepairRunTests : IDisposable
         Assert.Equal(RowState.Corrected, _ledger.Read().Single(r => r.Row == 1).State());
     }
 
+    /// <summary>
+    /// The hole this closes: a q pressed while a document was uploading was swallowed by the
+    /// eye-check prompt, read as "the copies do not match", and the run carried on to the next
+    /// document with the keystroke already consumed.
+    /// </summary>
+    [Fact]
+    public async Task Quitting_at_the_eye_check_stops_the_run_rather_than_skipping_one_document()
+    {
+        UploadsSucceed();
+        var rows = new[] { Fixable(1), Fixable(2), Fixable(3) };
+
+        _prompts.Answer(ConfirmChoice.Quit, ConfirmChoice.Yes, ConfirmChoice.Yes);
+
+        var summary = await Subject(WatchMode.Quiet).RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.True(summary.Stopped);
+        Assert.Equal(0, summary.Corrected);
+        Assert.Equal(0, summary.Declined);
+        Assert.Empty(_write.UpdatedFiles);
+        Assert.Equal(RowState.NotStarted, rows[1].State());
+    }
+
     [Fact]
     public async Task An_empty_ledger_is_not_an_error()
     {

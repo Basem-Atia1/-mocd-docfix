@@ -183,6 +183,42 @@ public class RepairOneRowTests : IDisposable
         Assert.NotEqual(string.Empty, row.Notes);
     }
 
+    /// <summary>
+    /// Quit at the eye-check is not "they look wrong". It is also where a q pressed during the
+    /// upload lands, because the keystroke waits in the buffer for the next prompt to read —
+    /// and calling that a rejected copy would put words in the operator's mouth and then carry
+    /// on regardless.
+    /// </summary>
+    [Fact]
+    public async Task Quitting_at_the_eye_check_asks_to_stop_rather_than_rejecting_the_copy()
+    {
+        _prompts.Answer(ConfirmChoice.Quit);
+        var row = Row();
+
+        var outcome = await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.True(outcome.StopAsked);
+        Assert.False(outcome.Corrected);
+        Assert.False(outcome.Failed);
+        Assert.Empty(_write.UpdatedFiles);
+        Assert.Equal(RowState.NotStarted, row.State());
+
+        Assert.Contains("stopped", row.Notes, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("did not match", row.Notes);
+    }
+
+    /// <summary>Saying no is still saying no, and must not be mistaken for asking to stop.</summary>
+    [Fact]
+    public async Task Saying_no_is_not_asking_to_stop()
+    {
+        _prompts.Answer(ConfirmChoice.No);
+
+        var outcome = await Subject().RunAsync(Row(), CancellationToken.None);
+
+        Assert.False(outcome.StopAsked);
+        Assert.False(outcome.Corrected);
+    }
+
     [Fact]
     public async Task Both_copies_are_opened_before_the_operator_is_asked()
     {

@@ -87,11 +87,19 @@ public sealed class RunProgress
         // through an upload does not abandon it; the document finishes and the run ends.
         if (!_prompts.StopRequested()) return true;
 
-        _prompts.Blank();
-        _prompts.Say("Stopping at your request. The document just finished is recorded; " +
-                     "nothing further will be started.", Tone.Warn);
-
+        Stopping();
         return false;
+    }
+
+    /// <summary>
+    /// Said when the run ends at the operator's asking, however they asked — q between
+    /// documents, or quit at the eye-check.
+    /// </summary>
+    public void Stopping()
+    {
+        _prompts.Blank();
+        _prompts.Say("Stopping at your request. Everything already done is recorded; " +
+                     "nothing further will be started.", Tone.Warn);
     }
 
     /// <summary>
