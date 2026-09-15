@@ -438,6 +438,97 @@ public class DocumentTypeCheckTests : IDisposable
         Assert.Contains("Employee Appointment Request", said);
     }
 
+    // ---- stage 2: the story bodies, read live ----
+
+    private static AdoWorkItemText Story(int id, string title, string body) => new(id, title, body);
+
+    /// <summary>
+    /// The case that prompted all of this. No work item is *called* "A Copy of Board of
+    /// Director's Decision", and the story that lists it is called something else entirely — so
+    /// the titles cannot settle it and the operator used to be asked about an answer the backlog
+    /// was holding all along.
+    /// </summary>
+    [Fact]
+    public async Task A_name_no_title_carries_is_settled_by_the_story_that_lists_it()
+    {
+        _ado.Bodies[Emap] = new()
+        {
+            Story(27628, "1.1.6 NPOP- Employee Appointment Request Form- Documents",
+                "The system shall display the below list of documents. " +
+                "A Copy of Board of Director's Decision. Passport copy.")
+        };
+
+        var ruling = await Check().RuleOnAsync("A Copy of Board of Director's Decision", Emap,
+            CancellationToken.None);
+
+        Assert.Equal(AdoVerdict.Agrees, ruling.Verdict);
+        Assert.Equal(Emap, ruling.Service);
+        Assert.Empty(_prompts.Questions);
+    }
+
+    [Fact]
+    public async Task The_bodies_are_only_read_when_the_titles_could_not_tell()
+    {
+        _ado.Titles["Medical Examination Certificate"] = new()
+        {
+            "NPOP|Employee Appointment Request|Documents|Verify the medical examination certificate",
+            "Portal | Confirm Employment | Verify the medical examination certificate"
+        };
+
+        await Check().RuleOnAsync("Medical Examination Certificate", Emap, CancellationToken.None);
+
+        Assert.Empty(_ado.CandidatesAskedFor);
+    }
+
+    [Fact]
+    public async Task One_story_naming_another_service_is_still_too_thin_to_overrule_crm()
+    {
+        _ado.Bodies[Emap] = new()
+        {
+            Story(30001, "1.2.1 NPOP- By-Laws Amendment Form- Documents",
+                "Upload A Copy of Board of Director's Decision here.")
+        };
+
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "1" });   // take CRM's answer
+
+        var ruling = await Check().RuleOnAsync("A Copy of Board of Director's Decision", Emap,
+            CancellationToken.None);
+
+        Assert.NotEmpty(_prompts.Questions);
+        Assert.Equal("you", ruling.Source);
+    }
+
+    [Fact]
+    public async Task Two_stories_naming_another_service_do_overrule_crm_without_asking()
+    {
+        _ado.Bodies[Emap] = new()
+        {
+            Story(30001, "1.2.1 NPOP- By-Laws Amendment Form- Documents",
+                "Upload A Copy of Board of Director's Decision here."),
+            Story(30002, "1.2.2 CRM- By-Laws Amendment Form- Documents",
+                "A Copy of Board of Director's Decision is shown to the reviewer.")
+        };
+
+        var ruling = await Check().RuleOnAsync("A Copy of Board of Director's Decision", Emap,
+            CancellationToken.None);
+
+        Assert.Equal(AdoVerdict.Disagrees, ruling.Verdict);
+        Assert.Equal("By-Laws Amendment", ruling.Service);
+        Assert.Empty(_prompts.Questions);
+    }
+
+    [Fact]
+    public async Task When_nothing_in_devops_matched_by_title_the_operator_is_told_the_bodies_were_not_read()
+    {
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "1" });
+
+        await Check().RuleOnAsync("A Copy of Board of Director's Decision", null,
+            CancellationToken.None);
+
+        Assert.Contains(_prompts.Messages,
+            m => m.Contains("nothing to read", StringComparison.OrdinalIgnoreCase));
+    }
+
     // ---- an outage, with somebody there to be asked ----
 
     /// <summary>A console fake: arrow keys and Enter, and yes to every "are you sure".</summary>

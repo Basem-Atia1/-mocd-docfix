@@ -209,10 +209,113 @@ public sealed class DocumentTypeCheck
     }
 
     /// <summary>
-    /// Searches the backlog, relaxing the phrase a step at a time, and stops at the first term
-    /// that produces an answer rather than silence.
+    /// Everything the backlog can be asked, in the order worth asking it, stopping at the first
+    /// stage that can actually settle the name.
+    ///
+    /// Titles first, because one WIQL query answers them. Then the bodies of the work items a
+    /// title search can reach, because that is where the document lists are actually written —
+    /// this server refuses a full-text query, so the only way to read a description is to fetch
+    /// it.
     /// </summary>
     private async Task<AdoOpinion> AskDevOpsAsync(string name, string? crmService, CancellationToken ct)
+    {
+        var fromTitles = await FromTitlesAsync(name, crmService, ct);
+        if (fromTitles.Verdict != AdoVerdict.CannotTell || _unreachable is not null) return fromTitles;
+
+        var fromBodies = await FromBodiesAsync(name, crmService, ct);
+        if (fromBodies.Verdict != AdoVerdict.CannotTell || _unreachable is not null) return fromBodies;
+
+        // Neither could tell. Report both, because "no title says so" and "no story body says so"
+        // are two different facts, and the operator is about to be asked to supply the answer.
+        return fromTitles with
+        {
+            Detail = $"{fromTitles.Detail} {fromBodies.Detail}",
+            Evidence = fromTitles.Evidence.Count > 0 ? fromTitles.Evidence : fromBodies.Evidence
+        };
+    }
+
+    /// <summary>
+    /// The story bodies, read live. WIQL will not search a description on this server, so the
+    /// search is done in two moves: a title query picks the work items worth reading, and their
+    /// descriptions, acceptance criteria and test steps are read here.
+    ///
+    /// The service CRM names is the best seed — its stories are where its document list lives —
+    /// and the surviving search terms are tried after it, for the case where titles found the
+    /// right work items but none of their titles named a service.
+    /// </summary>
+    private async Task<AdoOpinion> FromBodiesAsync(string name, string? crmService, CancellationToken ct)
+    {
+        var seeds = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(crmService)) seeds.Add(crmService!);
+        seeds.AddRange(DocumentTypeAuthority.SearchTerms(name).Take(2));
+
+        var hits = new List<AdoHit>();
+        var read = 0;
+
+        foreach (var seed in seeds.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            IReadOnlyList<AdoWorkItemText> candidates;
+
+            try
+            {
+                candidates = await _ado!.FindCandidatesAsync(seed, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;                      // the operator stopping the run is not a failure
+            }
+            catch (Exception ex)
+            {
+                _unreachable = $"{ex.GetType().Name}: {Innermost(ex)}";
+
+                return new AdoOpinion(AdoVerdict.CannotTell, null, Array.Empty<AdoHit>(),
+                    $"DevOps could not be reached — {_unreachable}");
+            }
+
+            read += candidates.Count;
+
+            foreach (var candidate in candidates.Where(c => DocumentTypeAuthority.Mentions(c.Text, name)))
+                hits.Add(new AdoHit(candidate.Id, candidate.Title, ServiceOf(candidate.Title)));
+
+            if (hits.Count > 0) break;
+        }
+
+        if (read == 0)
+            return new AdoOpinion(AdoVerdict.CannotTell, null, Array.Empty<AdoHit>(),
+                "No work item matched by title either, so there was nothing to read — the " +
+                "story bodies were not searched.");
+
+        if (hits.Count == 0)
+            return new AdoOpinion(AdoVerdict.CannotTell, null, Array.Empty<AdoHit>(),
+                $"It is not written in the {read} story bodies I could read either.");
+
+        return DocumentTypeAuthority.Weigh(name, crmService,
+            hits.DistinctBy(h => h.WorkItemId).ToList());
+    }
+
+    /// <summary>
+    /// The service a work item's own title names, read by whichever reader the title is shaped
+    /// for. Test cases are pipe-delimited ("NPOP|Employee Appointment Request|Documents|Verify …")
+    /// and user stories are dash-delimited ("1.1.6 NPOP- Employee Appointment Request Form-
+    /// Documents").
+    ///
+    /// Chosen on the pipe rather than tried in turn: the pipe reader treats a title with no pipes
+    /// as one long segment and hands back the whole thing, which is not a service and would never
+    /// fall through to the reader that could have read it.
+    /// </summary>
+    private static string? ServiceOf(string? title) =>
+        title is not null && title.Contains('|')
+            ? DocumentTypeAuthority.ServiceInTitle(title)
+            : LocalBacklogSearch.ServiceInStoryTitle(title);
+
+    /// <summary>
+    /// Searches the backlog by title, relaxing the phrase a step at a time, and stops at the
+    /// first term that produces an answer rather than silence.
+    /// </summary>
+    private async Task<AdoOpinion> FromTitlesAsync(string name, string? crmService, CancellationToken ct)
     {
         AdoOpinion? weakest = null;
 
