@@ -6,7 +6,7 @@ using MocdDocFix.Verification;
 
 namespace MocdDocFix.Commands;
 
-public sealed record DeleteSummary(int Deleted, int Skipped, int Refused, bool Aborted, string? AbortReason);
+public sealed record LegacyDeleteSummary(int Deleted, int Skipped, int Refused, bool Aborted, string? AbortReason);
 
 /// <summary>
 /// Phase 5 — the only irreversible step. Every candidate is re-verified against live state
@@ -55,7 +55,7 @@ public sealed class DeleteCommand
             .Where(r => r.State == MigrationState.Repointed && manifest.ContainsKey(r.DocumentId))
             .ToList();
 
-    public async Task<DeleteSummary> RunAsync(string env, bool isProduction, CancellationToken ct)
+    public async Task<LegacyDeleteSummary> RunAsync(string env, bool isProduction, CancellationToken ct)
     {
         var manifest = _backups.LoadManifest().ToDictionary(m => m.DocumentId);
 
@@ -71,7 +71,7 @@ public sealed class DeleteCommand
         if (candidates.Count == 0)
         {
             ExplainWhyNothingIsEligible(latest, manifest);
-            return new DeleteSummary(0, 0, 0, false, null);
+            return new LegacyDeleteSummary(0, 0, 0, false, null);
         }
 
         _prompts.Section($"About to permanently delete {candidates.Count} old file(s) from {env}",
@@ -95,7 +95,7 @@ public sealed class DeleteCommand
         if (!_prompts.YesNo($"  Delete {candidates.Count} old file(s) from {env} now?",
                 defaultYes: false, Tone.Danger))
         {
-            return new DeleteSummary(0, 0, 0, true, "Answered no at the delete confirmation.");
+            return new LegacyDeleteSummary(0, 0, 0, true, "Answered no at the delete confirmation.");
         }
 
         // Only now, once the answer is yes, is it worth reading a document-by-document account —
@@ -107,7 +107,7 @@ public sealed class DeleteCommand
         {
             _prompts.Blank();
             _prompts.Say("Nothing was deleted. Everything is exactly as it was.", Tone.Good);
-            return new DeleteSummary(0, 0, 0, true, "Stopped after reading what would be deleted.");
+            return new LegacyDeleteSummary(0, 0, 0, true, "Stopped after reading what would be deleted.");
         }
 
         // Production keeps a second question that cannot be answered by reflex: the count has to
@@ -116,7 +116,7 @@ public sealed class DeleteCommand
             !_prompts.TypedWord($"  PRODUCTION. Confirm the number of files to delete ({candidates.Count})",
                 candidates.Count.ToString()))
         {
-            return new DeleteSummary(0, 0, 0, true, "Operator did not confirm the production count.");
+            return new LegacyDeleteSummary(0, 0, 0, true, "Operator did not confirm the production count.");
         }
 
         int deleted = 0, refused = 0, skipped = 0;
@@ -203,7 +203,7 @@ public sealed class DeleteCommand
             deleted++;
         }
 
-        return new DeleteSummary(deleted, skipped, refused, false, null);
+        return new LegacyDeleteSummary(deleted, skipped, refused, false, null);
     }
 
     private enum HowToDelete { OneAtATime, Everything, Stop }
