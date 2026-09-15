@@ -15,6 +15,17 @@ namespace MocdDocFix.Domain;
 public static class LedgerOrder
 {
     /// <summary>
+    /// Whether the work on this row is over, whatever its verdict happens to say.
+    ///
+    /// Sorted on before the verdict is, because the two can disagree: a row corrected before the
+    /// tool wrote "done", then deleted, still reads "fix" — and ranking on the verdict alone put
+    /// that finished row at the very top of the sheet, among the work still outstanding. The
+    /// final state is the record of what happened; the verdict is only an instruction.
+    /// </summary>
+    private static bool Finished(LedgerRow row) =>
+        row.State() is RowState.Corrected or RowState.Deleted;
+
+    /// <summary>
     /// Where each verdict sits. Unrecognised goes last but above nothing — a typo must be
     /// visible, and burying it among hundreds of skipped rows is how it would be missed.
     /// </summary>
@@ -41,7 +52,8 @@ public static class LedgerOrder
     {
         var ordered = rows
             .Select((row, at) => (row, at))
-            .OrderBy(x => Rank(x.row.Verdict2()))
+            .OrderBy(x => Finished(x.row) ? 1 : 0)
+            .ThenBy(x => Rank(x.row.Verdict2()))
             .ThenBy(x => x.at)
             .Select(x => x.row)
             .ToList();

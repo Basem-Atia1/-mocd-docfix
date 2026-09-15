@@ -69,6 +69,10 @@ public class DeleteOldFilesTests : IDisposable
         Assert.Equal(1, summary.Deleted);
         Assert.Contains(OldPath, _files.Deleted);
         Assert.Equal(RowState.Deleted, row.State());
+
+        // And the verdict, so a finished row cannot go on reading "fix" and sorting to the top
+        // of the sheet among the work still outstanding.
+        Assert.Equal(RowVerdict.Done, row.Verdict2());
     }
 
     /// <summary>

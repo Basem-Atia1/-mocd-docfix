@@ -89,6 +89,7 @@ public static class LedgerRecovery
         if (row.State() == RowState.Deleted) return null;
 
         row.FinalState = RowStates.Text(RowState.Deleted);
+        row.Verdict = RowVerdicts.Done;
         row.Notes = Add(row.Notes, $"recovered from the change journal {Now()}");
 
         return "its old file was deleted but the ledger never recorded it — marked old files deleted";

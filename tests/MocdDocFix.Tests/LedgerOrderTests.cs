@@ -28,6 +28,55 @@ public class LedgerOrderTests
     /// ends up, rather than into the middle.
     /// </summary>
     /// <summary>
+    /// The one seen in the live ledger: row 1 read "fix" and "old files deleted" at once — a
+    /// completely finished document sitting at the very top of the sheet among the work still
+    /// to do, because it was corrected before the tool wrote "done" and the delete step left
+    /// the verdict alone. Ranking on the verdict alone cannot catch that; the final state can.
+    /// </summary>
+    [Fact]
+    public void A_finished_row_sinks_even_when_its_verdict_still_says_fix()
+    {
+        var legacy = Row(RowVerdicts.Fix, "finished long ago");
+        legacy.FinalState = RowStates.Text(RowState.Deleted);
+
+        var sorted = LedgerOrder.Sorted(new[]
+        {
+            legacy,
+            Row(RowVerdicts.Fix, "actually to do"),
+            Row(RowVerdicts.Ignore, "excluded")
+        });
+
+        Assert.Equal("actually to do", sorted[0].DocName);
+        Assert.Equal("finished long ago", sorted[^1].DocName);
+    }
+
+    [Fact]
+    public void A_corrected_row_sinks_too_even_before_its_old_file_goes()
+    {
+        var corrected = Row(RowVerdicts.Fix, "corrected");
+        corrected.FinalState = RowStates.Text(RowState.Corrected);
+
+        var sorted = LedgerOrder.Sorted(new[] { corrected, Row(RowVerdicts.Fix, "to do") });
+
+        Assert.Equal("to do", sorted[0].DocName);
+    }
+
+    /// <summary>
+    /// A row that failed is not finished — it is work outstanding, and must stay where it can
+    /// be seen.
+    /// </summary>
+    [Fact]
+    public void A_failed_row_stays_with_the_work()
+    {
+        var failed = Row(RowVerdicts.Fix, "failed");
+        failed.FinalState = RowStates.Text(RowState.Failed);
+
+        var sorted = LedgerOrder.Sorted(new[] { Row(RowVerdicts.Ignore, "excluded"), failed });
+
+        Assert.Equal("failed", sorted[0].DocName);
+    }
+
+    /// <summary>
     /// A finished row is the one thing nobody needs to look at again. Leaving it among the
     /// outstanding work is what made a corrected document still read as "to do".
     /// </summary>

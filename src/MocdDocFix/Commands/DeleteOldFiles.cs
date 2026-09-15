@@ -120,6 +120,12 @@ public sealed class DeleteOldFiles
             null));
 
         row.FinalState = RowStates.Text(RowState.Deleted);
+
+        // The verdict too: a finished row that still reads "fix" says the opposite of the truth,
+        // and until now only the correction step wrote "done" — so a row corrected before that
+        // existed, then deleted here, kept saying there was work to do on it.
+        row.Verdict = RowVerdicts.Done;
+
         return null;
     }
 
