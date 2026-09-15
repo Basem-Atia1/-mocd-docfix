@@ -5,7 +5,13 @@ namespace MocdDocFix.Domain;
 
 /// <param name="Header">The name the operator reads, exactly as the CSV writes it.</param>
 /// <param name="Read">That cell's value, as text.</param>
-public sealed record LedgerColumn(string Header, Func<LedgerRow, string> Read);
+/// <param name="Set">
+/// Puts a cell back on a row when the workbook is read. Anything that will not convert is left
+/// at the property's default rather than throwing — one unreadable cell must not cost the
+/// whole ledger.
+/// </param>
+public sealed record LedgerColumn(
+    string Header, Func<LedgerRow, string> Read, Action<LedgerRow, string> Set);
 
 /// <summary>
 /// The ledger's columns, in order, read off <see cref="LedgerRow"/> itself.
@@ -25,6 +31,21 @@ public static class LedgerColumns
             .OrderBy(p => p.GetCustomAttribute<IndexAttribute>()!.Index)
             .Select(p => new LedgerColumn(
                 p.GetCustomAttribute<NameAttribute>()?.Names.FirstOrDefault() ?? p.Name,
-                row => p.GetValue(row)?.ToString() ?? string.Empty))
+                row => p.GetValue(row)?.ToString() ?? string.Empty,
+                (row, text) => p.SetValue(row, Convert(p.PropertyType, text))))
             .ToList();
+
+    /// <summary>
+    /// A cell back into its property. The ledger holds three kinds — text, the row number and
+    /// two GUIDs — and an unreadable one yields the default rather than an exception, because a
+    /// single bad cell must not make the whole workbook unopenable.
+    /// </summary>
+    private static object? Convert(Type type, string text)
+    {
+        if (type == typeof(string)) return text;
+        if (type == typeof(int)) return int.TryParse(text, out var n) ? n : 0;
+        if (type == typeof(Guid)) return Guid.TryParse(text, out var g) ? g : Guid.Empty;
+
+        return null;
+    }
 }

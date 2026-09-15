@@ -4,15 +4,15 @@ using MocdDocFix.Domain;
 namespace MocdDocFix.Storage;
 
 /// <summary>
-/// The ledger as a workbook, written beside the CSV for reading and filtering.
+/// The ledger itself: the file the operator edits and every mode reads.
 ///
-/// The CSV is the file the tool reads and writes; this is regenerated from it and is **not**
-/// read back. Anything typed into the workbook is lost the next time a row finishes, and the
-/// sheet says so in its first cell comment — the alternative, reading both, is two sources of
-/// truth for one ledger.
+/// It is a workbook rather than a CSV because three of the things asked for cannot live in
+/// comma-separated text at all — a dropdown on the two edited columns, widths fitted to the
+/// contents, and a frozen header. A dropdown on a file nothing reads back would be decoration,
+/// so the file carrying it has to be the authority.
 ///
-/// It exists because three of the things asked for cannot live in a CSV at all: a dropdown on
-/// the two edited columns, column widths fitted to the contents, and a frozen header.
+/// The CSV written beside it is a copy: plain text for grepping and diffing, and something
+/// readable if the workbook is ever damaged. Nothing reads it.
 /// </summary>
 public sealed class LedgerWorkbook
 {
@@ -24,6 +24,70 @@ public sealed class LedgerWorkbook
     public LedgerWorkbook(string path) => Path = path;
 
     public string Path { get; }
+
+    public bool Exists => File.Exists(Path);
+
+    /// <summary>
+    /// The rows as the operator left them. Columns are found by header, not by position, so a
+    /// workbook whose columns have been dragged around still reads correctly — and one missing
+    /// a column reads the rest rather than failing.
+    /// </summary>
+    public IReadOnlyList<LedgerRow> Read()
+    {
+        if (!Exists) return Array.Empty<LedgerRow>();
+
+        using var workbook = new XLWorkbook(Path);
+        var sheet = workbook.Worksheets.FirstOrDefault();
+        var used = sheet?.RangeUsed();
+        if (sheet is null || used is null || used.RowCount() < 2) return Array.Empty<LedgerRow>();
+
+        var byHeader = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var c = 1; c <= used.ColumnCount(); c++)
+        {
+            var header = sheet.Cell(1, c).GetString().Trim();
+            if (header.Length > 0) byHeader[header] = c;
+        }
+
+        var rows = new List<LedgerRow>(used.RowCount() - 1);
+
+        for (var r = 2; r <= used.RowCount(); r++)
+        {
+            var row = new LedgerRow();
+            var anything = false;
+
+            foreach (var column in LedgerColumns.All)
+            {
+                if (!byHeader.TryGetValue(column.Header, out var c)) continue;
+
+                var text = sheet.Cell(r, c).GetString().Trim();
+                column.Set(row, text);
+                if (text.Length > 0) anything = true;
+            }
+
+            // A blank line left behind by Excel is not a document.
+            if (anything && row.DocId != Guid.Empty) rows.Add(row);
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Whether the workbook could be written right now. Excel holds an exclusive lock while it
+    /// is open, and finding that out before a run starts is far kinder than finding out after
+    /// the first document has already been uploaded.
+    /// </summary>
+    public bool CanWrite()
+    {
+        if (!Exists) return true;
+
+        try
+        {
+            using var _ = File.Open(Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            return true;
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
 
     public void Write(IReadOnlyList<LedgerRow> rows)
     {
@@ -60,8 +124,9 @@ public sealed class LedgerWorkbook
                 column.Width = WidestColumn;
 
         sheet.Cell(1, 1).CreateComment().AddText(
-            "Regenerated from the CSV every time a row finishes. Edits made here are lost — " +
-            "edit the .csv beside it.");
+            "This is the ledger. Edit verdict and final state here, save, and close it before " +
+            "running docfix — the tool rewrites this file after every document. The .csv " +
+            "beside it is a copy the tool maintains; editing that one changes nothing.");
 
         workbook.SaveAs(Path);
     }

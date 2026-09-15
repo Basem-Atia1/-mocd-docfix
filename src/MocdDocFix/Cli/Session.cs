@@ -52,7 +52,7 @@ public sealed class Session : IDisposable
         // One folder per environment, so dev and production can never be read for each other.
         var reports = Path.Combine(appConfig.DataRoot, "reports", envName);
 
-        _ledger = new LedgerStore(Path.Combine(reports, $"repair-{envName}.csv"));
+        _ledger = new LedgerStore(Path.Combine(reports, $"repair-{envName}.xlsx"));
         _journal = new ChangeJournal(Path.Combine(reports, $"changes-{envName}.jsonl"));
         _errors = new ErrorLog(Path.Combine(reports, $"errors-{envName}.txt"));
 
@@ -85,6 +85,19 @@ public sealed class Session : IDisposable
     /// </param>
     private async Task<IReadOnlyList<LedgerRow>> OpenLedgerAsync(bool mayRebuild, CancellationToken ct)
     {
+        // Excel holds an exclusive lock on an open workbook, and the ledger is rewritten after
+        // every completed row. Finding that out now is far kinder than finding out after the
+        // first document has already been uploaded and cannot be recorded.
+        if (!_ledger.CanWrite())
+        {
+            _prompts.Blank();
+            _prompts.Warn("The ledger is open in Excel, so this run could not record what it did.",
+                Tone.Danger);
+            _prompts.Field("file", _ledger.Path, Tone.Muted);
+            _prompts.Say("Close it and start again. Nothing has been changed.", Tone.Muted);
+            return Array.Empty<LedgerRow>();
+        }
+
         if (_ledger.Exists)
         {
             var existing = _ledger.Read();
@@ -242,11 +255,11 @@ public sealed class Session : IDisposable
 
             var details = new List<string>
             {
-                $"ledger   → {_ledger.Path}",
-                $"workbook → {_ledger.WorkbookPath}   (read-only view; edit the .csv)"
+                $"ledger → {_ledger.Path}   (edit this one)",
+                $"copy   → {_ledger.CsvPath}   (plain text, regenerated)"
             };
 
-            if (_ledger.LastWorkbookProblem is { } stale) details.Add($"NOTE: {stale}");
+            if (_ledger.LastCsvProblem is { } stale) details.Add($"NOTE: {stale}");
 
             foreach (var skip in summary.Skips) details.Add($"skipped: {skip.Count} — {skip.Why}");
 

@@ -27,7 +27,7 @@ public class DeleteOldFilesTests : IDisposable
     {
         Directory.CreateDirectory(_dir);
         _journal = new ChangeJournal(Path.Combine(_dir, "changes-dev.jsonl"));
-        _ledger = new LedgerStore(Path.Combine(_dir, "repair-dev.csv"));
+        _ledger = new LedgerStore(Path.Combine(_dir, "repair-dev.xlsx"));
 
         _files.Files[OldPath] = ("AQID", "9f86d081");
 

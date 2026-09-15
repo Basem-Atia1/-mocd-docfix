@@ -29,7 +29,7 @@ public class RepairRunTests : IDisposable
         Directory.CreateDirectory(_dir);
         _backups = new BackupStore(Path.Combine(_dir, "backup"));
         _journal = new ChangeJournal(Path.Combine(_dir, "changes-dev.jsonl"));
-        _ledger = new LedgerStore(Path.Combine(_dir, "repair-dev.csv"));
+        _ledger = new LedgerStore(Path.Combine(_dir, "repair-dev.xlsx"));
         _errors = new ErrorLog(Path.Combine(_dir, "errors-dev.txt"));
 
         // CRM would hold what was just written; the fakes are independent, so mirror it.

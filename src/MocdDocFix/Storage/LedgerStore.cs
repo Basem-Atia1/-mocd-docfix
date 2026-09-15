@@ -7,16 +7,23 @@ using MocdDocFix.Domain;
 namespace MocdDocFix.Storage;
 
 /// <summary>
-/// The ledger on disk. One CSV per environment, rewritten in full every time a row finishes.
+/// The ledger on disk: one workbook per environment, with a CSV copy beside it.
 ///
-/// Rewriting the whole file for one changed cell is deliberate. The operator has the file open
-/// in Excel between runs, so it must be a plain well-formed CSV at every instant, not an
-/// append-log that needs replaying — and at a few hundred rows the cost is not measurable.
-/// A crash therefore loses at most the row in flight.
+/// **The workbook is the ledger.** It is what the operator edits — the verdict and final state
+/// columns are dropdowns, which only works if the file carrying them is the file read back —
+/// and it is what every mode reads. The CSV is regenerated from it on every write and is never
+/// read: it exists so the ledger is also greppable, diffable plain text, and so a damaged
+/// workbook is not the end of the record.
+///
+/// Both are rewritten in full the moment a row finishes. Rewriting the whole file for one cell
+/// is deliberate: the operator opens it between runs, so it must be complete at every instant,
+/// and a crash then loses at most the row in flight.
 /// </summary>
 public sealed class LedgerStore
 {
     private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: true);
+
+    private readonly LedgerWorkbook _workbook;
 
     /// <summary>
     /// Taken before the first write of a sitting, never again. The ledger is the only route back
@@ -25,39 +32,31 @@ public sealed class LedgerStore
     /// </summary>
     private bool _backedUpThisSitting;
 
-    private readonly LedgerWorkbook _workbook;
-
+    /// <param name="path">
+    /// Either the .xlsx or the .csv — the other is derived. Both spellings are accepted so a
+    /// caller need not know which of the pair is the authority.
+    /// </param>
     public LedgerStore(string path)
     {
-        Path = path;
+        Path = System.IO.Path.ChangeExtension(path, ".xlsx");
+        CsvPath = System.IO.Path.ChangeExtension(path, ".csv");
 
-        _workbook = new LedgerWorkbook(System.IO.Path.ChangeExtension(path, ".xlsx"));
+        _workbook = new LedgerWorkbook(Path);
     }
 
+    /// <summary>The workbook — the file the operator edits and every mode reads.</summary>
     public string Path { get; }
 
-    /// <summary>Where the readable copy goes. Regenerated from the CSV, never read back.</summary>
-    public string WorkbookPath => _workbook.Path;
+    /// <summary>The plain-text copy. Regenerated on every write, never read back.</summary>
+    public string CsvPath { get; }
 
-    public bool Exists => File.Exists(Path);
+    public bool Exists => _workbook.Exists;
 
-    public IReadOnlyList<LedgerRow> Read()
-    {
-        if (!Exists) return Array.Empty<LedgerRow>();
+    /// <summary>False when Excel has the workbook open, so a run can say so before it starts.</summary>
+    public bool CanWrite() => _workbook.CanWrite();
 
-        using var reader = new StreamReader(Path, Utf8);
-        using var csv = new CsvReader(reader, Config());
-        return csv.GetRecords<LedgerRow>().ToList();
-    }
+    public IReadOnlyList<LedgerRow> Read() => _workbook.Read();
 
-    /// <summary>
-    /// Sorts by verdict, renumbers, and writes both files — the CSV the tool reads back, and
-    /// the workbook beside it for reading and filtering.
-    ///
-    /// A failure to write the workbook must not lose the ledger: the CSV goes down first, and
-    /// the workbook is attempted afterwards. Excel holding the .xlsx open is the ordinary case
-    /// of that, and it is not worth failing a run over.
-    /// </summary>
     public void Write(IReadOnlyList<LedgerRow> rows)
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
@@ -65,35 +64,36 @@ public sealed class LedgerStore
 
         var ordered = LedgerOrder.Sorted(rows);
 
-        using (var writer = new StreamWriter(Path, append: false, Utf8))
-        using (var csv = new CsvWriter(writer, Config()))
-        {
-            csv.WriteRecords(ordered);
-        }
+        // The workbook first: it is the ledger, and a failure to write it must stop the caller
+        // rather than leave the copy ahead of the original.
+        _workbook.Write(ordered);
 
         try
         {
-            _workbook.Write(ordered);
+            using var writer = new StreamWriter(CsvPath, append: false, Utf8);
+            using var csv = new CsvWriter(writer, Config());
+            csv.WriteRecords(ordered);
         }
         catch (IOException)
         {
-            // Almost always Excel with the file open. The CSV is written and is the one that
-            // matters; the workbook catches up on the next row.
-            LastWorkbookProblem = $"could not write {_workbook.Path} — is it open in Excel?";
+            // The copy is a convenience. Losing it for one write is not worth failing a run,
+            // and the next completed row rewrites it.
+            LastCsvProblem = $"could not rewrite {CsvPath} — is it open in something?";
         }
     }
 
-    /// <summary>Why the workbook could not be rewritten, when it could not. Null otherwise.</summary>
-    public string? LastWorkbookProblem { get; private set; }
+    /// <summary>Why the plain-text copy could not be rewritten, when it could not.</summary>
+    public string? LastCsvProblem { get; private set; }
 
-    /// <summary>Renames the current ledger out of the way. Returns where it was kept.</summary>
+    /// <summary>Renames the current pair out of the way. Returns where the workbook was kept.</summary>
     public string StartNewKeepingOld()
     {
-        var kept = System.IO.Path.Combine(
-            System.IO.Path.GetDirectoryName(Path)!,
-            $"{System.IO.Path.GetFileNameWithoutExtension(Path)}-{DateTime.Now:yyyyMMdd-HHmmss}.csv");
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        var kept = Renamed(Path, stamp, ".xlsx");
 
         File.Move(Path, kept);
+        if (File.Exists(CsvPath)) File.Move(CsvPath, Renamed(CsvPath, stamp, ".csv"));
+
         _backedUpThisSitting = false;
         return kept;
     }
@@ -102,12 +102,16 @@ public sealed class LedgerStore
     {
         if (_backedUpThisSitting || !Exists) return;
 
-        File.Copy(Path, System.IO.Path.Combine(
-            System.IO.Path.GetDirectoryName(Path)!,
-            $"{System.IO.Path.GetFileNameWithoutExtension(Path)}-{DateTime.Now:yyyyMMdd-HHmmss}.bak.csv"));
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        File.Copy(Path, Renamed(Path, stamp, ".bak.xlsx"));
 
         _backedUpThisSitting = true;
     }
+
+    private static string Renamed(string path, string stamp, string extension) =>
+        System.IO.Path.Combine(
+            System.IO.Path.GetDirectoryName(path)!,
+            System.IO.Path.GetFileNameWithoutExtension(path) + "-" + stamp + extension);
 
     /// <summary>
     /// A missing column is ignored rather than fatal, so a ledger written by an earlier build

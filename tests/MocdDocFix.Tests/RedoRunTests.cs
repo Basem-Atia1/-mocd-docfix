@@ -30,7 +30,7 @@ public class RedoRunTests : IDisposable
         Directory.CreateDirectory(_dir);
         _backups = new BackupStore(Path.Combine(_dir, "backup"));
         _journal = new ChangeJournal(Path.Combine(_dir, "changes-dev.jsonl"));
-        _ledger = new LedgerStore(Path.Combine(_dir, "repair-dev.csv"));
+        _ledger = new LedgerStore(Path.Combine(_dir, "repair-dev.xlsx"));
 
         // The old file is still on the server — which is what makes a revert possible at all.
         _files.Files[OldPath] = (Convert.ToBase64String(new byte[] { 1, 2, 3 }), "9f86d081");

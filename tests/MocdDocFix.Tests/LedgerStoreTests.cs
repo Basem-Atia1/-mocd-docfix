@@ -11,7 +11,7 @@ public class LedgerStoreTests : IDisposable
     public LedgerStoreTests() => Directory.CreateDirectory(_dir);
     public void Dispose() { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); }
 
-    private LedgerStore Store() => new(Path.Combine(_dir, "repair-dev.csv"));
+    private LedgerStore Store() => new(Path.Combine(_dir, "repair-dev.xlsx"));
 
     private static LedgerRow Row(int number) => new()
     {
@@ -49,7 +49,7 @@ public class LedgerStoreTests : IDisposable
         var store = Store();
         store.Write(new[] { Row(1) });
 
-        var first = File.ReadAllBytes(store.Path).Take(3).ToArray();
+        var first = File.ReadAllBytes(store.CsvPath).Take(3).ToArray();
         Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, first);
     }
 
@@ -111,7 +111,7 @@ public class LedgerStoreTests : IDisposable
         store.Write(new[] { Row(1), Row(2) });
         store.Write(new[] { Row(1), Row(2), Row(3) });
 
-        Assert.Single(Directory.GetFiles(_dir, "*.bak.csv"));
+        Assert.Single(Directory.GetFiles(_dir, "*.bak.xlsx"));
     }
 
     /// <summary>The first write has nothing to copy, so it takes no backup.</summary>
@@ -119,7 +119,7 @@ public class LedgerStoreTests : IDisposable
     public void A_ledger_that_did_not_exist_yet_gets_no_backup_copy()
     {
         Store().Write(new[] { Row(1) });
-        Assert.Empty(Directory.GetFiles(_dir, "*.bak.csv"));
+        Assert.Empty(Directory.GetFiles(_dir, "*.bak.xlsx"));
     }
 
     [Fact]
