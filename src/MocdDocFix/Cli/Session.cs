@@ -141,7 +141,7 @@ public sealed class Session : IDisposable
 
         if (_ledger.Exists)
         {
-            var existing = _ledger.Read();
+            var existing = Reconciled(_ledger.Read());
             var corrected = existing.Count(r => r.State() == RowState.Corrected);
             var done = existing.Count(r => r.State() == RowState.Deleted);
 
@@ -173,6 +173,36 @@ public sealed class Session : IDisposable
         _ledger.Write(rows);
 
         _prompts.Say($"{rows.Count} document(s) written to {_ledger.Path}", Tone.Good);
+        return rows;
+    }
+
+    /// <summary>
+    /// Brings the ledger back in step with the change journal before anything reads it.
+    ///
+    /// The journal is written before the ledger, so it always knows at least as much. Where a
+    /// run was cut short — a crash, a stop, a ledger locked in Excel — the work is done and the
+    /// ledger does not say so, and the next run would redo it: uploading the file a second time
+    /// and orphaning the copy it made before. This closes that gap, every time, without asking
+    /// CRM anything.
+    /// </summary>
+    private IReadOnlyList<LedgerRow> Reconciled(IReadOnlyList<LedgerRow> rows)
+    {
+        var recovered = LedgerRecovery.Apply(rows, _journal.Read());
+        if (recovered.Rows == 0) return rows;
+
+        _prompts.Section($"{recovered.Rows} row(s) were out of step with the change journal",
+            Tone.Warn);
+        _prompts.Say("A run did the work but was cut short before it could record it. The " +
+                     "journal had it, so the ledger has been put right:");
+        _prompts.Blank();
+
+        foreach (var note in recovered.Notes.Take(20)) _prompts.Bullet(note, Tone.Muted);
+        if (recovered.Notes.Count > 20)
+            _prompts.Bullet($"… and {recovered.Notes.Count - 20} more", Tone.Muted);
+
+        _ledger.Write(rows);
+        _prompts.Blank();
+
         return rows;
     }
 
