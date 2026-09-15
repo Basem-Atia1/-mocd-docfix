@@ -201,6 +201,34 @@ correct ones, broken ones, and legacy ones with no file path — classifies each
 - **work from the file**, or
 - **one document** — the operator types a GUID.
 
+### How closely to watch
+
+Asked once, straight after that, and it applies to the whole loop. It changes what is printed
+and what stops; it never changes what is written to CRM or to the ledger.
+
+| | printed per document | stops between documents | stops for the eye-check |
+|---|---|---|---|
+| **Watch** | the full step-by-step block | yes — enter for the next one | yes |
+| **Quiet** | one line | no | yes |
+| **Unattended** | one line | no | **no** |
+
+**Watch** is for the first dozen, or for production: every step of every document, then a
+pause to read it before the next begins.
+
+**Quiet** is the working default over hundreds of rows. One line each, and the only thing
+that interrupts the flow is the question about the two copies.
+
+**Unattended** runs end to end with nobody at the keyboard. The four automated checks decide
+on their own: the vendor's hash of the new copy matches the old, the new file is genuinely a
+different file at a different path, the new path parses to the correct catalogue, and a
+round-trip download is byte-identical to the backup. The operator never sees the two copies
+side by side. It is offered because a round-trip byte comparison is a stronger check than a
+human glance, not because the glance is worthless — but the glance is the only thing that
+catches a file that is intact and *wrong*, so this is a deliberate trade.
+
+All three halt on an error and ask, exactly as § Errors and halting describes. Unattended is
+unattended, not unstoppable.
+
 ### Per row
 
 Working from the file, in ledger order, for every row whose `verdict` is `fix`:
@@ -243,8 +271,9 @@ The steps, in order:
    `final state = corrected and pending the delete of old docs`, append the `corrected` line
    to the journal, and rewrite the CSV.
 
-The eye-check at step 4 is the only question inside the loop. The operator chose what happens
-to every row when they entered the mode, so nothing else is asked twice.
+The eye-check at step 4 is the only question inside the loop, and Unattended skips it. The
+operator chose what happens to every row when they entered the mode, so nothing else is asked
+twice.
 
 Rows whose verdict is `review`, `skip`, `ignore`, `redo` or unrecognised are not touched. The
 run ends with a tally of each, and unrecognised verdicts are listed with their row numbers.
@@ -380,7 +409,9 @@ end and ends `corrected and pending the delete of old docs`; a `review` row is u
 `no` to the eye-check writes nothing to CRM and leaves the final state blank; an upload
 failure writes `failed`, the error column, the error log, and asks; answering *stop* ends the
 run with earlier rows intact; the record update writes `mocd_fileid` for a plugin row and not
-for a portal row.
+for a portal row; Watch pauses between documents and Quiet does not; Unattended asks nothing
+at all on a clean row but still halts and asks on a failed one; all three write the same
+ledger for the same input, so the choice cannot change the outcome.
 
 **`RedoRunTests`** — a row whose old file is gone is refused and nothing is written; a
 disagreement between ledger and `record.json` is reported and the snapshot is what is written;
@@ -422,6 +453,13 @@ not answer at the keyboard.
 **In-place modification is the only route back.** A correction overwrites the old record, so
 CRM no longer remembers the before-state. The ledger, the journal and `record.json` are it.
 Mitigated by the journal and the `.bak` copies, not eliminated by them.
+
+**Unattended has no human in it.** The automated checks prove the new copy is byte-identical
+to the old one and filed under the correct catalogue. They cannot prove the correct catalogue
+is the *right* catalogue — that comes from `mocd_servicecatalogue`, which nothing now
+contradicts. A wrong document type will therefore move files quickly and confidently in
+Unattended. Watch or Quiet on the first run of any service, Unattended once the ledger has
+been read and agreed with, is the intended use.
 
 **The portal id convention breaks.** After a correction, a portal-created record's id no
 longer equals the file id in its path. Verified on 2026-09-15 against the CRM checkout that
