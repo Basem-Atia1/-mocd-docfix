@@ -99,6 +99,66 @@ public class LedgerMergeTests
     }
 
     /// <summary>
+    /// The flaw this replaced: an operator who read the reason and moved a row from review to
+    /// fix — the whole point of the column — watched the next scan put it straight back. A
+    /// column the tool silently overrules is not a column anybody can edit.
+    /// </summary>
+    [Fact]
+    public void A_verdict_typed_by_hand_is_not_overwritten_by_the_scan()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Fix);      // the operator upgraded it
+        var scanned = Row(One, verdict: RowVerdicts.Review);    // the scan still says review
+
+        LedgerMerge.Into(new[] { existing }, new[] { scanned });
+
+        Assert.Equal(RowVerdict.Fix, existing.Verdict2());
+    }
+
+    /// <summary>
+    /// But a disagreement is not swallowed either — the operator is shown it and decides, since
+    /// a scan can be the newer of the two when somebody has fixed a document type since.
+    /// </summary>
+    [Fact]
+    public void A_disagreement_is_reported_so_it_can_be_asked_about()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Fix);
+        var scanned = Row(One, verdict: RowVerdicts.Review);
+
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { scanned });
+
+        var disagreement = Assert.Single(merged.Disagreements);
+        Assert.Equal(RowVerdicts.Review, disagreement.ScanSays);
+        Assert.Same(existing, disagreement.Row);
+    }
+
+    [Fact]
+    public void Agreement_is_not_reported_as_a_disagreement()
+    {
+        var merged = LedgerMerge.Into(
+            new[] { Row(One, verdict: RowVerdicts.Fix) },
+            new[] { Row(One, verdict: RowVerdicts.Fix) });
+
+        Assert.Empty(merged.Disagreements);
+    }
+
+    /// <summary>Answering "take what CRM says" applies the scan's answers, and only to those rows.</summary>
+    [Fact]
+    public void Taking_the_scans_verdicts_replaces_exactly_the_rows_that_differed()
+    {
+        var disputed = Row(One, verdict: RowVerdicts.Fix);
+        var agreed = Row(Two, verdict: RowVerdicts.Skip);
+
+        var merged = LedgerMerge.Into(
+            new[] { disputed, agreed },
+            new[] { Row(One, verdict: RowVerdicts.Review), Row(Two, verdict: RowVerdicts.Skip) });
+
+        LedgerMerge.TakeScanVerdicts(merged.Disagreements);
+
+        Assert.Equal(RowVerdict.Review, disputed.Verdict2());
+        Assert.Equal(RowVerdict.Skip, agreed.Verdict2());
+    }
+
+    /// <summary>
     /// A rescan resetting a finished row to "fix" would offer work that is not outstanding —
     /// and the operator would then watch the tool upload a file it had already corrected.
     /// </summary>
@@ -128,18 +188,23 @@ public class LedgerMergeTests
     }
 
     /// <summary>
-    /// A document somebody has fixed in CRM since the last scan stops being work to do, and the
-    /// ledger should say so rather than keep offering it.
+    /// A document somebody has fixed in CRM since the ledger was built stops being work to do.
+    /// The ledger is not changed behind the operator's back, but the disagreement is put in
+    /// front of them — and the reason and solution beside it are refreshed, so the row itself
+    /// says why CRM now thinks differently.
     /// </summary>
     [Fact]
-    public void A_row_crm_now_calls_correct_takes_the_scans_verdict()
+    public void A_row_crm_now_calls_correct_is_raised_rather_than_quietly_changed()
     {
         var existing = Row(One, verdict: RowVerdicts.Fix);
         var scanned = Row(One, verdict: RowVerdicts.Skip);
+        scanned.ReasonOfBug = "Path already correct";
 
-        LedgerMerge.Into(new[] { existing }, new[] { scanned });
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { scanned });
 
-        Assert.Equal(RowVerdict.Skip, existing.Verdict2());
+        Assert.Equal(RowVerdict.Fix, existing.Verdict2());          // untouched
+        Assert.Equal("Path already correct", existing.ReasonOfBug); // but the row says why
+        Assert.Contains(merged.Disagreements, d => d.ScanSays == RowVerdicts.Skip);
     }
 
     [Fact]

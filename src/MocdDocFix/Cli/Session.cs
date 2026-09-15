@@ -173,6 +173,7 @@ public sealed class Session : IDisposable
         }
 
         var merged = LedgerMerge.Into(existing, scanned);
+        AskAboutVerdicts(merged);
         _ledger.Write(merged.Rows);
 
         _prompts.Section("The ledger is up to date with CRM");
@@ -238,6 +239,61 @@ public sealed class Session : IDisposable
         _prompts.Blank();
 
         return rows;
+    }
+
+    /// <summary>
+    /// Where the ledger's verdicts and a fresh scan disagree, asks which to believe.
+    ///
+    /// Both can be right. A verdict typed by hand is a decision — reading the reason and moving
+    /// a row from review to fix is the whole point of the column — and silently overruling it
+    /// makes the column unusable. But a scan can also be newer: somebody may have corrected a
+    /// document type in CRM since, and the ledger would go on offering work that no longer
+    /// exists.
+    ///
+    /// So the tool does not choose. It only asks when there is something to ask about.
+    /// </summary>
+    private void AskAboutVerdicts(Merged merged)
+    {
+        if (merged.Disagreements.Count == 0) return;
+
+        _prompts.Section($"{merged.Disagreements.Count} row(s) have a verdict CRM would write " +
+                         "differently", Tone.Warn);
+
+        foreach (var (row, scanSays) in merged.Disagreements.Take(10))
+            _prompts.Bullet($"row {row.Row} ({row.DocFileName}): the ledger says " +
+                            $"'{row.Verdict}', CRM says '{scanSays}'", Tone.Muted);
+
+        if (merged.Disagreements.Count > 10)
+            _prompts.Bullet($"… and {merged.Disagreements.Count - 10} more", Tone.Muted);
+
+        _prompts.Blank();
+
+        var answer = new Asker(_prompts).Ask("Which should the ledger keep?", new[]
+        {
+            new Choice("Keep what the file says", "leave my own answers alone",
+                "Nothing in the verdict column is touched. Use this when you have edited the " +
+                "ledger by hand — moved rows to fix or to ignore — and mean those edits to " +
+                "stand. Everything else on the row is still brought up to date from CRM: the " +
+                "paths, the catalogues, the reason and the solution."),
+
+            new Choice("Take what CRM says", "overwrite those verdicts with the scan's",
+                "The verdict column of those rows is replaced by what a fresh look at CRM " +
+                "makes of them. Use this when the ledger has gone stale — somebody has fixed " +
+                "document types since it was built — and you want the tool's own reading back. " +
+                "Any verdict you typed on those rows is lost.")
+        }, defaultIndex: 0);
+
+        if (answer.Kind == AnswerKind.Chosen && answer.Index == 1)
+        {
+            LedgerMerge.TakeScanVerdicts(merged.Disagreements);
+            _prompts.Say($"{merged.Disagreements.Count} verdict(s) taken from CRM.", Tone.Muted);
+        }
+        else
+        {
+            _prompts.Say("Left as the file had them.", Tone.Muted);
+        }
+
+        _prompts.Blank();
     }
 
     /// <summary>

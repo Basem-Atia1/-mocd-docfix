@@ -6,9 +6,18 @@ namespace MocdDocFix.Commands;
 /// <param name="Refreshed">Rows whose facts were brought up to date from CRM.</param>
 /// <param name="Protected">Rows already acted on, whose history was left alone.</param>
 /// <param name="Vanished">Rows whose document CRM no longer returns.</param>
+/// <param name="Row">The row as the ledger holds it.</param>
+/// <param name="ScanSays">What a fresh look at CRM would put in the verdict column.</param>
+public sealed record VerdictDisagreement(LedgerRow Row, string ScanSays);
+
+/// <param name="Disagreements">
+/// Rows whose verdict differs from what the scan would write. Not acted on: the operator is
+/// asked whether to keep their own answers or take CRM's, because either can be the right one
+/// and the tool cannot tell which.
+/// </param>
 public sealed record Merged(
     IReadOnlyList<LedgerRow> Rows, int Added, int Refreshed, int Protected, int Vanished,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes, IReadOnlyList<VerdictDisagreement> Disagreements);
 
 /// <summary>
 /// Brings one ledger up to date from a fresh read of CRM, instead of starting a second one.
@@ -34,6 +43,7 @@ public static class LedgerMerge
         var seen = new HashSet<Guid>();
         var rows = new List<LedgerRow>(existing);
         var notes = new List<string>();
+        var disagreements = new List<VerdictDisagreement>();
         int added = 0, refreshed = 0, protectedRows = 0;
 
         foreach (var scanned in fresh)
@@ -59,6 +69,10 @@ public static class LedgerMerge
                 continue;
             }
 
+            if (!string.Equals(row.Verdict.Trim(), scanned.Verdict,
+                    StringComparison.OrdinalIgnoreCase))
+                disagreements.Add(new VerdictDisagreement(row, scanned.Verdict));
+
             Refresh(row, scanned);
             refreshed++;
         }
@@ -70,7 +84,16 @@ public static class LedgerMerge
         }
 
         return new Merged(rows, added, refreshed, protectedRows,
-            existing.Count - seen.Count(id => byDocument.ContainsKey(id)), notes);
+            existing.Count - seen.Count(id => byDocument.ContainsKey(id)), notes, disagreements);
+    }
+
+    /// <summary>
+    /// Takes the scan's verdict for the rows where the two disagree — what the operator gets by
+    /// answering "refresh from CRM" rather than "keep what I typed".
+    /// </summary>
+    public static void TakeScanVerdicts(IReadOnlyList<VerdictDisagreement> disagreements)
+    {
+        foreach (var (row, scanSays) in disagreements) row.Verdict = scanSays;
     }
 
     /// <summary>
@@ -113,11 +136,16 @@ public static class LedgerMerge
         row.CrmLinkOfDoc = scanned.CrmLinkOfDoc;
         row.CrmLinkOfDocFile = scanned.CrmLinkOfDocFile;
 
-        // The scan's verdict is CRM's current answer, so it wins — except where the column
-        // already holds something a scan could not have written: the operator's own two words,
-        // or the run's record that this document is finished. Overwriting any of those with
-        // "fix" would offer work that is not outstanding.
-        if (row.Verdict2() is not (RowVerdict.Ignore or RowVerdict.Redo or RowVerdict.Done))
-            row.Verdict = scanned.Verdict;
+        // The verdict is not refreshed. It is written once, when the row is first created, and
+        // belongs to the operator from then on.
+        //
+        // It used to be overwritten by the scan, on the reasoning that CRM holds the current
+        // truth. That made the column unusable: an operator who moved a "review" or "skip" row
+        // to "fix" — the whole point of reading the reason and deciding — watched the next run
+        // put it back. A column the tool silently overrules is not a column anybody can edit.
+        //
+        // Where the scan now disagrees, the row says so: reason of bug, solution and group are
+        // refreshed above, and the disagreement is reported to the operator rather than acted
+        // on behind them.
     }
 }
