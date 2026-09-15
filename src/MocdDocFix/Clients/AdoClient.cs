@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.RegularExpressions;
 using System.Text;
 using System.Text.Json;
 using MocdDocFix.Domain;
@@ -7,6 +8,13 @@ namespace MocdDocFix.Clients;
 
 /// <param name="Url">Where the file itself can be fetched from.</param>
 public sealed record AdoAttachment(int WorkItemId, string WorkItemTitle, string Name, string Url);
+
+/// <param name="Text">
+/// Description, acceptance criteria and test steps, stripped of markup and run together. Enough
+/// to answer "is this document name written down in this work item", which is the only question
+/// asked of it.
+/// </param>
+public sealed record AdoWorkItemText(int Id, string Title, string Text);
 
 public interface IAdoClient
 {
@@ -22,6 +30,16 @@ public interface IAdoClient
     /// </summary>
     Task<IReadOnlyList<AdoAttachment>> FindSpreadsheetsAsync(string phrase, CancellationToken ct)
         => Task.FromResult<IReadOnlyList<AdoAttachment>>(Array.Empty<AdoAttachment>());
+
+    /// <summary>
+    /// Work items whose title matches a phrase, with their bodies read out as plain text.
+    ///
+    /// This is how a description is searched on a server that refuses to search one: WIQL picks
+    /// the candidates by title — the one thing it will match — and the bodies are fetched and
+    /// read here. The document lists live in those bodies and in no title anywhere.
+    /// </summary>
+    Task<IReadOnlyList<AdoWorkItemText>> FindCandidatesAsync(string phrase, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<AdoWorkItemText>>(Array.Empty<AdoWorkItemText>());
 
     /// <summary>Saves one attachment. False when it could not be fetched, with the reason said.</summary>
     Task<bool> DownloadAttachmentAsync(AdoAttachment attachment, string toPath, CancellationToken ct)
@@ -57,6 +75,22 @@ public sealed class AdoClient : IAdoClient, IDisposable
                 : new NetworkCredential(user, password),
             PreAuthenticate = true
         };
+
+        _http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri(collectionUrl.TrimEnd('/') + "/"),
+            Timeout = TimeSpan.FromMinutes(2)
+        };
+        _http.DefaultRequestHeaders.Add("Accept", "application/json");
+    }
+
+    /// <summary>
+    /// Over a handler of your choosing, so the wire can be faked. The NTLM constructor above
+    /// builds its own handler and is what the application uses.
+    /// </summary>
+    public AdoClient(HttpMessageHandler handler, string collectionUrl, string project)
+    {
+        _project = project;
 
         _http = new HttpClient(handler)
         {
@@ -103,6 +137,85 @@ public sealed class AdoClient : IAdoClient, IDisposable
                     .Select(_ => new AdoHit(0, string.Empty, null)))
                 .ToList()
             : hits;
+    }
+
+    /// <summary>
+    /// How many work items are worth reading in full for one phrase. A service's name matches a
+    /// few dozen stories and tests; past that the phrase was too general to be worth the wait.
+    /// </summary>
+    public const int MostCandidates = 60;
+
+    private const string BodyFields =
+        "System.Title,System.Description,Microsoft.VSTS.Common.AcceptanceCriteria," +
+        "Microsoft.VSTS.TCM.Steps";
+
+    public async Task<IReadOnlyList<AdoWorkItemText>> FindCandidatesAsync(
+        string phrase, CancellationToken ct)
+    {
+        var ids = await SearchAsync(phrase, ct);
+        if (ids.Count == 0) return Array.Empty<AdoWorkItemText>();
+
+        var found = new List<AdoWorkItemText>();
+
+        foreach (var batch in ids.Take(MostCandidates).Chunk(BatchSize))
+        {
+            var url = $"{Uri.EscapeDataString(_project)}/_apis/wit/workitems" +
+                      $"?ids={string.Join(',', batch)}&fields={BodyFields}&api-version=6.0";
+
+            using var response = await _http.GetAsync(url, ct);
+
+            // A field this work item type does not have makes the whole batch a 400 on some
+            // servers. Asking for fewer fields would lose the descriptions, which are the point,
+            // so a refused batch is skipped rather than allowed to end the search.
+            if (!response.IsSuccessStatusCode) continue;
+
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            if (!json.RootElement.TryGetProperty("value", out var items)) continue;
+
+            foreach (var item in items.EnumerateArray())
+            {
+                var id = item.TryGetProperty("id", out var i) ? i.GetInt32() : 0;
+                if (!item.TryGetProperty("fields", out var fields)) continue;
+
+                var text = new StringBuilder();
+
+                foreach (var field in new[]
+                         {
+                             "System.Description",
+                             "Microsoft.VSTS.Common.AcceptanceCriteria",
+                             "Microsoft.VSTS.TCM.Steps"
+                         })
+                {
+                    if (fields.TryGetProperty(field, out var value))
+                        text.Append(PlainText(value.GetString())).Append(' ');
+                }
+
+                found.Add(new AdoWorkItemText(id, TitleIn(fields), text.ToString().Trim()));
+            }
+        }
+
+        return found;
+    }
+
+    private static string TitleIn(JsonElement fields) =>
+        fields.TryGetProperty("System.Title", out var t) ? t.GetString() ?? string.Empty : string.Empty;
+
+    /// <summary>
+    /// Markup out, words in.
+    ///
+    /// Descriptions are HTML. Test steps are XML whose text content is HTML that was encoded a
+    /// second time on the way in, so one pass leaves "&lt;P&gt;Upload…" sitting in the middle of
+    /// the result. Stripping, decoding and stripping again covers both without needing to know
+    /// which field it was handed.
+    /// </summary>
+    private static string PlainText(string? markup)
+    {
+        if (string.IsNullOrEmpty(markup)) return string.Empty;
+
+        var text = WebUtility.HtmlDecode(Regex.Replace(markup, "<[^>]+>", " "));
+        text = WebUtility.HtmlDecode(Regex.Replace(text, "<[^>]+>", " "));
+
+        return Regex.Replace(text, @"\s+", " ").Trim();
     }
 
     public async Task<IReadOnlyList<AdoAttachment>> FindSpreadsheetsAsync(

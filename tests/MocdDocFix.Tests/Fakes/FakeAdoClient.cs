@@ -24,6 +24,26 @@ public sealed class FakeAdoClient : IAdoClient
     /// <summary>True to behave like an attachment the sign-in is not allowed to fetch.</summary>
     public bool DownloadFails { get; set; }
 
+    /// <summary>Search phrase → the work items it finds, with their bodies.</summary>
+    public Dictionary<string, List<AdoWorkItemText>> Bodies { get; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Every phrase the body search was given, in order.</summary>
+    public List<string> CandidatesAskedFor { get; } = new();
+
+    /// <summary>What a downloaded attachment contains. The default has no document list in it.</summary>
+    public string WritesOnDownload { get; set; } = "pretend workbook";
+
+    public Task<IReadOnlyList<AdoWorkItemText>> FindCandidatesAsync(string phrase, CancellationToken ct)
+    {
+        CandidatesAskedFor.Add(phrase);
+
+        if (Throws is not null) throw Throws;
+
+        return Task.FromResult<IReadOnlyList<AdoWorkItemText>>(
+            Bodies.TryGetValue(phrase, out var found) ? found : new List<AdoWorkItemText>());
+    }
+
     public Task<IReadOnlyList<AdoAttachment>> FindSpreadsheetsAsync(string phrase, CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<AdoAttachment>>(
             Attachments.TryGetValue(phrase, out var found) ? found : new List<AdoAttachment>());
@@ -33,7 +53,7 @@ public sealed class FakeAdoClient : IAdoClient
         if (DownloadFails) return Task.FromResult(false);
 
         Directory.CreateDirectory(Path.GetDirectoryName(toPath)!);
-        File.WriteAllText(toPath, "pretend workbook");
+        File.WriteAllText(toPath, WritesOnDownload);
         return Task.FromResult(true);
     }
 
