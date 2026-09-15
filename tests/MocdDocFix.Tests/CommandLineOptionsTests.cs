@@ -6,37 +6,47 @@ namespace MocdDocFix.Tests;
 public class CommandLineOptionsTests
 {
     [Fact]
-    public void Parses_a_simple_scan()
+    public void Parses_a_simple_command()
     {
-        var o = CommandLineOptions.Parse(new[] { "scan", "--env", "dev" });
+        var o = CommandLineOptions.Parse(new[] { "repair", "--env", "dev" });
 
-        Assert.Equal("scan", o.Command);
+        Assert.Equal("repair", o.Command);
         Assert.Equal("dev", o.Environment);
         Assert.Null(o.Error);
     }
 
-    [Fact]
-    public void Parses_a_comma_separated_identifier_list()
+    /// <summary>The four ledger modes, and config. Nothing else.</summary>
+    [Theory]
+    [InlineData("repair")]
+    [InlineData("delete")]
+    [InlineData("redo")]
+    [InlineData("check")]
+    [InlineData("config")]
+    public void Every_command_the_tool_still_has_is_accepted(string command) =>
+        Assert.Null(CommandLineOptions.Parse(new[] { command }).Error);
+
+    /// <summary>
+    /// The old pipeline's verbs went with it. Accepting one silently would run something other
+    /// than what was typed.
+    /// </summary>
+    [Theory]
+    [InlineData("scan")]
+    [InlineData("backup")]
+    [InlineData("migrate")]
+    [InlineData("targeted")]
+    public void A_command_from_the_old_pipeline_is_refused(string command)
     {
-        var o = CommandLineOptions.Parse(new[] { "targeted", "--env", "dev", "--docs", "a.jpg,b.jpg, c.jpg " });
+        var o = CommandLineOptions.Parse(new[] { command });
 
-        Assert.Equal(new[] { "a.jpg", "b.jpg", "c.jpg" }, o.Identifiers);
-    }
-
-    [Fact]
-    public void Parses_repeated_docs_flags()
-    {
-        var o = CommandLineOptions.Parse(new[] { "targeted", "--docs", "a.jpg", "--docs", "b.jpg" });
-
-        Assert.Equal(new[] { "a.jpg", "b.jpg" }, o.Identifiers);
+        Assert.NotNull(o.Error);
+        Assert.Contains(command, o.Error);
     }
 
     [Fact]
     public void Parses_the_boolean_flags()
     {
-        var o = CommandLineOptions.Parse(new[] { "targeted", "--force-review", "--dry-run", "--confirm-production" });
+        var o = CommandLineOptions.Parse(new[] { "repair", "--dry-run", "--confirm-production" });
 
-        Assert.True(o.ForceReview);
         Assert.True(o.DryRun);
         Assert.True(o.ConfirmProduction);
     }
@@ -44,7 +54,7 @@ public class CommandLineOptionsTests
     [Fact]
     public void An_unknown_flag_is_an_error_not_a_silent_ignore()
     {
-        var o = CommandLineOptions.Parse(new[] { "scan", "--enviroment", "dev" });
+        var o = CommandLineOptions.Parse(new[] { "repair", "--enviroment", "dev" });
 
         Assert.NotNull(o.Error);
         Assert.Contains("--enviroment", o.Error);
@@ -78,6 +88,6 @@ public class CommandLineOptionsTests
     [Fact]
     public void A_flag_with_a_missing_value_is_an_error()
     {
-        Assert.Contains("--env", CommandLineOptions.Parse(new[] { "scan", "--env" }).Error!);
+        Assert.Contains("--env", CommandLineOptions.Parse(new[] { "repair", "--env" }).Error!);
     }
 }
