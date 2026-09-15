@@ -20,6 +20,16 @@ var configPath = Path.Combine(configDir, "config.json");
 var secrets = new DpapiSecretStore(secretsPath);
 var configStore = new ConfigStore(configPath, secrets);
 
+// Said once, up front. The usual cause is the app folder or the config folder having been
+// copied to another machine or another Windows account, and the alternative is a password
+// prompt that appears to have forgotten a password that was set only yesterday.
+if (secrets.Problem is { } secretsProblem)
+{
+    prompts.Blank();
+    prompts.Warn(secretsProblem, Tone.Warn);
+    prompts.Blank();
+}
+
 if (options.Command == "config")
 {
     if (!File.Exists(configPath))

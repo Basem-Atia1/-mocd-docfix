@@ -54,16 +54,42 @@ public sealed class DpapiSecretStore : ISecretStore
         Write(_cache);
     }
 
+    /// <summary>
+    /// Why the secrets could not be read, when they could not. Null when all is well — which
+    /// includes there being no file yet, because a first run has nothing to read.
+    /// </summary>
+    public string? Problem { get; private set; }
+
     private Dictionary<string, string> Read()
     {
         var empty = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!File.Exists(_path)) return empty;
         if (!OperatingSystem.IsWindows()) return empty;
 
-        var protectedBytes = File.ReadAllBytes(_path);
-        var plain = ProtectedData.Unprotect(protectedBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
-        var json = Encoding.UTF8.GetString(plain);
-        return JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? empty;
+        try
+        {
+            var protectedBytes = File.ReadAllBytes(_path);
+            var plain = ProtectedData.Unprotect(
+                protectedBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
+
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(
+                Encoding.UTF8.GetString(plain)) ?? empty;
+        }
+        catch (Exception problem) when (problem is CryptographicException or JsonException)
+        {
+            // DPAPI keys the file to the Windows account that wrote it, so a secrets.dat copied
+            // from another machine or another user cannot be decrypted here. That is the file
+            // doing its job — but throwing out of a constructor turned it into a crash at
+            // startup, with a stack trace for an explanation.
+            //
+            // Treated as "no secrets yet": the tool then asks for them, which is the remedy and
+            // the one thing the operator can actually act on.
+            Problem = $"{_path} could not be read — it was encrypted by a different Windows " +
+                      "account, or it is damaged. Its secrets cannot be recovered; the tool " +
+                      "will ask for them again and overwrite it.";
+
+            return empty;
+        }
     }
 
     private void Write(Dictionary<string, string> values)
