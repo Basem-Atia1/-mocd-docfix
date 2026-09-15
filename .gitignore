@@ -29,6 +29,12 @@ review-*.csv
 quarantine-*.csv
 audit-*.log
 
+# The ledger and its companions. repair-<env>.csv holds every document's name,
+# path and CRM link; errors-<env>.txt holds whatever a failed call returned.
+# Both live in D:\mocd-docfix-data by design — these patterns are the safety net.
+repair-*.csv
+errors-*.txt
+
 # Secrets — API keys and CRM credentials are never stored in the repo.
 appsettings.*.json
 !appsettings.Example.json
