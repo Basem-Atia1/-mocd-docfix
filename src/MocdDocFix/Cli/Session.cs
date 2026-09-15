@@ -88,14 +88,24 @@ public sealed class Session : IDisposable
         // Excel holds an exclusive lock on an open workbook, and the ledger is rewritten after
         // every completed row. Finding that out now is far kinder than finding out after the
         // first document has already been uploaded and cannot be recorded.
-        if (!_ledger.CanWrite())
+        //
+        // It waits rather than giving up: having the ledger open is the normal thing to be doing
+        // a moment before a run, and making the operator start the whole mode again to fix a
+        // ten-second problem is a punishment, not a safeguard.
+        while (!_ledger.CanWrite())
         {
             _prompts.Blank();
             _prompts.Warn("The ledger is open in Excel, so this run could not record what it did.",
-                Tone.Danger);
+                Tone.Warn);
             _prompts.Field("file", _ledger.Path, Tone.Muted);
-            _prompts.Say("Close it and start again. Nothing has been changed.", Tone.Muted);
-            return Array.Empty<LedgerRow>();
+            _prompts.Blank();
+
+            if (!_prompts.YesNo("  Close it in Excel, then answer yes to carry on. Try again?",
+                    defaultYes: true))
+            {
+                _prompts.Say("Stopped. Nothing has been changed.", Tone.Muted);
+                return Array.Empty<LedgerRow>();
+            }
         }
 
         if (_ledger.Exists)

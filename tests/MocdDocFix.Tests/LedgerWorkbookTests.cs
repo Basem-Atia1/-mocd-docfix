@@ -54,7 +54,7 @@ public class LedgerWorkbookTests : IDisposable
         // Exactly what Excel does when the operator picks "ignore" from the list and saves.
         using (var workbook = new XLWorkbook(store.Path))
         {
-            workbook.Worksheet(1).Cell(2, 11).Value = RowVerdicts.Ignore;
+            workbook.Worksheet(1).Cell(2, 12).Value = RowVerdicts.Ignore;
             workbook.Save();
         }
 
@@ -70,7 +70,7 @@ public class LedgerWorkbookTests : IDisposable
 
         using (var workbook = new XLWorkbook(store.Path))
         {
-            workbook.Worksheet(1).Cell(2, 12).Value = RowStates.Ignore;
+            workbook.Worksheet(1).Cell(2, 13).Value = RowStates.Ignore;
             workbook.Save();
         }
 
@@ -143,12 +143,17 @@ public class LedgerWorkbookTests : IDisposable
         var sheet = workbook.Worksheet(1);
 
         Assert.Equal("row", sheet.Cell(1, 1).GetString());
-        Assert.Equal("old file path", sheet.Cell(1, 5).GetString());
-        Assert.Equal("old category", sheet.Cell(1, 9).GetString());
-        Assert.Equal("correct service catalogue name", sheet.Cell(1, 10).GetString());
-        Assert.Equal("verdict", sheet.Cell(1, 11).GetString());
-        Assert.Equal("final state", sheet.Cell(1, 12).GetString());
-        Assert.Equal("backup path", sheet.Cell(1, 16).GetString());
+        Assert.Equal("doc id", sheet.Cell(1, 2).GetString());
+        Assert.Equal("old file path", sheet.Cell(1, 6).GetString());
+
+        // The sentence: filed under this, the record says that, it should be the third.
+        Assert.Equal("service catalogue name", sheet.Cell(1, 9).GetString());
+        Assert.Equal("old category", sheet.Cell(1, 10).GetString());
+        Assert.Equal("correct service catalogue name", sheet.Cell(1, 11).GetString());
+
+        Assert.Equal("verdict", sheet.Cell(1, 12).GetString());
+        Assert.Equal("final state", sheet.Cell(1, 13).GetString());
+        Assert.Equal("backup path", sheet.Cell(1, 17).GetString());
     }
 
     /// <summary>The thing a CSV cannot do: a dropdown of exactly the values the tool understands.</summary>
@@ -159,7 +164,7 @@ public class LedgerWorkbookTests : IDisposable
         store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
 
         using var workbook = new XLWorkbook(store.Path);
-        var validation = workbook.Worksheet(1).Cell(2, 11).GetDataValidation();
+        var validation = workbook.Worksheet(1).Cell(2, 12).GetDataValidation();
 
         Assert.NotNull(validation);
         foreach (var value in RowVerdicts.All)
@@ -173,7 +178,7 @@ public class LedgerWorkbookTests : IDisposable
         store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
 
         using var workbook = new XLWorkbook(store.Path);
-        var validation = workbook.Worksheet(1).Cell(2, 12).GetDataValidation();
+        var validation = workbook.Worksheet(1).Cell(2, 13).GetDataValidation();
 
         Assert.NotNull(validation);
         Assert.Contains(RowStates.Corrected, validation!.Value);
@@ -193,7 +198,7 @@ public class LedgerWorkbookTests : IDisposable
         using var workbook = new XLWorkbook(store.Path);
 
         Assert.Equal(XLErrorStyle.Warning,
-            workbook.Worksheet(1).Cell(2, 11).GetDataValidation()!.ErrorStyle);
+            workbook.Worksheet(1).Cell(2, 12).GetDataValidation()!.ErrorStyle);
     }
 
     [Fact]
@@ -219,7 +224,7 @@ public class LedgerWorkbookTests : IDisposable
 
         using var workbook = new XLWorkbook(store.Path);
 
-        Assert.True(workbook.Worksheet(1).Column(5).Width <= 60);
+        Assert.True(workbook.Worksheet(1).Column(6).Width <= 60);
     }
 
     [Fact]

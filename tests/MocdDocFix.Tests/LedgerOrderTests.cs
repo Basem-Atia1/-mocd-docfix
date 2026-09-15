@@ -98,7 +98,7 @@ public class LedgerOrderTests
 
         Assert.Equal(new[]
         {
-            "row", "doc name", "doc type name", "doc file name",
+            "row", "doc id", "doc name", "doc type name", "doc file name",
             "old file path", "new file path predicted", "new file path",
 
             // The three that read as one sentence: filed under this, the record says that,
@@ -106,10 +106,14 @@ public class LedgerOrderTests
             "service catalogue name", "old category", "correct service catalogue name",
 
             "verdict", "final state", "group", "way of upload", "error", "backup path"
-        }, headers.Take(16));
+        }, headers.Take(17));
 
-        // And every GUID is kept to the right of them.
-        Assert.True(headers.IndexOf("doc id") > headers.IndexOf("backup path"));
+        // old category earns its place by sitting between the two names it disagrees with.
+        Assert.Equal(headers.IndexOf("correct service catalogue name") - 1,
+            headers.IndexOf("old category"));
+
+        // The remaining machine detail stays to the right.
+        Assert.True(headers.IndexOf("doc file id") > headers.IndexOf("backup path"));
         Assert.Equal(29, headers.Count);
     }
 
