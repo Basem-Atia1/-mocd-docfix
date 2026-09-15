@@ -197,6 +197,24 @@ public sealed class Session : IDisposable
     private IReadOnlyList<LedgerRow> Reconciled(IReadOnlyList<LedgerRow> rows)
     {
         var recovered = LedgerRecovery.Apply(rows, _journal.Read());
+
+        if (recovered.MissingFromJournal > 0)
+        {
+            _prompts.Section("The change journal is missing history the ledger has", Tone.Warn);
+            _prompts.Say($"{recovered.MissingFromJournal} row(s) record work the journal has " +
+                         "never heard of. The journal is only ever appended to and is written " +
+                         "before the ledger, so it cannot fall behind on its own — it has been " +
+                         "deleted or replaced.");
+            _prompts.Blank();
+            _prompts.Field("journal", _journal.Path, Tone.Muted);
+            _prompts.Bullet("Nothing is lost for those rows: Redo reads the crm.json snapshot in " +
+                            "each document's backup folder, not the journal.", Tone.Muted);
+            _prompts.Bullet("But the journal can no longer rebuild the ledger if the workbook is " +
+                            "damaged. Leave it alone from here and it will fill in again.",
+                Tone.Muted);
+            _prompts.Blank();
+        }
+
         if (recovered.Rows == 0) return rows;
 
         _prompts.Section($"{recovered.Rows} row(s) were out of step with the change journal",

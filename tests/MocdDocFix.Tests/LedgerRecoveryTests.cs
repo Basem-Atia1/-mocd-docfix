@@ -144,6 +144,41 @@ public class LedgerRecoveryTests
         Assert.Equal(RowState.NotStarted, row.State());
     }
 
+    /// <summary>
+    /// The journal is append-only and is written before the ledger, so it can never
+    /// legitimately know less than the ledger does. Where it does, somebody has deleted it —
+    /// and finding that out at the next run beats finding out during a revert.
+    /// </summary>
+    [Fact]
+    public void A_journal_that_has_lost_history_the_ledger_still_has_is_noticed()
+    {
+        var corrected = Row(finalState: RowStates.Text(RowState.Corrected));
+
+        var recovered = LedgerRecovery.Apply(new[] { corrected }, Array.Empty<ChangeEntry>());
+
+        Assert.Equal(1, recovered.MissingFromJournal);
+    }
+
+    [Fact]
+    public void A_journal_that_knows_about_the_row_is_not_reported_as_missing()
+    {
+        var corrected = Row(finalState: RowStates.Text(RowState.Corrected));
+
+        var recovered = LedgerRecovery.Apply(
+            new[] { corrected }, new[] { Entry(ChangeActions.Corrected) });
+
+        Assert.Equal(0, recovered.MissingFromJournal);
+    }
+
+    /// <summary>A row nothing has happened to yet is not missing from anywhere.</summary>
+    [Fact]
+    public void An_untouched_row_is_not_counted_as_missing_history()
+    {
+        var recovered = LedgerRecovery.Apply(new[] { Row() }, Array.Empty<ChangeEntry>());
+
+        Assert.Equal(0, recovered.MissingFromJournal);
+    }
+
     [Fact]
     public void An_empty_journal_changes_nothing()
     {

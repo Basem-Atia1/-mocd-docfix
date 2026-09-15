@@ -4,7 +4,12 @@ using MocdDocFix.Storage;
 namespace MocdDocFix.Commands;
 
 /// <param name="Notes">One line per row put right, for the operator to read.</param>
-public sealed record Recovered(int Rows, IReadOnlyList<string> Notes);
+/// <param name="MissingFromJournal">
+/// Rows the ledger says were corrected or deleted that the journal has never heard of. The
+/// journal is append-only and is written first, so it cannot fall behind on its own: anything
+/// here means it was deleted, truncated or replaced.
+/// </param>
+public sealed record Recovered(int Rows, IReadOnlyList<string> Notes, int MissingFromJournal = 0);
 
 /// <summary>
 /// Puts the ledger back in step with what actually happened, from the change journal.
@@ -52,7 +57,16 @@ public static class LedgerRecovery
             touched.Add(row.DocId);
         }
 
-        return new Recovered(touched.Count, notes);
+        // The other direction. The journal is written before the ledger and only ever appended
+        // to, so it can never legitimately know less than the ledger does. Where it does, it
+        // has been deleted or replaced — and the route back for those rows is now the backup
+        // folder alone, which is worth being told about rather than discovering during a revert.
+        var known = journal.Select(e => e.Doc).ToHashSet();
+
+        var missing = rows.Count(r =>
+            r.State() is RowState.Corrected or RowState.Deleted && !known.Contains(r.DocId));
+
+        return new Recovered(touched.Count, notes, missing);
     }
 
     private static string? Correct(LedgerRow row, ChangeEntry entry)

@@ -30,9 +30,12 @@ public sealed class ChangeJournal
 
     public ChangeJournal(string path) => _path = path;
 
+    /// <summary>Where it lives, so a warning about it can say which file.</summary>
+    public string Path => _path;
+
     public void Append(ChangeEntry entry)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
         File.AppendAllText(_path, JsonSerializer.Serialize(entry) + Environment.NewLine);
     }
 
