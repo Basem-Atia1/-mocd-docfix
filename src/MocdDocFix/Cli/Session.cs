@@ -139,28 +139,12 @@ public sealed class Session : IDisposable
             }
         }
 
-        if (_ledger.Exists)
-        {
-            var existing = Reconciled(_ledger.Read());
-            var corrected = existing.Count(r => r.State() == RowState.Corrected);
-            var done = existing.Count(r => r.State() == RowState.Deleted);
-
-            _prompts.Section("There is already a ledger for this environment");
-            _prompts.Field("file", _ledger.Path, Tone.Muted);
-            _prompts.Say($"{existing.Count} row(s); {corrected} corrected and awaiting the delete " +
-                         $"step, {done} finished.");
-            _prompts.Blank();
-
-            if (!mayRebuild) return existing;
-
-            if (_prompts.YesNo("  Carry on with it?", defaultYes: true)) return existing;
-
-            var kept = _ledger.StartNewKeepingOld();
-            _prompts.Say($"Kept the old one as {kept}.", Tone.Muted);
-        }
+        var existing = _ledger.Exists ? Reconciled(_ledger.Read()) : Array.Empty<LedgerRow>();
 
         if (!mayRebuild)
         {
+            if (existing.Count > 0) return existing;
+
             _prompts.Say("There is no ledger yet. Run a repair run first — every other mode " +
                          "works from it.", Tone.Warn);
             return Array.Empty<LedgerRow>();
@@ -169,11 +153,36 @@ public sealed class Session : IDisposable
         _prompts.Blank();
         _prompts.Say("Reading CRM. This writes nothing.", Tone.Muted);
 
-        var rows = await _builder.BuildAsync(ct);
-        _ledger.Write(rows);
+        var scanned = await _builder.BuildAsync(ct);
 
-        _prompts.Say($"{rows.Count} document(s) written to {_ledger.Path}", Tone.Good);
-        return rows;
+        // There is one ledger per environment for its whole life. A fresh scan updates it; it
+        // never replaces it, because replacing it would throw away every verdict typed into it
+        // and every final state the runs have recorded.
+        if (existing.Count == 0)
+        {
+            _ledger.Write(scanned);
+            _prompts.Say($"{scanned.Count} document(s) written to {_ledger.Path}", Tone.Good);
+            return scanned;
+        }
+
+        var merged = LedgerMerge.Into(existing, scanned);
+        _ledger.Write(merged.Rows);
+
+        _prompts.Section("The ledger is up to date with CRM");
+        _prompts.Field("file", _ledger.Path, Tone.Muted);
+        _prompts.Say($"{merged.Rows.Count} row(s): {merged.Added} new since last time, " +
+                     $"{merged.Refreshed} refreshed, {merged.Protected} left as they are because " +
+                     "they have already been worked on or you excluded them.");
+
+        if (merged.Notes.Count > 0)
+        {
+            _prompts.Blank();
+            foreach (var note in merged.Notes.Take(10)) _prompts.Bullet(note, Tone.Warn);
+            if (merged.Notes.Count > 10)
+                _prompts.Bullet($"… and {merged.Notes.Count - 10} more", Tone.Muted);
+        }
+
+        return merged.Rows;
     }
 
     /// <summary>

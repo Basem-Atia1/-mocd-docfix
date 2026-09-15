@@ -322,17 +322,16 @@ public class LedgerWorkbookTests : IDisposable
         Assert.True(store.CanWrite());
     }
 
+    /// <summary>A copy kept aside must still be a readable ledger in its own right.</summary>
     [Fact]
-    public void Starting_a_new_ledger_keeps_both_old_files()
+    public void A_backup_copy_can_itself_be_opened_as_a_ledger()
     {
         var store = Store();
         store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
+        store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision"), Row(RowVerdicts.Skip, "Passport") });
 
-        var kept = store.StartNewKeepingOld();
+        var kept = Directory.GetFiles(store.PreviousDirectory, "*.xlsx").Single();
 
-        Assert.True(File.Exists(kept));
-        Assert.False(store.Exists);
-        Assert.False(File.Exists(store.CsvPath));
         Assert.Single(new LedgerStore(kept).Read());
     }
 }

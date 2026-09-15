@@ -112,27 +112,34 @@ public class LedgerStoreTests : IDisposable
         store.Write(new[] { Row(1), Row(2) });
         store.Write(new[] { Row(1), Row(2), Row(3) });
 
-        Assert.Single(Directory.GetFiles(_dir, "*.bak.xlsx"));
+        Assert.Single(Directory.GetFiles(store.PreviousDirectory, "*.xlsx"));
     }
 
     /// <summary>The first write has nothing to copy, so it takes no backup.</summary>
     [Fact]
     public void A_ledger_that_did_not_exist_yet_gets_no_backup_copy()
     {
-        Store().Write(new[] { Row(1) });
-        Assert.Empty(Directory.GetFiles(_dir, "*.bak.xlsx"));
-    }
-
-    [Fact]
-    public void Starting_a_new_ledger_keeps_the_old_one_under_a_dated_name()
-    {
         var store = Store();
         store.Write(new[] { Row(1) });
 
-        var kept = store.StartNewKeepingOld();
+        Assert.False(Directory.Exists(store.PreviousDirectory));
+    }
 
-        Assert.True(File.Exists(kept));
-        Assert.False(store.Exists);
-        Assert.Single(new LedgerStore(kept).Read());
+    /// <summary>
+    /// There is one ledger for the life of an environment. A backup must not sit beside it
+    /// looking like a second one — an old workbook opens perfectly well and shows yesterday's
+    /// answers with nothing to say they are stale.
+    /// </summary>
+    [Fact]
+    public void Nothing_but_the_ledger_ever_sits_beside_the_ledger()
+    {
+        var store = Store();
+        store.Write(new[] { Row(1) });
+        store.Write(new[] { Row(1), Row(2) });
+
+        var beside = Directory.GetFiles(_dir, "*.xlsx");
+
+        Assert.Single(beside);
+        Assert.Equal(store.Path, beside[0]);
     }
 }

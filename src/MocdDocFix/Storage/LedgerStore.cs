@@ -117,25 +117,24 @@ public sealed class LedgerStore
     /// <summary>Why the plain-text copy could not be rewritten, when it could not.</summary>
     public string? LastCsvProblem { get; private set; }
 
-    /// <summary>Renames the current pair out of the way. Returns where the workbook was kept.</summary>
-    public string StartNewKeepingOld()
-    {
-        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        var kept = Renamed(Path, stamp, ".xlsx");
-
-        File.Move(Path, kept);
-        if (File.Exists(CsvPath)) File.Move(CsvPath, Renamed(CsvPath, stamp, ".csv"));
-
-        _backedUpThisSitting = false;
-        return kept;
-    }
+    /// <summary>
+    /// Where a sitting's backup copy goes.
+    ///
+    /// A subfolder rather than beside the ledger, because a timestamped workbook in the same
+    /// folder gets opened by mistake — and an old copy opens perfectly well, showing yesterday's
+    /// answers with nothing to say they are stale. There is one ledger; everything else is here.
+    /// </summary>
+    public string PreviousDirectory =>
+        System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Path)!, "previous");
 
     private void BackUpOnce()
     {
         if (_backedUpThisSitting || !Exists) return;
 
-        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        File.Copy(Path, Renamed(Path, stamp, ".bak.xlsx"));
+        Directory.CreateDirectory(PreviousDirectory);
+
+        File.Copy(Path, System.IO.Path.Combine(PreviousDirectory,
+            $"{System.IO.Path.GetFileNameWithoutExtension(Path)}-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx"));
 
         _backedUpThisSitting = true;
     }
@@ -163,10 +162,6 @@ public sealed class LedgerStore
         _ => problem
     };
 
-    private static string Renamed(string path, string stamp, string extension) =>
-        System.IO.Path.Combine(
-            System.IO.Path.GetDirectoryName(path)!,
-            System.IO.Path.GetFileNameWithoutExtension(path) + "-" + stamp + extension);
 
     /// <summary>
     /// A missing column is ignored rather than fatal, so a ledger written by an earlier build
