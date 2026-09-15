@@ -62,12 +62,11 @@ public class LiveBacklogTests : IDisposable
     /// the service. Before the body search this stopped a run and asked the operator.
     /// </summary>
     [Fact]
-    public void The_name_that_defeated_the_title_search_is_settled_by_a_story_body()
+    public async Task The_name_that_defeated_the_title_search_is_settled_by_a_story_body()
     {
         if (Reachable() is not { } ado) return;
 
-        var candidates = ado.FindCandidatesAsync(Emap, CancellationToken.None)
-            .GetAwaiter().GetResult();
+        var candidates = await ado.FindCandidatesAsync(Emap, CancellationToken.None);
 
         Assert.NotEmpty(candidates);
 
