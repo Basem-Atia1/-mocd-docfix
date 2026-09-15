@@ -195,6 +195,38 @@ Test-first, following the existing per-class test files.
 
 **`LocalBacklogSearchTests`** — the order-free matcher over a real `.xlsx` shared-string table.
 
+## What the server actually did
+
+Run against the live backlog on 2026-09-15, over the client VPN, with Windows SSO. Recorded by
+`tests/MocdDocFix.Tests/LiveBacklogTests.cs`, which skips itself when the server is unreachable.
+
+**`Microsoft.VSTS.TCM.Steps` is absent, and harmlessly so.** A `fields=` batch naming it does not
+400 — the server simply omits the fields a work item type does not carry, and `TryGetProperty`
+skips them. User stories return `System.Description` and `Microsoft.VSTS.Common.AcceptanceCriteria`
+only. That is where the document lists are: story 27628's acceptance criteria run to 66,799
+characters and story 27564's to 168,531, and `A Copy of Board of Director's Decision` is written
+in 27628's verbatim, in a bilingual table beside its Arabic name. So the degradation the spec
+anticipated is the normal case, and it costs nothing.
+
+**The candidate pool was wide enough.** `MostCandidates = 60` was never the binding limit.
+
+**The apostrophe decides which stage answers, and both are right.** CRM spells the document with a
+curly apostrophe (U+2019); work item 34145 — `NPOP|Employee Appointment Request|Documents|Verify
+that the "A copy of Board of Director's Decision" is mandatory` — uses a straight one. WIQL
+CONTAINS matches characters, so:
+
+- **the backlog's spelling** settles at stage 1, on that one title, whose pipe-delimited service is
+  *Employee Appointment Request* — agreeing with CRM, and one agreeing hit is enough;
+- **CRM's spelling** finds no title and settles at stage 2, in story 27628's acceptance criteria,
+  where `Normalise` flattens both apostrophes to a space.
+
+Either way the type is settled as **Agrees / Employee Appointment Request** with no prompt.
+
+**The end-trimming alone fixed the original case.** Dropping `A Copy of` from the front is what
+lets the trimmed phrase match title 34145 at all; the full name matches nothing. That was expected
+to be a cheap improvement to the title stage and turned out to resolve the reported case one stage
+earlier, and one round trip cheaper, than the body search built for it.
+
 ## Out of scope
 
 - The ADO Search REST API (`almsearch`). It would give true full text in one call, but the
