@@ -102,14 +102,16 @@ public class EnvironmentPickerTests
     [Fact]
     public void Setting_one_up_asks_for_everything_and_saves_it()
     {
+        // CRM is asked first now, so mocd_crmconfiguration can be consulted for the file
+        // service's address and key. With no CRM to reach, both are still typed as before.
         var prompts = new ScriptedPrompts(
             "2",                        // choose test
             "1",                        // set it up now
-            "http://files:83",          // file service base url
             "https://crm/MoCD",         // crm url
             "msa",                      // domain
             "itworx.Someone",           // user
             "a-password",               // crm password
+            "http://files:83",          // file service base url
             "an-api-key",               // api key
             "y");                       // save
 
@@ -130,7 +132,7 @@ public class EnvironmentPickerTests
     [Fact]
     public void Setup_never_echoes_the_password_back()
     {
-        var prompts = new ScriptedPrompts("2", "1", "http://f", "https://c", "d", "u", "s3cret", "k", "y");
+        var prompts = new ScriptedPrompts("2", "1", "https://c", "d", "u", "s3cret", "http://f", "k", "y");
 
         Picker(prompts).Choose(null, false);
 
