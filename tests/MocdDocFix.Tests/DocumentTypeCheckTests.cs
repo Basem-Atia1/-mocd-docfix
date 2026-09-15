@@ -418,6 +418,10 @@ public class DocumentTypeCheckTests : IDisposable
         Assert.Contains("Wait — I will go and look", said);          // what to do next
     }
 
+    /// <summary>
+    /// A file dropped in by hand is read, and — since it is as live as anything else here —
+    /// allowed to settle the type rather than merely being printed at the operator.
+    /// </summary>
     [Fact]
     public async Task A_file_dropped_in_by_hand_is_read_like_any_other()
     {
@@ -427,15 +431,65 @@ public class DocumentTypeCheckTests : IDisposable
             "---\ntitle: 1.1.6 NPOP- Employee Appointment Request Form- Documents\n---\n" +
             "Zed Marker Sheet is required at filing\n");
 
-        _prompts.ReadLineQueue = new Queue<string>(new[] { "7" });
-
-        await new DocumentTypeCheck(_ado, Decisions(), _prompts, null, drop)
+        var ruling = await new DocumentTypeCheck(_ado, Decisions(), _prompts, null, drop)
             .RuleOnAsync("Zed Marker Sheet", Emap, CancellationToken.None);
 
-        var said = string.Join("\n", _prompts.Messages);
+        Assert.Equal(AdoVerdict.Agrees, ruling.Verdict);
+        Assert.Contains("documents.md", ruling.Detail);
+        Assert.Empty(_prompts.Questions);
+    }
 
-        Assert.Contains("local backlog copy", said);
-        Assert.Contains("Employee Appointment Request", said);
+    // ---- stage 3: the workbooks on disk ----
+
+    private DocumentTypeCheck CheckWithFolders(string? snapshot, string? drop) =>
+        new(_ado, Decisions(), _prompts, snapshot, drop);
+
+    private string Drop(string name, string body)
+    {
+        var folder = Path.Combine(_root, "drop");
+        Directory.CreateDirectory(folder);
+
+        File.WriteAllText(Path.Combine(folder, name), body);
+        return folder;
+    }
+
+    [Fact]
+    public async Task A_workbook_in_the_drop_folder_settles_the_type_without_asking()
+    {
+        var drop = Drop("MoCD_NPOP_Employee Appointment Request_DD_20250509_V.0.2.csv",
+            "A Copy of Board of Director's Decision,Mandatory");
+
+        var ruling = await CheckWithFolders(null, drop)
+            .RuleOnAsync("A Copy of Board of Director's Decision", Emap, CancellationToken.None);
+
+        Assert.Equal(AdoVerdict.Agrees, ruling.Verdict);
+        Assert.Empty(_prompts.Questions);
+        Assert.Contains("MoCD_NPOP_Employee Appointment Request", ruling.Detail);
+    }
+
+    /// <summary>
+    /// The synced copy is a snapshot of unknown age. It stays on screen as a last hint, marked as
+    /// such, and is never allowed to settle anything — the live stages are the ones that decide.
+    /// </summary>
+    [Fact]
+    public async Task The_knowledge_base_copy_is_shown_as_a_stale_snapshot_and_settles_nothing()
+    {
+        var snapshot = Path.Combine(_root, "kb");
+        Directory.CreateDirectory(snapshot);
+
+        File.WriteAllText(Path.Combine(snapshot, "us-27628.md"),
+            "---\ntype: User Story\ntitle: 1.1.6 NPOP- Employee Appointment Request Form- Documents\n---\n\n" +
+            "A Copy of Board of Director's Decision\n");
+
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "1" });
+
+        var ruling = await CheckWithFolders(snapshot, null)
+            .RuleOnAsync("A Copy of Board of Director's Decision", Emap, CancellationToken.None);
+
+        Assert.NotEmpty(_prompts.Questions);
+        Assert.Equal("you", ruling.Source);
+        Assert.Contains(_prompts.Messages,
+            m => m.Contains("may be stale", StringComparison.OrdinalIgnoreCase));
     }
 
     // ---- stage 2: the story bodies, read live ----

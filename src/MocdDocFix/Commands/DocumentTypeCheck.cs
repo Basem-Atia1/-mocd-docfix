@@ -46,6 +46,14 @@ public sealed class DocumentTypeCheck
     /// <summary>Where downloaded and hand-placed backlog files are kept and read from.</summary>
     private readonly string? _dropFolder;
 
+    /// <summary>
+    /// Files this run fetched from the backlog, and the attachment each came from. A workbook has
+    /// no service of its own — the work item it hangs off is what says where it belongs — so the
+    /// link has to be kept rather than guessed at from the file name.
+    /// </summary>
+    private readonly Dictionary<string, AdoAttachment> _fetched =
+        new(StringComparer.OrdinalIgnoreCase);
+
     /// <param name="ado">Null when DevOps is not configured; every type then reads "not checked".</param>
     /// <param name="localBacklog">
     /// A folder holding a local copy of the backlog — the synced user stories and the files
@@ -225,12 +233,57 @@ public sealed class DocumentTypeCheck
         var fromBodies = await FromBodiesAsync(name, crmService, ct);
         if (fromBodies.Verdict != AdoVerdict.CannotTell || _unreachable is not null) return fromBodies;
 
-        // Neither could tell. Report both, because "no title says so" and "no story body says so"
-        // are two different facts, and the operator is about to be asked to supply the answer.
+        var fromFiles = FromDropFolder(name, crmService);
+        if (fromFiles.Verdict != AdoVerdict.CannotTell) return fromFiles;
+
+        // None of the three could tell. Report what each looked at, because "no title says so",
+        // "no story body says so" and "no workbook says so" are three different facts, and the
+        // operator is about to be asked to supply the answer.
         return fromTitles with
         {
             Detail = $"{fromTitles.Detail} {fromBodies.Detail}",
             Evidence = fromTitles.Evidence.Count > 0 ? fromTitles.Evidence : fromBodies.Evidence
+        };
+    }
+
+    /// <summary>
+    /// The workbooks and files on disk — fetched from the backlog during this run, or saved there
+    /// by the operator a minute ago. They are as live as anything else here, so unlike the synced
+    /// snapshot they are allowed to settle a document type.
+    ///
+    /// This is a stage of the enquiry rather than a step inside the menu, which is what makes
+    /// "Wait — I will go and look" do what it says: both that option and "Search DevOps for my own
+    /// words" re-enter the enquiry, so a file saved into the folder while the question sat on
+    /// screen is picked up without the operator choosing anything else.
+    ///
+    /// A file fetched from an attachment takes its service from the work item it hung off. One
+    /// dropped in by hand has only its name, which is usually enough:
+    /// "MoCD_NPOP_Employee Appointment Request_DD_20250509_V.0.2.xlsx".
+    /// </summary>
+    private AdoOpinion FromDropFolder(string name, string? crmService)
+    {
+        var files = LocalBacklogSearch.Find(_dropFolder, name);
+
+        if (files.Count == 0)
+            return new AdoOpinion(AdoVerdict.CannotTell, null, Array.Empty<AdoHit>(),
+                "Nothing in the downloaded backlog files names it either.");
+
+        var hits = files
+            .Select(f => _fetched.TryGetValue(f.File, out var from)
+                ? new AdoHit(from.WorkItemId, from.WorkItemTitle, ServiceOf(from.WorkItemTitle))
+                : new AdoHit(0, Path.GetFileName(f.File), f.Service))
+            .ToList();
+
+        var opinion = DocumentTypeAuthority.Weigh(name, crmService, hits);
+        var where = string.Join(", ", files.Take(3).Select(f => Path.GetFileName(f.File)));
+
+        // Weigh's wording is about work items. The verdict it reached is right and is kept; what
+        // it says has to name the file, because that is the thing the operator can go and open.
+        return opinion with
+        {
+            Detail = opinion.Verdict == AdoVerdict.CannotTell
+                ? $"{opinion.Detail} (found in {where})"
+                : $"{opinion.Detail} Found in {where}."
         };
     }
 
@@ -398,7 +451,7 @@ public sealed class DocumentTypeCheck
         // stories and in the workbooks attached to them — this name appears verbatim in user
         // story 27628 and in no title anywhere — and the live search cannot reach either,
         // because this server refuses a full-text query. So the local copy is read as well.
-        ShowLocalHits(name);
+        ShowSnapshotHits(name);
 
         var answer = new Asker(_prompts).Ask("What should I do with this document type?", new[]
         {
@@ -631,22 +684,19 @@ public sealed class DocumentTypeCheck
     }
 
     /// <summary>
-    /// What the local copy of the backlog has — the story bodies and the spreadsheets attached
-    /// to them, which is where the document lists actually live.
+    /// What the synced copy of the backlog has. It is a snapshot of unknown age, so it is shown
+    /// as a hint and never allowed to settle anything: the live stages above are the ones that
+    /// decide, and the drop folder is one of them.
     /// </summary>
-    private void ShowLocalHits(string name)
+    private void ShowSnapshotHits(string name)
     {
-        // Both places: the synced copy of the backlog, and whatever has been downloaded or
-        // dropped in by hand since.
-        var hits = LocalBacklogSearch.Find(_localBacklog, name)
-            .Concat(LocalBacklogSearch.Find(_dropFolder, name))
-            .DistinctBy(h => h.File)
-            .ToList();
+        var hits = LocalBacklogSearch.Find(_localBacklog, name);
 
         if (hits.Count == 0) return;
 
         _prompts.Blank();
-        _prompts.Say($"The name does appear in {hits.Count} file(s) of the local backlog copy:");
+        _prompts.Say($"The name does appear in {hits.Count} file(s) of the local backlog copy — " +
+                     "a synced snapshot, which may be stale:");
 
         foreach (var hit in hits)
         {
