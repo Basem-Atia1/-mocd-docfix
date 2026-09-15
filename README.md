@@ -128,6 +128,13 @@ lost — is never uploaded a second time. It is settled from what CRM holds: `sk
 never changed, `done` otherwise, with the final state saying whether the old file is still on
 the server and still owed to the delete step.
 
+One row is one document, but one *file* can belong to several. A correction writes to the
+`mocd_documentfile` record, and more than one `mocd_document` can point at the same one — so
+correcting one row moves the file under every row that shares it. Those rows keep the old path
+they recorded, and the scan names them: "the same document file record was corrected by row
+408, so this document is already correct too". That is why a row you never worked on can turn
+up already right, with the ledger saying `fix` and CRM saying `skip`.
+
 ### Stopping
 
 - **Watch** asks after every document.

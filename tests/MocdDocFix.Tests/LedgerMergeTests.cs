@@ -49,14 +49,12 @@ public class LedgerMergeTests
         scanned.DocName = "renamed in CRM";
         scanned.ReasonOfBug = "the new reason";
         scanned.Group = 3;
-        scanned.OldFilePath = @"DigitalServices\somethingElse\20250509\a.jpg";
 
         LedgerMerge.Into(new[] { existing }, new[] { scanned });
 
         Assert.Equal("renamed in CRM", existing.DocName);
         Assert.Equal("the new reason", existing.ReasonOfBug);
         Assert.Equal(3, existing.Group);
-        Assert.Equal(@"DigitalServices\somethingElse\20250509\a.jpg", existing.OldFilePath);
     }
 
     /// <summary>
@@ -334,5 +332,84 @@ public class LedgerMergeTests
         LedgerMerge.MarkForReview(merged.Excluded);
 
         Assert.Equal(RowVerdict.Review, existing.Verdict2());
+    }
+
+    /// <summary>
+    /// One ledger row is one mocd_document, but a correction writes to the mocd_documentfile
+    /// record, and several documents can share one of those. So a row nothing has touched can
+    /// still find its file somewhere new — and its old path is then the only record of where
+    /// the file was, which is what the delete step needs.
+    /// </summary>
+    [Fact]
+    public void A_row_whose_file_moved_keeps_the_path_it_recorded()
+    {
+        var existing = Row(One);
+        var scanned = Row(One, oldPath: @"DigitalServices\cd97bf8d\20260916\new.jpg");
+        scanned.OldCategory = "cd97bf8d";
+
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { scanned });
+
+        Assert.Equal(@"DigitalServices\docType\20250509\a.jpg", existing.OldFilePath);
+        Assert.Equal("docType", existing.OldCategory);
+        Assert.Single(merged.Moved);
+        Assert.Equal(@"DigitalServices\cd97bf8d\20260916\new.jpg", merged.Moved[0].NowAt);
+    }
+
+    /// <summary>The usual explanation, and the one the operator needs by name.</summary>
+    [Fact]
+    public void A_file_moved_by_a_sibling_row_names_the_row_that_did_it()
+    {
+        var file = Guid.Parse("a3f1b2c4-0000-0000-0000-0000000000ff");
+
+        var untouched = Row(One);
+        untouched.Row = 99;
+        untouched.DocFileId = file;
+
+        var sibling = Row(Two, finalState: RowStates.Corrected);
+        sibling.Row = 408;
+        sibling.DocFileId = file;
+
+        var scanned = Row(One, oldPath: @"DigitalServices\cd97bf8d\20260916\new.jpg");
+
+        var merged = LedgerMerge.Into(new[] { untouched, sibling }, new[] { scanned });
+
+        Assert.Equal(408, Assert.Single(merged.Moved).CorrectedBy);
+    }
+
+    [Fact]
+    public void A_file_moved_by_nobody_in_the_ledger_says_so()
+    {
+        var existing = Row(One);
+        existing.DocFileId = Guid.Parse("a3f1b2c4-0000-0000-0000-0000000000ff");
+
+        var merged = LedgerMerge.Into(new[] { existing },
+            new[] { Row(One, oldPath: @"DigitalServices\cd97bf8d\20260916\new.jpg") });
+
+        Assert.Null(Assert.Single(merged.Moved).CorrectedBy);
+    }
+
+    [Fact]
+    public void A_row_whose_file_is_where_it_was_is_not_reported_as_moved()
+    {
+        var merged = LedgerMerge.Into(new[] { Row(One) }, new[] { Row(One) });
+
+        Assert.Empty(merged.Moved);
+    }
+
+    /// <summary>
+    /// "CRM says skip" answers nothing on its own — skip covers already-correct, no-file-path
+    /// and no-catalogue alike. The reason travels with the disagreement so the operator can see
+    /// which one they are being asked about.
+    /// </summary>
+    [Fact]
+    public void A_disagreement_carries_the_scans_own_reason()
+    {
+        var scanned = Row(One, verdict: RowVerdicts.Skip);
+        scanned.ReasonOfBug = "Path already correct — matches the document type's catalogue.";
+
+        var merged = LedgerMerge.Into(new[] { Row(One, verdict: RowVerdicts.Fix) }, new[] { scanned });
+
+        Assert.Equal("Path already correct — matches the document type's catalogue.",
+            Assert.Single(merged.Disagreements).ScanReason);
     }
 }

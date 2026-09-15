@@ -173,6 +173,7 @@ public sealed class Session : IDisposable
         }
 
         var merged = LedgerMerge.Into(existing, scanned);
+        ReportMoved(merged);
         AskAboutVerdicts(merged);
         var typeThemMyself = AskAboutExcluded(merged);
         _ledger.Write(merged.Rows);
@@ -242,9 +243,9 @@ public sealed class Session : IDisposable
         _prompts.Section($"{merged.Excluded.Count} row(s) are marked ignore and have never been " +
                          "worked on", Tone.Warn);
 
-        foreach (var (row, scanSays) in merged.Excluded.Take(10))
-            _prompts.Bullet($"row {row.Row} ({row.DocFileName}): ignored — the scan makes it " +
-                            $"'{scanSays}'", Tone.Muted);
+        foreach (var d in merged.Excluded.Take(10))
+            _prompts.Bullet($"row {d.Row.Row} ({d.Row.DocFileName}): ignored — the scan makes " +
+                            $"it '{d.ScanSays}'{Because(d.ScanReason)}", Tone.Muted);
 
         if (merged.Excluded.Count > 10)
             _prompts.Bullet($"… and {merged.Excluded.Count - 10} more", Tone.Muted);
@@ -339,6 +340,52 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// Says which rows describe a file that has moved since the ledger last looked, and what
+    /// moved it.
+    ///
+    /// One ledger row is one mocd_document, but a correction writes to the mocd_documentfile
+    /// record — and several documents can share one of those. Correcting one row therefore
+    /// moves the file under every row that shares its record, rows nothing in the ledger says
+    /// were touched. Without this the operator meets them as a bare verdict disagreement: the
+    /// ledger says fix, CRM says skip, no reason given, and the correct answer looks wrong.
+    ///
+    /// Nothing is asked here. The rows keep their own old path, and the verdict question that
+    /// follows is where they are decided.
+    /// </summary>
+    private void ReportMoved(Merged merged)
+    {
+        if (merged.Moved.Count == 0) return;
+
+        _prompts.Section($"{merged.Moved.Count} row(s) point at a file that has moved since the " +
+                         "ledger last looked", Tone.Warn);
+
+        foreach (var m in merged.Moved.Take(10))
+        {
+            _prompts.Bullet(m.CorrectedBy is null
+                ? $"row {m.Row.Row} ({m.Row.DocFileName}): its file is now at {m.NowAt}, and " +
+                  "nothing in this ledger put it there"
+                : $"row {m.Row.Row} ({m.Row.DocFileName}): the same document file record was " +
+                  $"corrected by row {m.CorrectedBy}, so this document is already correct too",
+                Tone.Muted);
+        }
+
+        if (merged.Moved.Count > 10)
+            _prompts.Bullet($"… and {merged.Moved.Count - 10} more", Tone.Muted);
+
+        _prompts.Blank();
+        _prompts.Say("Their old path is kept as it was, so the old file can still be found and " +
+                     "deleted. Nothing will be uploaded for them a second time.", Tone.Muted);
+        _prompts.Blank();
+    }
+
+    /// <summary>The scan's own words for a verdict, trimmed to fit one line of the report.</summary>
+    private static string Because(string reason)
+    {
+        if (reason.Length == 0) return string.Empty;
+        return reason.Length <= 90 ? $" — {reason}" : $" — {reason[..87]}…";
+    }
+
+    /// <summary>
     /// Where the ledger's verdicts and a fresh scan disagree, asks which to believe.
     ///
     /// Both can be right. A verdict typed by hand is a decision — reading the reason and moving
@@ -356,9 +403,10 @@ public sealed class Session : IDisposable
         _prompts.Section($"{merged.Disagreements.Count} row(s) have a verdict CRM would write " +
                          "differently", Tone.Warn);
 
-        foreach (var (row, scanSays) in merged.Disagreements.Take(10))
-            _prompts.Bullet($"row {row.Row} ({row.DocFileName}): the ledger says " +
-                            $"'{row.Verdict}', CRM says '{scanSays}'", Tone.Muted);
+        foreach (var d in merged.Disagreements.Take(10))
+            _prompts.Bullet($"row {d.Row.Row} ({d.Row.DocFileName}): the ledger says " +
+                            $"'{d.Row.Verdict}', CRM says '{d.ScanSays}'{Because(d.ScanReason)}",
+                Tone.Muted);
 
         if (merged.Disagreements.Count > 10)
             _prompts.Bullet($"… and {merged.Disagreements.Count - 10} more", Tone.Muted);

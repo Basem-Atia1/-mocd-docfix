@@ -8,7 +8,29 @@ namespace MocdDocFix.Commands;
 /// <param name="Vanished">Rows whose document CRM no longer returns.</param>
 /// <param name="Row">The row as the ledger holds it.</param>
 /// <param name="ScanSays">What a fresh look at CRM would put in the verdict column.</param>
-public sealed record VerdictDisagreement(LedgerRow Row, string ScanSays);
+public sealed record VerdictDisagreement(LedgerRow Row, string ScanSays)
+{
+    /// <summary>
+    /// Why the scan says that, in its own words.
+    ///
+    /// Carried because "CRM says skip" on its own is unanswerable. Skip covers three different
+    /// findings — the path is already correct, the record has no file path at all, the document
+    /// type has no catalogue to write — and they want three different answers from the operator.
+    /// Being asked to choose between two bare words is what makes a correct answer look wrong.
+    /// </summary>
+    public string ScanReason { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// A row whose file CRM now holds somewhere else, although no run in this ledger moved it.
+/// </summary>
+/// <param name="NowAt">The path CRM holds for it now.</param>
+/// <param name="CorrectedBy">
+/// The ledger row that corrected the same mocd_documentfile record, when one did — the usual
+/// explanation. Null when nothing in this ledger accounts for the move, which means a person
+/// or another tool changed it.
+/// </param>
+public sealed record PathMoved(LedgerRow Row, string NowAt, int? CorrectedBy);
 
 /// <param name="Excluded">
 /// Rows the operator has marked ignore and that no run has touched. Reported so a whole column
@@ -20,10 +42,14 @@ public sealed record VerdictDisagreement(LedgerRow Row, string ScanSays);
 /// asked whether to keep their own answers or take CRM's, because either can be the right one
 /// and the tool cannot tell which.
 /// </param>
+/// <param name="Moved">
+/// Rows whose file has moved without this ledger moving it. Reported rather than absorbed,
+/// because the row is now describing a file somebody else has already corrected.
+/// </param>
 public sealed record Merged(
     IReadOnlyList<LedgerRow> Rows, int Added, int Refreshed, int Protected, int Vanished,
     IReadOnlyList<string> Notes, IReadOnlyList<VerdictDisagreement> Disagreements,
-    IReadOnlyList<VerdictDisagreement> Excluded);
+    IReadOnlyList<VerdictDisagreement> Excluded, IReadOnlyList<PathMoved> Moved);
 
 /// <summary>
 /// Brings one ledger up to date from a fresh read of CRM, instead of starting a second one.
@@ -38,6 +64,11 @@ public sealed record Merged(
 /// record of where the file used to be, which is exactly what Redo and the delete step depend
 /// on. Rows that have been acted on therefore keep everything about paths and old values, and
 /// take only their display name and links.
+///
+/// One row is not one file. A single mocd_documentfile can be the file of several mocd_document
+/// records, so correcting one row moves the file under every row that shares it — rows this
+/// merge has no record of acting on, and would therefore refresh into agreement with CRM,
+/// losing the old path in the process. They are held back too, and reported.
 /// </summary>
 public static class LedgerMerge
 {
@@ -51,6 +82,7 @@ public static class LedgerMerge
         var notes = new List<string>();
         var disagreements = new List<VerdictDisagreement>();
         var excluded = new List<VerdictDisagreement>();
+        var moved = new List<PathMoved>();
         int added = 0, refreshed = 0, protectedRows = 0;
 
         foreach (var scanned in fresh)
@@ -68,7 +100,7 @@ public static class LedgerMerge
             // protected row, but recorded — a whole column set to "ignore" by one careless fill
             // in Excel is otherwise impossible to undo from inside the tool.
             if (row.Verdict2() == RowVerdict.Ignore && row.State() == RowState.NotStarted)
-                excluded.Add(new VerdictDisagreement(row, scanned.Verdict));
+                excluded.Add(Disagreement(row, scanned));
 
             if (HasBeenActedOn(row))
             {
@@ -82,11 +114,30 @@ public static class LedgerMerge
                 continue;
             }
 
+            // CRM holds a different path from the one this row recorded, and nothing here put it
+            // there. Its old path is the only record of where the file was before somebody moved
+            // it, so it survives the refresh; overwriting it would leave the row claiming the
+            // file has always been where it now is, and nothing left to delete.
+            var elsewhere = row.OldFilePath.Length > 0 &&
+                            !FilePaths.Same(row.OldFilePath, scanned.OldFilePath);
+
+            if (elsewhere)
+            {
+                var by = CorrectorOf(row, existing);
+                moved.Add(new PathMoved(row, scanned.OldFilePath, by));
+
+                row.Notes = Add(row.Notes, by is null
+                    ? $"the file moved to {scanned.OldFilePath} without this row being worked " +
+                      "on — nothing in this ledger did it"
+                    : $"the file moved to {scanned.OldFilePath} when row {by} corrected the " +
+                      "same document file record; the old path here is kept as it was");
+            }
+
             if (!string.Equals(row.Verdict.Trim(), scanned.Verdict,
                     StringComparison.OrdinalIgnoreCase))
-                disagreements.Add(new VerdictDisagreement(row, scanned.Verdict));
+                disagreements.Add(Disagreement(row, scanned));
 
-            Refresh(row, scanned);
+            Refresh(row, scanned, keepHistory: elsewhere);
             refreshed++;
         }
 
@@ -98,7 +149,7 @@ public static class LedgerMerge
 
         return new Merged(rows, added, refreshed, protectedRows,
             existing.Count - seen.Count(id => byDocument.ContainsKey(id)), notes, disagreements,
-            excluded);
+            excluded, moved);
     }
 
     /// <summary>
@@ -120,6 +171,26 @@ public static class LedgerMerge
         foreach (var (row, _) in rows) row.Verdict = RowVerdicts.Review;
     }
 
+    private static VerdictDisagreement Disagreement(LedgerRow row, LedgerRow scanned) =>
+        new(row, scanned.Verdict) { ScanReason = scanned.ReasonOfBug };
+
+    /// <summary>
+    /// The row that corrected this row's file, if one did. Rows are matched on the document file
+    /// record rather than on the document, because that record is what a correction writes to
+    /// and what several documents can share.
+    /// </summary>
+    private static int? CorrectorOf(LedgerRow row, IReadOnlyList<LedgerRow> existing)
+    {
+        if (row.DocFileId == Guid.Empty) return null;
+
+        var sibling = existing.FirstOrDefault(other =>
+            other.DocId != row.DocId &&
+            other.DocFileId == row.DocFileId &&
+            other.State() is RowState.Corrected or RowState.Deleted);
+
+        return sibling?.Row;
+    }
+
     /// <summary>
     /// True once a run has changed something for this row, or the operator has excluded it.
     /// A failed row has not been acted on successfully, so it is still refreshed.
@@ -129,17 +200,21 @@ public static class LedgerMerge
         row.Verdict2() is RowVerdict.Ignore or RowVerdict.Redo or RowVerdict.Done;
 
     /// <summary>
-    /// Everything CRM is the authority on. The four columns the operator owns — verdict, final
-    /// state, notes — and everything a run records are deliberately absent.
+    /// Everything CRM is the authority on. The columns the operator owns — verdict, final state,
+    /// notes — and everything a run records are deliberately absent.
     /// </summary>
-    private static void Refresh(LedgerRow row, LedgerRow scanned)
+    /// <param name="keepHistory">
+    /// Holds back the columns that say what the file was: its path, category, hash, name and id.
+    /// Set when the file has moved under this row without this ledger moving it, so the record
+    /// of where it was is not replaced by where somebody else has just put it.
+    /// </param>
+    private static void Refresh(LedgerRow row, LedgerRow scanned, bool keepHistory)
     {
         row.DocName = scanned.DocName;
         row.DocTypeName = scanned.DocTypeName;
         row.DocFileName = scanned.DocFileName;
         row.DocFileId = scanned.DocFileId;
 
-        row.OldFilePath = scanned.OldFilePath;
         row.NewFilePathPredicted = scanned.NewFilePathPredicted;
 
         row.ServiceCatalogueId = scanned.ServiceCatalogueId;
@@ -147,10 +222,14 @@ public static class LedgerMerge
         row.CorrectServiceCatalogueId = scanned.CorrectServiceCatalogueId;
         row.CorrectServiceCatalogueName = scanned.CorrectServiceCatalogueName;
 
-        row.OldCategory = scanned.OldCategory;
-        row.OldHash = scanned.OldHash;
-        row.OldFileName = scanned.OldFileName;
-        row.OldFileId = scanned.OldFileId;
+        if (!keepHistory)
+        {
+            row.OldFilePath = scanned.OldFilePath;
+            row.OldCategory = scanned.OldCategory;
+            row.OldHash = scanned.OldHash;
+            row.OldFileName = scanned.OldFileName;
+            row.OldFileId = scanned.OldFileId;
+        }
 
         row.Group = scanned.Group;
         row.ReasonOfBug = scanned.ReasonOfBug;
@@ -172,4 +251,7 @@ public static class LedgerMerge
         // refreshed above, and the disagreement is reported to the operator rather than acted
         // on behind them.
     }
+
+    private static string Add(string notes, string line) =>
+        notes.Length == 0 ? line : $"{notes}; {line}";
 }
