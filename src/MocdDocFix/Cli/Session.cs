@@ -244,7 +244,7 @@ public sealed class Session : IDisposable
                          "worked on", Tone.Warn);
 
         foreach (var d in merged.Excluded.Take(10))
-            _prompts.Bullet($"row {d.Row.Row} ({d.Row.DocFileName}): ignored — the scan makes " +
+            _prompts.Bullet($"{d.Row.Ref()}: ignored — the scan makes " +
                             $"it '{d.ScanSays}'{Because(d.ScanReason)}", Tone.Muted);
 
         if (merged.Excluded.Count > 10)
@@ -362,10 +362,10 @@ public sealed class Session : IDisposable
         foreach (var m in merged.Moved.Take(10))
         {
             _prompts.Bullet(m.CorrectedBy is null
-                ? $"row {m.Row.Row} ({m.Row.DocFileName}): its file is now at {m.NowAt}, and " +
+                ? $"{m.Row.Ref()}: its file is now at {m.NowAt}, and " +
                   "nothing in this ledger put it there"
-                : $"row {m.Row.Row} ({m.Row.DocFileName}): the same document file record was " +
-                  $"corrected by row {m.CorrectedBy}, so this document is already correct too",
+                : $"{m.Row.Ref()}: the same document file record was " +
+                  $"corrected by {m.CorrectedBy!.Ref()}, so this one is already correct too",
                 Tone.Muted);
         }
 
@@ -404,7 +404,7 @@ public sealed class Session : IDisposable
                          "differently", Tone.Warn);
 
         foreach (var d in merged.Disagreements.Take(10))
-            _prompts.Bullet($"row {d.Row.Row} ({d.Row.DocFileName}): the ledger says " +
+            _prompts.Bullet($"{d.Row.Ref()}: the ledger says " +
                             $"'{d.Row.Verdict}', CRM says '{d.ScanSays}'{Because(d.ScanReason)}",
                 Tone.Muted);
 

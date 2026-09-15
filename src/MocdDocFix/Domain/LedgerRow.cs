@@ -96,4 +96,16 @@ public sealed class LedgerRow
     public RowVerdict Verdict2() => RowVerdicts.Parse(Verdict);
 
     public RowState State() => RowStates.Parse(FinalState);
+
+    /// <summary>
+    /// How this row is named in a message.
+    ///
+    /// The row number alone is not an identity. It is positional — the sheet is sorted by
+    /// verdict and renumbered on every write — so a document that was row 1 this morning can be
+    /// row 408 this afternoon, and "row 99" in yesterday's message points at somebody else
+    /// today. The head of the document id does not move, so it travels with the number.
+    /// </summary>
+    public string Ref() =>
+        $"row {Row} · doc {DocId.ToString()[..8]}" +
+        (DocFileName.Length == 0 ? string.Empty : $" ({DocFileName})");
 }

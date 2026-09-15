@@ -131,9 +131,14 @@ the server and still owed to the delete step.
 One row is one document, but one *file* can belong to several. A correction writes to the
 `mocd_documentfile` record, and more than one `mocd_document` can point at the same one — so
 correcting one row moves the file under every row that shares it. Those rows keep the old path
-they recorded, and the scan names them: "the same document file record was corrected by row
-408, so this document is already correct too". That is why a row you never worked on can turn
+they recorded, and the scan names them: "row 99 · doc 2d8b172a (a.png): the same document file
+record was corrected by row 408 · doc 07d2e3c9". That is why a row you never worked on can turn
 up already right, with the ledger saying `fix` and CRM saying `skip`.
+
+The row number is positional. The sheet is sorted by verdict and renumbered every time it is
+written, so a document that was row 1 this morning can be row 408 this afternoon. That is why
+every message names the head of the document id beside the row number: the number finds the
+line in today's sheet, the id says which document it is.
 
 ### Stopping
 

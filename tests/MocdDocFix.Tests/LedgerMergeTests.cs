@@ -373,7 +373,7 @@ public class LedgerMergeTests
 
         var merged = LedgerMerge.Into(new[] { untouched, sibling }, new[] { scanned });
 
-        Assert.Equal(408, Assert.Single(merged.Moved).CorrectedBy);
+        Assert.Equal(408, Assert.Single(merged.Moved).CorrectedBy?.Row);
     }
 
     [Fact]

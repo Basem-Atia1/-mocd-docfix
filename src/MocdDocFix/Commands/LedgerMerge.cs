@@ -30,7 +30,7 @@ public sealed record VerdictDisagreement(LedgerRow Row, string ScanSays)
 /// explanation. Null when nothing in this ledger accounts for the move, which means a person
 /// or another tool changed it.
 /// </param>
-public sealed record PathMoved(LedgerRow Row, string NowAt, int? CorrectedBy);
+public sealed record PathMoved(LedgerRow Row, string NowAt, LedgerRow? CorrectedBy);
 
 /// <param name="Excluded">
 /// Rows the operator has marked ignore and that no run has touched. Reported so a whole column
@@ -129,7 +129,7 @@ public static class LedgerMerge
                 row.Notes = Add(row.Notes, by is null
                     ? $"the file moved to {scanned.OldFilePath} without this row being worked " +
                       "on — nothing in this ledger did it"
-                    : $"the file moved to {scanned.OldFilePath} when row {by} corrected the " +
+                    : $"the file moved to {scanned.OldFilePath} when {by.Ref()} corrected the " +
                       "same document file record; the old path here is kept as it was");
             }
 
@@ -143,7 +143,7 @@ public static class LedgerMerge
 
         foreach (var row in existing.Where(r => !seen.Contains(r.DocId)))
         {
-            notes.Add($"row {row.Row} ({row.DocFileName}): CRM no longer returns this document — " +
+            notes.Add($"{row.Ref()}: CRM no longer returns this document — " +
                       "kept in the ledger, but nothing will act on it");
         }
 
@@ -179,16 +179,14 @@ public static class LedgerMerge
     /// record rather than on the document, because that record is what a correction writes to
     /// and what several documents can share.
     /// </summary>
-    private static int? CorrectorOf(LedgerRow row, IReadOnlyList<LedgerRow> existing)
+    private static LedgerRow? CorrectorOf(LedgerRow row, IReadOnlyList<LedgerRow> existing)
     {
         if (row.DocFileId == Guid.Empty) return null;
 
-        var sibling = existing.FirstOrDefault(other =>
+        return existing.FirstOrDefault(other =>
             other.DocId != row.DocId &&
             other.DocFileId == row.DocFileId &&
             other.State() is RowState.Corrected or RowState.Deleted);
-
-        return sibling?.Row;
     }
 
     /// <summary>
