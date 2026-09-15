@@ -126,6 +126,26 @@ public class LedgerStoreTests : IDisposable
     }
 
     /// <summary>
+    /// Backups are a short safety net, not an archive. Four hundred copies of a ledger is a
+    /// folder somebody has to tidy, and the oldest is the least useful of them.
+    /// </summary>
+    [Fact]
+    public void Only_the_newest_few_backup_copies_are_kept()
+    {
+        var store = Store();
+        store.Write(new[] { Row(1) });
+
+        // Five sittings: a fresh store each time, because the copy is taken once per sitting.
+        for (var sitting = 0; sitting < 5; sitting++)
+        {
+            Thread.Sleep(15);
+            new LedgerStore(store.Path).Write(new[] { Row(1), Row(sitting + 2) });
+        }
+
+        Assert.Equal(3, Directory.GetFiles(store.PreviousDirectory, "*.xlsx").Length);
+    }
+
+    /// <summary>
     /// There is one ledger for the life of an environment. A backup must not sit beside it
     /// looking like a second one — an old workbook opens perfectly well and shows yesterday's
     /// answers with nothing to say they are stale.

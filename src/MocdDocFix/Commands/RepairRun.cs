@@ -119,7 +119,9 @@ public sealed class RepairRun
 
             if (outcome.Failed && !KeepGoing()) { stopped = true; break; }
 
-            _progress.BetweenRows();
+            // Watch asks after every document, not only after a failure — the operator is
+            // watching precisely so they can stop when they see something they do not like.
+            if (!_progress.CarryOn()) { stopped = true; break; }
         }
 
         return new RepairSummary(corrected, declined, failed, stopped,

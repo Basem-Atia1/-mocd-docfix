@@ -66,6 +66,13 @@ public sealed class LedgerStore
     /// </summary>
     public Func<string, bool>? AskToRetry { get; set; }
 
+    /// <summary>
+    /// Told once when the plain-text copy starts falling behind. Not a question — the copy is
+    /// not worth stopping a run for — but a stale file that looks current is worth saying out
+    /// loud the moment it happens rather than at the end.
+    /// </summary>
+    public Action<string>? WarnAboutCsv { get; set; }
+
     public IReadOnlyList<LedgerRow> Read() => _workbook.Read();
 
     public void Write(IReadOnlyList<LedgerRow> rows)
@@ -105,12 +112,21 @@ public sealed class LedgerStore
             using var writer = new StreamWriter(CsvPath, append: false, Utf8);
             using var csv = new CsvWriter(writer, Config());
             csv.WriteRecords(ordered);
+
+            LastCsvProblem = null;
         }
-        catch (IOException)
+        catch (Exception problem) when (IsLocked(problem))
         {
-            // The copy is a convenience. Losing it for one write is not worth failing a run,
-            // and the next completed row rewrites it.
-            LastCsvProblem = $"could not rewrite {CsvPath} — is it open in something?";
+            // The copy is a convenience, so this never fails a run. But a stale copy that looks
+            // current is worse than no copy: it shows fewer corrections than really happened.
+            // So it is said once, the moment it starts, rather than whispered at the end.
+            if (LastCsvProblem is null)
+                WarnAboutCsv?.Invoke(
+                    $"The plain-text copy {CsvPath} is open in another program, so it is no " +
+                    "longer being updated and now shows less than the ledger does. The ledger " +
+                    "itself is fine. Close the .csv and it will catch up on the next document.");
+
+            LastCsvProblem = $"{CsvPath} was not rewritten — it is open in another program.";
         }
     }
 
@@ -127,16 +143,45 @@ public sealed class LedgerStore
     public string PreviousDirectory =>
         System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Path)!, "previous");
 
+    /// <summary>
+    /// How many backup copies are kept. Enough to undo a bad sitting or two; not so many that
+    /// the folder becomes something to tidy. The ledger itself is the record — these exist only
+    /// for the short window where a mistake has not yet been noticed.
+    /// </summary>
+    private const int CopiesKept = 3;
+
     private void BackUpOnce()
     {
         if (_backedUpThisSitting || !Exists) return;
 
         Directory.CreateDirectory(PreviousDirectory);
 
+        // Milliseconds because two sittings can begin in the same second — and colliding here
+        // threw "already exists", which the lock check then reported as "open in another
+        // program". Overwriting as well, so a collision can never be fatal.
         File.Copy(Path, System.IO.Path.Combine(PreviousDirectory,
-            $"{System.IO.Path.GetFileNameWithoutExtension(Path)}-{DateTime.Now:yyyyMMdd-HHmmss}.xlsx"));
+            $"{System.IO.Path.GetFileNameWithoutExtension(Path)}-{DateTime.Now:yyyyMMdd-HHmmss-fff}.xlsx"),
+            overwrite: true);
 
         _backedUpThisSitting = true;
+
+        Prune();
+    }
+
+    /// <summary>Keeps the newest few copies and removes the rest.</summary>
+    private void Prune()
+    {
+        try
+        {
+            var old = new DirectoryInfo(PreviousDirectory)
+                .GetFiles("*.xlsx")
+                .OrderByDescending(f => f.LastWriteTimeUtc)
+                .Skip(CopiesKept);
+
+            foreach (var file in old) file.Delete();
+        }
+        catch (IOException) { }                  // tidying is never worth failing a run over
+        catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>

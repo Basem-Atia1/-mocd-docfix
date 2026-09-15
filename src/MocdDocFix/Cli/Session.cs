@@ -69,6 +69,13 @@ public sealed class Session : IDisposable
         // written, its file has been uploaded and its CRM record changed, so failing to record
         // that is the one outcome worse than waiting.
         _ledger.AskToRetry = WaitForExcel;
+
+        _ledger.WarnAboutCsv = why =>
+        {
+            _prompts.Blank();
+            _prompts.Warn(why, Tone.Warn);
+            _prompts.Blank();
+        };
     }
 
     /// <summary>

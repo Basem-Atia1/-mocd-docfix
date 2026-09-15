@@ -298,6 +298,28 @@ public class RepairRunTests : IDisposable
         Assert.Equal(RowState.NotStarted, onDisk[2].State());
     }
 
+    /// <summary>
+    /// Watch asks after every document, and no means no. Before this the pause took any
+    /// keystroke as "carry on", so an operator who typed "no" watched the run continue anyway.
+    /// </summary>
+    [Fact]
+    public async Task Saying_no_between_documents_stops_the_run_there()
+    {
+        UploadsSucceed();
+        var rows = new[] { Fixable(1), Fixable(2), Fixable(3) };
+
+        _prompts.Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+        _prompts.YesNoQueue = new Queue<bool>(new[] { false });   // no, do not carry on
+
+        var summary = await Subject(WatchMode.Watch).RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.True(summary.Stopped);
+        Assert.Equal(1, summary.Corrected);
+        Assert.Equal(RowState.Corrected, rows[0].State());
+        Assert.Equal(RowState.NotStarted, rows[1].State());
+        Assert.Equal(RowState.NotStarted, rows[2].State());
+    }
+
     [Fact]
     public async Task An_empty_ledger_is_not_an_error()
     {

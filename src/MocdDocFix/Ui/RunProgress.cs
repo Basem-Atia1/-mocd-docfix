@@ -70,13 +70,18 @@ public sealed class RunProgress
         _prompts.Info($"              {row.DocFileName}  FAILED — {why}", Tone.Danger);
 
     /// <summary>
-    /// The pause after a document in Watch. A bare enter to move on — not the watch question
-    /// being asked again, which was settled before the loop started.
+    /// The pause after a document in Watch.
+    ///
+    /// A real question, not a bare enter: an operator who has just watched something they did
+    /// not like types "no", and a prompt that accepts any keystroke as "carry on" would move to
+    /// the next document anyway. Answering no stops the run where it stands.
     /// </summary>
-    public void BetweenRows()
+    /// <returns>False to stop the run.</returns>
+    public bool CarryOn()
     {
-        if (Mode != WatchMode.Watch) return;
-        _prompts.ReadLine("  enter for the next one");
+        if (Mode != WatchMode.Watch) return true;
+
+        return _prompts.YesNo("  Carry on to the next document?", defaultYes: true);
     }
 
     private static string Short(string value, int width) =>

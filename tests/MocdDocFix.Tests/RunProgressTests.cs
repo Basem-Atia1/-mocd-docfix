@@ -83,19 +83,28 @@ public class RunProgressTests
     public void Only_unattended_skips_the_eye_check(WatchMode mode, bool asks) =>
         Assert.Equal(asks, At(mode).Progress.AsksTheEyeCheck);
 
-    /// <summary>
-    /// Watch pauses so each document can be read. It is a bare enter, not the watch question
-    /// being asked again — that was settled before the loop started.
-    /// </summary>
+    /// <summary>Watch pauses so each document can be read before the next begins.</summary>
     [Fact]
-    public void Watch_pauses_between_documents()
+    public void Watch_asks_between_documents()
     {
         var (prompts, progress) = At(WatchMode.Watch);
-        prompts.ReadLineQueue = new Queue<string>(new[] { "" });
+        prompts.YesNoResponse = true;
 
-        progress.BetweenRows();
-
+        Assert.True(progress.CarryOn());
         Assert.Single(prompts.Questions);
+    }
+
+    /// <summary>
+    /// The bug this replaced: the pause took any keystroke as "carry on", so an operator who
+    /// had just watched something they disliked typed "no" and the loop moved on regardless.
+    /// </summary>
+    [Fact]
+    public void Answering_no_between_documents_stops_the_run()
+    {
+        var (prompts, progress) = At(WatchMode.Watch);
+        prompts.YesNoResponse = false;
+
+        Assert.False(progress.CarryOn());
     }
 
     [Theory]
@@ -105,8 +114,7 @@ public class RunProgressTests
     {
         var (prompts, progress) = At(mode);
 
-        progress.BetweenRows();
-
+        Assert.True(progress.CarryOn());
         Assert.Empty(prompts.Questions);
     }
 
