@@ -100,9 +100,13 @@ public class LedgerOrderTests
         {
             "row", "doc name", "doc type name", "doc file name",
             "old file path", "new file path predicted", "new file path",
-            "service catalogue name", "correct service catalogue name",
+
+            // The three that read as one sentence: filed under this, the record says that,
+            // it should be the third.
+            "service catalogue name", "old category", "correct service catalogue name",
+
             "verdict", "final state", "group", "way of upload", "error", "backup path"
-        }, headers.Take(15));
+        }, headers.Take(16));
 
         // And every GUID is kept to the right of them.
         Assert.True(headers.IndexOf("doc id") > headers.IndexOf("backup path"));
