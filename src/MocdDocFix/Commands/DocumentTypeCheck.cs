@@ -113,7 +113,7 @@ public sealed class DocumentTypeCheck
         return opinion.Verdict == AdoVerdict.CannotTell
             ? Ask(name, crmService, opinion)
             : new TypeRuling(name, opinion.Verdict, opinion.Service, opinion.Detail,
-                opinion.Evidence, "DevOps");
+                opinion.Evidence, opinion.Source);
     }
 
     /// <summary>
@@ -188,7 +188,7 @@ public sealed class DocumentTypeCheck
                     return again.Verdict == AdoVerdict.CannotTell
                         ? Ask(name, crmService, again)
                         : new TypeRuling(name, again.Verdict, again.Service, again.Detail,
-                            again.Evidence, "DevOps");
+                            again.Evidence, again.Source);
 
                 case 1:
                     var why = _unreachable;
@@ -281,6 +281,7 @@ public sealed class DocumentTypeCheck
         // it says has to name the file, because that is the thing the operator can go and open.
         return opinion with
         {
+            Source = "backlog files",
             Detail = opinion.Verdict == AdoVerdict.CannotTell
                 ? $"{opinion.Detail} (found in {where})"
                 : $"{opinion.Detail} Found in {where}."
@@ -346,7 +347,7 @@ public sealed class DocumentTypeCheck
                 $"It is not written in the {read} story bodies I could read either.");
 
         return DocumentTypeAuthority.Weigh(name, crmService,
-            hits.DistinctBy(h => h.WorkItemId).ToList());
+            hits.DistinctBy(h => h.WorkItemId).ToList()) with { Source = "DevOps bodies" };
     }
 
     /// <summary>
@@ -396,7 +397,11 @@ public sealed class DocumentTypeCheck
                     $"DevOps could not be reached — {_unreachable}");
             }
 
-            var opinion = DocumentTypeAuthority.Weigh(name, crmService, hits);
+            var opinion = DocumentTypeAuthority.Weigh(name, crmService, hits) with
+            {
+                Source = "DevOps titles"
+            };
+
             weakest ??= opinion;
 
             if (opinion.Verdict != AdoVerdict.CannotTell) return opinion;
@@ -673,7 +678,9 @@ public sealed class DocumentTypeCheck
 
         if (opinion.Verdict != AdoVerdict.CannotTell)
             return new TypeRuling(name, opinion.Verdict, opinion.Service, opinion.Detail,
-                opinion.Evidence, phrase is null ? "DevOps, looked at again" : $"DevOps, searched for '{phrase}'");
+                opinion.Evidence, phrase is null
+                    ? $"{opinion.Source}, looked at again"
+                    : $"{opinion.Source}, searched for '{phrase}'");
 
         return Ask(name, crmService, opinion);
     }

@@ -24,11 +24,17 @@ public enum AdoVerdict
 /// <param name="Service">The service named in the title, or null when the title does not name one.</param>
 public sealed record AdoHit(int WorkItemId, string Title, string? Service);
 
+/// <param name="Source">
+/// Which stage of the enquiry produced this — "DevOps titles", "DevOps bodies", "backlog files".
+/// Kept on the opinion so the report can say how a document type was settled, not merely that it
+/// was: a title match, a story body and a downloaded workbook are different strengths of evidence.
+/// </param>
 public sealed record AdoOpinion(
     AdoVerdict Verdict,
     string? Service,
     IReadOnlyList<AdoHit> Evidence,
-    string Detail);
+    string Detail,
+    string Source = "DevOps");
 
 /// <summary>
 /// Reads a service off Azure DevOps work item titles and weighs it against what CRM says.

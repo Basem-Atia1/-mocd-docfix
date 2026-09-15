@@ -43,7 +43,7 @@ public class DocumentTypeCheckTests : IDisposable
         var ruling = await Check().RuleOnAsync("Medical Examination Certificate", Emap, CancellationToken.None);
 
         Assert.Equal(AdoVerdict.Agrees, ruling.Verdict);
-        Assert.Equal("DevOps", ruling.Source);
+        Assert.Equal("DevOps titles", ruling.Source);      // which stage answered, not just that one did
         Assert.Empty(_prompts.Questions);
     }
 

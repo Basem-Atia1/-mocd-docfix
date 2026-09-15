@@ -1,3 +1,4 @@
+using MocdDocFix.Clients;
 using MocdDocFix.Commands;
 using MocdDocFix.Domain;
 using MocdDocFix.Storage;
@@ -167,5 +168,46 @@ public class ScanDevOpsTests : IDisposable
         Assert.Contains("DevOps says", text);
         Assert.Contains("agrees", text);
         Assert.Contains("1000", text);              // the work item the answer rests on
+    }
+
+    /// <summary>
+    /// The enquiry now has three stages, and a title match, a story body and a downloaded
+    /// workbook are different strengths of evidence. The report has to say which one answered,
+    /// not merely that something did.
+    /// </summary>
+    [Fact]
+    public async Task The_report_says_which_stage_of_the_backlog_answered()
+    {
+        _ado.Bodies["Employee Appointment Request"] = new()
+        {
+            new AdoWorkItemText(27628, "1.1.6 NPOP- Employee Appointment Request Form- Documents",
+                "A Copy of Board of Director's Decision")
+        };
+
+        var check = new DocumentTypeCheck(_ado,
+            new DocumentTypeDecisions(Path.Combine(_dir, "stage.json")), _prompts);
+
+        var ruling = await check.RuleOnAsync("A Copy of Board of Director's Decision",
+            "Employee Appointment Request", CancellationToken.None);
+
+        Assert.Equal("DevOps bodies", ruling.Source);
+    }
+
+    [Fact]
+    public async Task A_title_match_says_so_too()
+    {
+        _ado.Titles["Board Decision"] = new()
+        {
+            "NPOP|Employee Appointment Request|Documents|Verify the board decision",
+            "Portal | Employee Appointment Request | Verify the board decision upload"
+        };
+
+        var check = new DocumentTypeCheck(_ado,
+            new DocumentTypeDecisions(Path.Combine(_dir, "titles.json")), _prompts);
+
+        var ruling = await check.RuleOnAsync("Board Decision", "Employee Appointment Request",
+            CancellationToken.None);
+
+        Assert.Equal("DevOps titles", ruling.Source);
     }
 }
