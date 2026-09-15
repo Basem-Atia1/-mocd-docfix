@@ -29,14 +29,22 @@ public sealed class DeleteOldFiles
     private readonly LedgerStore _ledger;
     private readonly IPrompts _prompts;
 
+    private readonly ErrorLog? _errors;
+
+    /// <param name="errors">
+    /// Where a refusal is written in full. The screen gets a sentence that fits a line; the
+    /// reason a server would not delete something is usually longer than that and is exactly
+    /// what somebody needs an hour later.
+    /// </param>
     public DeleteOldFiles(IFileServiceClient files, ICrmReadClient read, ChangeJournal journal,
-        LedgerStore ledger, IPrompts prompts)
+        LedgerStore ledger, IPrompts prompts, ErrorLog? errors = null)
     {
         _files = files;
         _read = read;
         _journal = journal;
         _ledger = ledger;
         _prompts = prompts;
+        _errors = errors;
     }
 
     public async Task<DeleteSummary> RunAsync(
@@ -68,8 +76,11 @@ public sealed class DeleteOldFiles
             else
             {
                 refused++;
-                reasons.Add($"row {row.Row}: {problem}");
-                _prompts.Info($"  [ row {row.Row} ]  {row.DocFileName}  REFUSED — {problem}", Tone.Warn);
+                reasons.Add($"row {row.Row}: {Short(problem)}");
+
+                _errors?.Append(row.Row, eligible.Count, row, "delete the old file", problem);
+                _prompts.Info($"  [ row {row.Row} ]  {row.DocFileName}  REFUSED — {Short(problem)}",
+                    Tone.Warn);
             }
 
             _ledger.Write(rows);
@@ -133,6 +144,13 @@ public sealed class DeleteOldFiles
 
         return !isProduction || _prompts.TypedWord(
             "  This is PRODUCTION. Type DELETE to confirm", "DELETE");
+    }
+
+    /// <summary>One line for the screen. The whole of it goes to the error log.</summary>
+    private static string Short(string problem)
+    {
+        var firstLine = problem.Split('\n')[0].TrimEnd();
+        return firstLine.Length <= 160 ? firstLine : firstLine[..157] + "…";
     }
 
     private static string? ReadString(string? json, string attribute)

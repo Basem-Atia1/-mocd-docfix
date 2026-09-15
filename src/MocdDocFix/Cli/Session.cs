@@ -390,7 +390,7 @@ public sealed class Session : IDisposable
 
             if (_dryRun) return StepOutcome.Of("Dry run: delete is irreversible, so nothing was done.");
 
-            var summary = await new DeleteOldFiles(_files, _read, _journal, _ledger, _prompts)
+            var summary = await new DeleteOldFiles(_files, _read, _journal, _ledger, _prompts, _errors)
                 .RunAsync(rows, _env.IsProduction, ct);
 
             return new StepOutcome(

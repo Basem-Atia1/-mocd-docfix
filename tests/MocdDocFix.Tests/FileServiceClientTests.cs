@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using MocdDocFix.Clients;
 using MocdDocFix.Config;
 using MocdDocFix.Tests.Fakes;
@@ -193,5 +194,93 @@ public class FileServiceClientTests
 
         Assert.False(result.Success);
         Assert.False(string.IsNullOrWhiteSpace(result.Message));
+    }
+
+    // ---- what went wrong, said usefully ----
+
+    /// <summary>Throws the way HttpClient does: a bland outer message wrapping the real fault.</summary>
+    private sealed class ThrowingHandler : HttpMessageHandler
+    {
+        private readonly Exception _thrown;
+
+        public ThrowingHandler(Exception thrown) => _thrown = thrown;
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken) => throw _thrown;
+    }
+
+    private static FileServiceClient Throwing(Exception thrown) =>
+        new(new HttpClient(new ThrowingHandler(thrown)) { Timeout = TimeSpan.FromMinutes(10) }, Env());
+
+    /// <summary>
+    /// HttpRequestException.Message is nearly always "An error occurred while sending the
+    /// request", which tells nobody anything. The fault that caused it is one or two levels
+    /// down, and that is the part worth reading in the error log an hour later.
+    /// </summary>
+    [Fact]
+    public async Task A_connection_failure_names_the_fault_underneath_it()
+    {
+        var client = Throwing(new HttpRequestException(
+            "An error occurred while sending the request.",
+            new IOException("The response ended prematurely.")));
+
+        var result = await client.DownloadAsync(OldPath, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("IOException", result.Message);
+        Assert.Contains("ended prematurely", result.Message);
+    }
+
+    [Fact]
+    public async Task The_whole_chain_of_causes_is_reported()
+    {
+        var client = Throwing(new HttpRequestException(
+            "An error occurred while sending the request.",
+            new IOException("Unable to read data from the transport connection.",
+                new SocketException(10054))));
+
+        var result = await client.DownloadAsync(OldPath, CancellationToken.None);
+
+        Assert.Contains("HttpRequestException", result.Message);
+        Assert.Contains("IOException", result.Message);
+        Assert.Contains("SocketException", result.Message);
+    }
+
+    /// <summary>Which request failed matters as much as why — there are three of them.</summary>
+    [Fact]
+    public async Task The_failing_request_is_named()
+    {
+        var client = Throwing(new HttpRequestException("boom"));
+
+        var result = await client.DeleteAsync(OldPath, CancellationToken.None);
+
+        Assert.Contains("api/File/Delete", result.Message);
+    }
+
+    /// <summary>
+    /// A timeout arrives as TaskCanceledException with the token untouched, which reads as
+    /// "somebody stopped it" unless it is named for what it is.
+    /// </summary>
+    [Fact]
+    public async Task A_timeout_is_called_a_timeout_and_not_a_cancellation()
+    {
+        var client = Throwing(new TaskCanceledException("The request was canceled."));
+
+        var result = await client.DownloadAsync(OldPath, CancellationToken.None);
+
+        Assert.Contains("did not answer within", result.Message);
+    }
+
+    [Fact]
+    public async Task A_real_cancellation_is_called_one()
+    {
+        using var stopped = new CancellationTokenSource();
+        stopped.Cancel();
+
+        var client = Throwing(new TaskCanceledException("The request was canceled."));
+
+        var result = await client.DownloadAsync(OldPath, stopped.Token);
+
+        Assert.Contains("Cancelled", result.Message);
     }
 }

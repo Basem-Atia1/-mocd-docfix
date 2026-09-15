@@ -105,8 +105,39 @@ public sealed class FileServiceClient : IFileServiceClient
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            return ApiResponse<T>.Fail($"Request failed: {ex.Message}");
+            return ApiResponse<T>.Fail(Explain(ex, method, url, ct));
         }
+    }
+
+    /// <summary>
+    /// What actually went wrong, at length.
+    ///
+    /// HttpRequestException.Message is nearly always the useless sentence "An error occurred
+    /// while sending the request" — the fault behind it (a reset socket, a refused connection,
+    /// a name that would not resolve, a TLS failure) is one or two levels down in
+    /// InnerException. Reporting only the outer message told the operator nothing and put
+    /// nothing worth reading in the error log either.
+    /// </summary>
+    private string Explain(Exception ex, HttpMethod method, string url, CancellationToken ct)
+    {
+        var where = $"{method} {url}";
+
+        // A timeout arrives as TaskCanceledException with the token NOT cancelled, which reads
+        // as "somebody stopped it" unless it is named.
+        if (ex is TaskCanceledException && !ct.IsCancellationRequested)
+            return $"The file server did not answer within {_http.Timeout.TotalMinutes:0.#} " +
+                   $"minute(s). {where}";
+
+        if (ex is TaskCanceledException) return $"Cancelled. {where}";
+
+        var chain = new List<string>();
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+            chain.Add($"{e.GetType().Name}: {e.Message}");
+
+        var status = ex is HttpRequestException { StatusCode: { } code } ? $" HTTP {(int)code}." : "";
+
+        return $"Request failed.{status} {where}{Environment.NewLine}      " +
+               string.Join($"{Environment.NewLine}      caused by ", chain);
     }
 
     private static string Truncate(string s) => s.Length <= 300 ? s : s[..300] + "…";
