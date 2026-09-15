@@ -203,14 +203,22 @@ correct ones, broken ones, and legacy ones with no file path — classifies each
 
 ### How closely to watch
 
-Asked once, straight after that, and it applies to the whole loop. It changes what is printed
-and what stops; it never changes what is written to CRM or to the ledger.
+**Asked once per entry into the mode, and never again while the loop runs.** One answer
+governs every document in the ledger, whether that is three rows or four hundred. The loop
+never re-asks it, not at a group boundary, not after an error, not after a halt-and-continue.
+Leaving the mode and coming back asks it again, because that is a new sitting.
+
+It changes what is printed and what stops; it never changes what is written to CRM or to the
+ledger.
 
 | | printed per document | stops between documents | stops for the eye-check |
 |---|---|---|---|
-| **Watch** | the full step-by-step block | yes — enter for the next one | yes |
+| **Watch** | the full step-by-step block | yes — a bare enter for the next one | yes |
 | **Quiet** | one line | no | yes |
 | **Unattended** | one line | no | **no** |
+
+Watch's pause between documents is a bare enter to move on. It is not this question being
+asked again — that is settled for the run.
 
 **Watch** is for the first dozen, or for production: every step of every document, then a
 pause to read it before the next begins.
