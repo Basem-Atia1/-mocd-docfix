@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using MocdDocFix.Domain;
 using Xunit;
 
@@ -18,6 +19,21 @@ public class LocalBacklogSearchTests : IDisposable
     private void Story(string name, string title, string body) =>
         File.WriteAllText(Path.Combine(_root, name),
             $"---\ntype: User Story\ntitle: {title}\n---\n\n{body}\n");
+
+    /// <summary>
+    /// The smallest thing that is honestly an .xlsx for our purposes: a zip with a shared string
+    /// table in it. That is the only entry <see cref="LocalBacklogSearch"/> reads.
+    /// </summary>
+    private void Workbook(string name, params string[] cells)
+    {
+        using var file = File.Create(Path.Combine(_root, name));
+        using var zip = new ZipArchive(file, ZipArchiveMode.Create);
+        using var entry = new StreamWriter(zip.CreateEntry("xl/sharedStrings.xml").Open());
+
+        entry.Write("<sst>");
+        foreach (var cell in cells) entry.Write($"<si><t>{cell}</t></si>");
+        entry.Write("</sst>");
+    }
 
     [Fact]
     public void A_name_written_in_a_story_body_is_found_with_the_service_it_belongs_to()
@@ -49,7 +65,50 @@ public class LocalBacklogSearchTests : IDisposable
         Assert.Empty(LocalBacklogSearch.Find(Path.Combine(_root, "nope"), "anything"));
     }
 
+    [Fact]
+    public void A_story_that_words_the_name_differently_is_still_found()
+    {
+        Story("us-27628.md", "1.1.6 NPOP- Employee Appointment Request Form- Documents",
+            "Certificate of good conduct and behavior, valid for the life of the appointment.");
+
+        var hit = Assert.Single(LocalBacklogSearch.Find(_root, "a good conduct life"));
+
+        Assert.Equal("Employee Appointment Request", hit.Service);
+    }
+
+    [Fact]
+    public void The_same_words_pages_apart_are_not_a_match()
+    {
+        Story("us-1.md", "1.1.1 NPOP- Something Else Form- Documents",
+            "good " + new string('x', 400) + " conduct " + new string('y', 400) + " life");
+
+        Assert.Empty(LocalBacklogSearch.Find(_root, "a good conduct life"));
+    }
+
+    [Fact]
+    public void A_real_workbook_is_searched_through_its_shared_string_table()
+    {
+        // The document lists arrive as .xlsx, and a workbook is a zip of XML: every cell value in
+        // the file sits in xl/sharedStrings.xml. This proves the matcher reaches them, rather
+        // than only the markdown the rest of these tests use.
+        Workbook("MoCD_NPOP_Employee Appointment Request_DD.xlsx",
+            "Document Type",
+            "Certificate of good conduct and behavior, valid for the life of it",
+            "Mandatory");
+
+        var hit = Assert.Single(LocalBacklogSearch.Find(_root, "a good conduct life"));
+
+        Assert.Equal("Employee Appointment Request", hit.Service);
+    }
+
     // ---- reading the service off a story title ----
+
+    [Fact]
+    public void A_workbook_downloaded_from_the_backlog_gives_up_the_service_in_its_name()
+    {
+        Assert.Equal("Employee Appointment Request", LocalBacklogSearch.ServiceInStoryTitle(
+            "MoCD_NPOP_Employee Appointment Request_DD_20250509_V.0.2"));
+    }
 
     [Fact]
     public void The_service_is_read_from_the_titles_dash_separated_parts()

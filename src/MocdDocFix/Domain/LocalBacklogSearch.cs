@@ -42,7 +42,12 @@ public static class LocalBacklogSearch
             try
             {
                 var text = ReadText(file);
-                if (text is null || text.IndexOf(wanted, StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                // Order-free, and near each other. CRM and the backlog almost never word a
+                // document the same way round — "A copy of the certificate of good conduct and
+                // behavior" against "Certificate of good conduct and behavior … life of the
+                // appointment" — and an exact substring finds neither.
+                if (text is null || !DocumentTypeAuthority.Mentions(text, wanted)) continue;
 
                 var title = TitleIn(text) ?? Path.GetFileNameWithoutExtension(file);
                 hits.Add(new LocalHit(file, title, ServiceInStoryTitle(title)));
@@ -106,7 +111,10 @@ public static class LocalBacklogSearch
     {
         if (string.IsNullOrWhiteSpace(title)) return null;
 
-        foreach (var raw in Regex.Split(title!, @"-\s|\s-|\|"))
+        // Underscores as well as dashes and pipes. Story titles use dashes; the workbooks attached
+        // to them are named "MoCD_NPOP_Employee Appointment Request_DD_20250509_V.0.2", and a file
+        // the operator dropped in by hand has nothing but its name to say where it belongs.
+        foreach (var raw in Regex.Split(title!, @"-\s|\s-|\||_"))
         {
             var segment = Regex.Replace(raw.Trim(), @"^[\d.]+\s*", "").Trim();
 
