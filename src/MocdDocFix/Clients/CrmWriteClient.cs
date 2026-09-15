@@ -16,6 +16,14 @@ public interface ICrmWriteClient
     Task RepointDocumentAsync(Guid documentId, Guid newFileId, CancellationToken ct);
     Task<Guid?> GetDocumentFileLinkAsync(Guid documentId, CancellationToken ct);
     Task DeleteDocumentFileAsync(Guid fileId, CancellationToken ct);
+
+    /// <summary>
+    /// Changes the named attributes on an existing mocd_documentfile, leaving every other column
+    /// alone. This is how a correction is applied: the document already points at this record,
+    /// so nothing is created and nothing is repointed.
+    /// </summary>
+    Task UpdateDocumentFileAsync(Guid recordId,
+        IReadOnlyDictionary<string, object?> attributes, CancellationToken ct);
 }
 
 public sealed class CrmWriteClient : ICrmWriteClient
@@ -92,6 +100,11 @@ public sealed class CrmWriteClient : ICrmWriteClient
                v.ValueKind == JsonValueKind.String && Guid.TryParse(v.GetString(), out var g)
             ? g : null;
     }
+
+    public Task UpdateDocumentFileAsync(Guid recordId,
+        IReadOnlyDictionary<string, object?> attributes, CancellationToken ct) =>
+        SendAsync(HttpMethod.Patch, $"mocd_documentfiles({recordId})",
+            new Dictionary<string, object?>(attributes), ct);
 
     public Task DeleteDocumentFileAsync(Guid fileId, CancellationToken ct) =>
         SendAsync(HttpMethod.Delete, $"mocd_documentfiles({fileId})", payload: null, ct);

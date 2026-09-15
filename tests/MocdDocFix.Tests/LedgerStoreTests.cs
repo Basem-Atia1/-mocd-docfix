@@ -132,6 +132,6 @@ public class LedgerStoreTests : IDisposable
 
         Assert.True(File.Exists(kept));
         Assert.False(store.Exists);
-        Assert.Equal(1, new LedgerStore(kept).Read().Count);
+        Assert.Single(new LedgerStore(kept).Read());
     }
 }

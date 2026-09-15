@@ -90,7 +90,8 @@ public sealed class CrmReadClient : ICrmReadClient
     private const string Select = "mocd_documentid,mocd_name,modifiedon";
 
     private static readonly string Expand =
-        "mocd_documentfile($select=mocd_filepath,mocd_hash,mocd_name,mocd_mediatype)," +
+        "mocd_documentfile($select=mocd_filepath,mocd_hash,mocd_name,mocd_mediatype," +
+        "mocd_category,mocd_fileid,mocd_filename)," +
         "mocd_documenttype($select=mocd_name,_mocd_servicecatalogue_value)," +
         string.Join(",", CrossCheckNavigations.Select(n => $"{n}($select=_mocd_servicecatalogue_value)"));
 
@@ -432,7 +433,10 @@ public sealed class CrmReadClient : ICrmReadClient
             DocTypeCatalogueId: GuidOrNull(type, "_mocd_servicecatalogue_value"),
             CrossCheckCatalogueId: crossCheck,
             CrossCheckSource: crossSource,
-            ModifiedOn: StringOrNull(e, "modifiedon") is { } m ? DateTimeOffset.Parse(m) : default);
+            ModifiedOn: StringOrNull(e, "modifiedon") is { } m ? DateTimeOffset.Parse(m) : default,
+            OldCategory: StringOrNull(file, "mocd_category"),
+            VendorFileId: GuidOrNull(file, "mocd_fileid"),
+            VendorFileName: StringOrNull(file, "mocd_filename"));
     }
 
     private static JsonElement? Child(JsonElement? parent, string name) =>

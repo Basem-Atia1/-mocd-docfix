@@ -14,9 +14,43 @@ public sealed class FakeCrmWriteClient : ICrmWriteClient
         public string? Category => Attributes.TryGetValue("mocd_category", out var v) ? v as string : null;
     }
 
+    /// <param name="Attributes">Only the columns the correction changed, not the whole record.</param>
+    public record Updated(Guid RecordId, IReadOnlyDictionary<string, object?> Attributes)
+    {
+        public string? FilePath => Attributes.TryGetValue("mocd_filepath", out var v) ? v as string : null;
+        public string? Hash => Attributes.TryGetValue("mocd_hash", out var v) ? v as string : null;
+        public string? Category => Attributes.TryGetValue("mocd_category", out var v) ? v as string : null;
+        public string? FileName => Attributes.TryGetValue("mocd_filename", out var v) ? v as string : null;
+        public string? FileId => Attributes.TryGetValue("mocd_fileid", out var v) ? v as string : null;
+
+        /// <summary>Whether the column was in the payload at all — blank and absent differ.</summary>
+        public bool Wrote(string attribute) => Attributes.ContainsKey(attribute);
+    }
+
     public List<Created> CreatedFiles { get; } = new();
+    public List<Updated> UpdatedFiles { get; } = new();
     public Dictionary<Guid, Guid> Links { get; } = new();
     public List<Guid> DeletedFiles { get; } = new();
+
+    /// <summary>When set, the next update throws with this message — a CRM refusal.</summary>
+    public string? UpdateRefusal { get; set; }
+
+    /// <summary>
+    /// Called with what an update wrote, so a test can mirror it into the read client the way
+    /// CRM would. The two fakes are independent, so without this a read-back after an update
+    /// still finds the old record.
+    /// </summary>
+    public Action<Guid, IReadOnlyDictionary<string, object?>>? OnUpdated { get; set; }
+
+    public Task UpdateDocumentFileAsync(Guid recordId,
+        IReadOnlyDictionary<string, object?> attributes, CancellationToken ct)
+    {
+        if (UpdateRefusal is not null) throw new InvalidOperationException(UpdateRefusal);
+
+        UpdatedFiles.Add(new Updated(recordId, attributes));
+        OnUpdated?.Invoke(recordId, attributes);
+        return Task.CompletedTask;
+    }
 
     /// <summary>When set, the read-back returns this instead of what was written.</summary>
     public Guid? ForceLinkReadback { get; set; }

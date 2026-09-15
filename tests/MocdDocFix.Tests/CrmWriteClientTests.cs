@@ -104,6 +104,67 @@ public class CrmWriteClientTests
         Assert.Null(await client.GetDocumentFileLinkAsync(DocumentId, CancellationToken.None));
     }
 
+    /// <summary>
+    /// The write the whole redesign turns on. A correction updates the record the document
+    /// already points at, so there is no create and no repoint — and a PATCH to the wrong URL
+    /// would create a second row instead of changing this one.
+    /// </summary>
+    [Fact]
+    public async Task Updating_a_document_file_patches_that_record_and_nothing_else()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.NoContent, "");
+
+        var record = Guid.Parse("7c20a1f4-0000-0000-0000-000000000001");
+
+        await client.UpdateDocumentFileAsync(record, new Dictionary<string, object?>
+        {
+            ["mocd_filepath"] = @"DigitalServices\cat\20260915\b2c3.jpg",
+            ["mocd_category"] = "cat",
+            ["mocd_hash"] = "5e884898"
+        }, CancellationToken.None);
+
+        var sent = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Patch, sent.Method);
+        Assert.Equal($"https://crm/MoCD/api/data/v9.1/mocd_documentfiles({record})",
+            sent.RequestUri!.ToString());
+
+        var body = Assert.Single(handler.RequestBodies);
+        Assert.Contains("mocd_filepath", body);
+        Assert.Contains("mocd_category", body);
+    }
+
+    /// <summary>
+    /// Only what the correction changed. Sending the whole record back would carry columns CRM
+    /// maintains itself, and a silent failure there is one nobody would notice.
+    /// </summary>
+    [Fact]
+    public async Task An_update_sends_only_the_attributes_it_was_given()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.NoContent, "");
+
+        await client.UpdateDocumentFileAsync(NewFileId,
+            new Dictionary<string, object?> { ["mocd_filepath"] = "x" }, CancellationToken.None);
+
+        var body = Assert.Single(handler.RequestBodies);
+        Assert.DoesNotContain("mocd_documentfileid", body);
+        Assert.DoesNotContain("mocd_fileid", body);
+    }
+
+    [Fact]
+    public async Task An_update_that_crm_rejects_is_raised_rather_than_swallowed()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.BadRequest, """{"error":{"message":"bad attribute"}}""");
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            client.UpdateDocumentFileAsync(NewFileId,
+                new Dictionary<string, object?> { ["mocd_filepath"] = "x" }, CancellationToken.None));
+
+        Assert.Contains("bad attribute", thrown.Message);
+    }
+
     [Fact]
     public async Task DeleteDocumentFile_issues_a_DELETE()
     {
