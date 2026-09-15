@@ -9,6 +9,7 @@ namespace MocdDocFix.Tests;
 /// The workbook is the ledger: it is what the operator edits, with dropdowns on the two columns
 /// they set, and it is what every mode reads. The CSV beside it is a copy.
 /// </summary>
+[Collection(LedgerCollection.Name)]
 public class LedgerWorkbookTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "docfix-xlsx-" + Guid.NewGuid());
@@ -260,6 +261,55 @@ public class LedgerWorkbookTests : IDisposable
         }
 
         Assert.True(store.CanWrite());
+    }
+
+    /// <summary>
+    /// The case that matters most: Excel is opened mid-run, after a document has already been
+    /// uploaded and its CRM record changed. Failing here would strand that work with nothing on
+    /// disk recording it, so the write waits and is tried again.
+    /// </summary>
+    [Fact]
+    public void A_locked_workbook_is_written_after_the_operator_closes_excel()
+    {
+        var store = Store();
+        store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
+
+        var held = File.Open(store.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var asked = 0;
+
+        // Answering yes is the operator closing Excel, so the lock goes with the answer.
+        store.AskToRetry = _ => { asked++; held.Dispose(); return true; };
+
+        store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision"), Row(RowVerdicts.Fix, "Second") });
+
+        Assert.Equal(1, asked);
+        Assert.Equal(2, store.Read().Count);
+    }
+
+    [Fact]
+    public void Answering_no_lets_the_failure_through_rather_than_pretending_it_worked()
+    {
+        var store = Store();
+        store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
+        store.AskToRetry = _ => false;
+
+        using var held = File.Open(store.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        Assert.Throws<IOException>(() =>
+            store.Write(new[] { Row(RowVerdicts.Fix, "Second") }));
+    }
+
+    /// <summary>Without anyone to ask — the direct commands, and tests — it throws as before.</summary>
+    [Fact]
+    public void With_nobody_to_ask_a_locked_workbook_still_throws()
+    {
+        var store = Store();
+        store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
+
+        using var held = File.Open(store.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        Assert.Throws<IOException>(() =>
+            store.Write(new[] { Row(RowVerdicts.Fix, "Second") }));
     }
 
     [Fact]

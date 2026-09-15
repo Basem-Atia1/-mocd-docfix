@@ -6,6 +6,7 @@ using Xunit;
 
 namespace MocdDocFix.Tests;
 
+[Collection(LedgerCollection.Name)]
 public class DeleteOldFilesTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "docfix-del-" + Guid.NewGuid());

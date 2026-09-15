@@ -55,18 +55,50 @@ public sealed class LedgerStore
     /// <summary>False when Excel has the workbook open, so a run can say so before it starts.</summary>
     public bool CanWrite() => _workbook.CanWrite();
 
+    /// <summary>
+    /// Asked when the workbook cannot be written — almost always because Excel has it open.
+    /// Returning true makes the write be attempted again, so the operator can close Excel and
+    /// carry on with nothing lost; returning false lets the failure through.
+    ///
+    /// A delegate rather than an IPrompts because this is storage: it should not know how a
+    /// question gets asked, only that someone can answer one. Left null — in tests and in the
+    /// direct commands — a locked file throws, as it did before.
+    /// </summary>
+    public Func<string, bool>? AskToRetry { get; set; }
+
     public IReadOnlyList<LedgerRow> Read() => _workbook.Read();
 
     public void Write(IReadOnlyList<LedgerRow> rows)
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-        BackUpOnce();
 
         var ordered = LedgerOrder.Sorted(rows);
 
         // The workbook first: it is the ledger, and a failure to write it must stop the caller
         // rather than leave the copy ahead of the original.
-        _workbook.Write(ordered);
+        //
+        // Excel holding it open is the ordinary reason that fails, and it is entirely
+        // recoverable — so the operator is asked to close it and the write is tried again.
+        // Giving up here would strand a document that has already been uploaded and had its
+        // CRM record changed, with nothing on disk saying so.
+        while (true)
+        {
+            try
+            {
+                // Inside the loop with the write: the sitting's backup copy reads the workbook,
+                // so a locked file stops it here just as surely, and it must be retried too.
+                BackUpOnce();
+                _workbook.Write(ordered);
+                break;
+            }
+            catch (Exception problem) when (IsLocked(problem))
+            {
+                if (AskToRetry is null || !AskToRetry(Innermost(problem).Message))
+                    throw new IOException(
+                        $"The ledger could not be written: {Path} is open in another program.",
+                        problem);
+            }
+        }
 
         try
         {
@@ -107,6 +139,29 @@ public sealed class LedgerStore
 
         _backedUpThisSitting = true;
     }
+
+    /// <summary>
+    /// Whether this is the file being held open by something else.
+    ///
+    /// It has to look through the whole chain: ClosedXML saves through OpenXml, which runs the
+    /// write on its own task and hands back an <see cref="AggregateException"/> — so catching a
+    /// bare IOException here silently never matched, and the retry that depends on it never fired.
+    /// </summary>
+    private static bool IsLocked(Exception problem) => problem switch
+    {
+        IOException or UnauthorizedAccessException => true,
+        AggregateException many => many.InnerExceptions.Any(IsLocked),
+        { InnerException: { } inner } => IsLocked(inner),
+        _ => false
+    };
+
+    /// <summary>The real complaint, not the wrapper — that is what is worth showing.</summary>
+    private static Exception Innermost(Exception problem) => problem switch
+    {
+        AggregateException many when many.InnerExceptions.Count > 0 => Innermost(many.InnerExceptions[0]),
+        { InnerException: { } inner } => Innermost(inner),
+        _ => problem
+    };
 
     private static string Renamed(string path, string stamp, string extension) =>
         System.IO.Path.Combine(

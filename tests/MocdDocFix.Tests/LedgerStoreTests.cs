@@ -4,6 +4,7 @@ using Xunit;
 
 namespace MocdDocFix.Tests;
 
+[Collection(LedgerCollection.Name)]
 public class LedgerStoreTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "docfix-ledger-" + Guid.NewGuid());

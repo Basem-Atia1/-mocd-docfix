@@ -64,6 +64,37 @@ public sealed class Session : IDisposable
         _files = new FileServiceClient(_fileHttp, env);
 
         _builder = new LedgerBuilder(_read, appConfig.ServiceCatalogues, env.CrmUrl);
+
+        // A locked ledger mid-run is recoverable and must never end a run: by the time a row is
+        // written, its file has been uploaded and its CRM record changed, so failing to record
+        // that is the one outcome worse than waiting.
+        _ledger.AskToRetry = WaitForExcel;
+    }
+
+    /// <summary>
+    /// Asks the operator to close the ledger, and says what is at stake. Returns true to try
+    /// the write again.
+    /// </summary>
+    private bool WaitForExcel(string problem)
+    {
+        _prompts.Blank();
+        _prompts.Warn("The ledger could not be written — it is open in Excel.", Tone.Warn);
+        _prompts.Field("file", _ledger.Path, Tone.Muted);
+        _prompts.Blank();
+        _prompts.Say("The work itself is not lost: whatever this run has already done to CRM " +
+                     "and to the file server stands. What is waiting is the record of it.",
+                     Tone.Muted);
+        _prompts.Blank();
+
+        if (_prompts.YesNo("  Close it in Excel, then answer yes to write and carry on. Retry?",
+                defaultYes: true))
+            return true;
+
+        _prompts.Blank();
+        _prompts.Warn("Stopping without writing the ledger. The change journal still has every " +
+                      "change this run made — see changes-" + _envName + ".jsonl.", Tone.Danger);
+        _prompts.Info($"      {problem}", Tone.Muted);
+        return false;
     }
 
     public void Dispose()

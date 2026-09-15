@@ -8,6 +8,7 @@ using Xunit;
 
 namespace MocdDocFix.Tests;
 
+[Collection(LedgerCollection.Name)]
 public class RepairRunTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "docfix-run-" + Guid.NewGuid());

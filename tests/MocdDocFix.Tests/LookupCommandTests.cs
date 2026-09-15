@@ -13,6 +13,7 @@ namespace MocdDocFix.Tests;
 /// tool that can be pointed at a single file without also wanting to change something. It has to
 /// be right about "gone", because that is the answer people act on.
 /// </summary>
+[Collection(LedgerCollection.Name)]
 public class LookupCommandTests : IDisposable
 {
     private static readonly Guid OldFileId = Guid.Parse("2a1c51a3-e330-f111-b119-005056010908");
