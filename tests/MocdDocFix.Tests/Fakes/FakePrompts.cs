@@ -74,6 +74,14 @@ public sealed class FakePrompts : IPrompts
     public (MenuKey Key, char Character) ReadMenuKey() =>
         Keys is { Count: > 0 } ? Keys.Dequeue() : (MenuKey.Escape, '\0');
 
+    /// <summary>
+    /// Queued answers to "has the operator pressed q?", one per document boundary. Left unset
+    /// nobody ever has, which is how every test that is not about stopping behaves.
+    /// </summary>
+    public Queue<bool>? StopRequests { get; set; }
+
+    public bool StopRequested() => StopRequests is { Count: > 0 } && StopRequests.Dequeue();
+
     public void Rewind(int lines) => Rewound += lines;
 
     public void Info(string message, Tone tone = Tone.Normal) => Messages.Add(message);

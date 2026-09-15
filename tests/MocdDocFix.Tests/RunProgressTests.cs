@@ -118,6 +118,69 @@ public class RunProgressTests
         Assert.Empty(prompts.Questions);
     }
 
+    /// <summary>
+    /// The modes that never interrupt still need a way out. Pressing q is noticed between
+    /// documents — never mid-upload, so the document in progress is always finished first.
+    /// </summary>
+    [Theory]
+    [InlineData(WatchMode.Quiet)]
+    [InlineData(WatchMode.Unattended)]
+    public void Pressing_q_stops_the_modes_that_never_ask(WatchMode mode)
+    {
+        var (prompts, progress) = At(mode);
+        prompts.StopRequests = new Queue<bool>(new[] { true });
+
+        Assert.False(progress.CarryOn());
+        Assert.Contains("Stopping at your request", string.Join("\n", prompts.Messages));
+    }
+
+    /// <summary>Nothing pressed must never block or stop — it is checked hundreds of times.</summary>
+    [Theory]
+    [InlineData(WatchMode.Quiet)]
+    [InlineData(WatchMode.Unattended)]
+    public void Nothing_pressed_carries_on(WatchMode mode)
+    {
+        var (prompts, progress) = At(mode);
+        prompts.StopRequests = new Queue<bool>(new[] { false, false });
+
+        Assert.True(progress.CarryOn());
+        Assert.True(progress.CarryOn());
+    }
+
+    /// <summary>Watch asks outright, so it does not read keystrokes behind the operator's back.</summary>
+    [Fact]
+    public void Watch_does_not_consult_the_keyboard_because_it_asks()
+    {
+        var (prompts, progress) = At(WatchMode.Watch);
+        prompts.StopRequests = new Queue<bool>(new[] { true });
+        prompts.YesNoResponse = true;
+
+        Assert.True(progress.CarryOn());
+        Assert.Single(prompts.StopRequests);        // untouched
+    }
+
+    [Theory]
+    [InlineData(WatchMode.Quiet)]
+    [InlineData(WatchMode.Unattended)]
+    public void The_way_out_is_said_before_the_loop_begins(WatchMode mode)
+    {
+        var (prompts, progress) = At(mode);
+
+        progress.SayHowToStop();
+
+        Assert.Contains("Press q", string.Join("\n", prompts.Messages));
+    }
+
+    [Fact]
+    public void Watch_is_not_told_to_press_q_because_it_is_asked_every_time()
+    {
+        var (prompts, progress) = At(WatchMode.Watch);
+
+        progress.SayHowToStop();
+
+        Assert.DoesNotContain("Press q", string.Join("\n", prompts.Messages));
+    }
+
     /// <summary>A failure must be visible in every mode — it is the one thing nobody may miss.</summary>
     [Theory]
     [InlineData(WatchMode.Watch)]

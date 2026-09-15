@@ -56,6 +56,8 @@ public sealed class RepairRun
     {
         int corrected = 0, declined = 0, failed = 0;
         var stopped = false;
+
+        _progress.SayHowToStop();
         var unrecognised = new List<string>();
         var skips = new Dictionary<string, int>(StringComparer.Ordinal);
 

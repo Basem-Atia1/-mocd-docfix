@@ -42,6 +42,17 @@ public interface IPrompts
     /// <summary>One key for a live menu. Only called when <see cref="Interactive"/> is true.</summary>
     (MenuKey Key, char Character) ReadMenuKey() => (MenuKey.Escape, '\0');
 
+    /// <summary>
+    /// Whether the operator has asked to stop, without having been asked anything.
+    ///
+    /// Checked between documents by the modes that do not pause, so a run of four hundred can be
+    /// halted by pressing q at any moment — and it takes effect at the next boundary rather than
+    /// part-way through a document, which is the difference between stopping and interrupting.
+    ///
+    /// Never blocks: nothing pressed means false and the run carries on.
+    /// </summary>
+    bool StopRequested() => false;
+
     /// <summary>Clears the last n printed lines and puts the cursor back at the first of them.</summary>
     void Rewind(int lines) { }
 
@@ -146,6 +157,31 @@ public sealed class ConsolePrompts : IPrompts
     /// every scripted run drives the menus.
     /// </summary>
     public bool Interactive => _coloured && SafeToRead();
+
+    /// <summary>
+    /// Drains whatever has been typed since the last look and says whether any of it was a
+    /// request to stop. Everything else is thrown away — a run is not reading input, so a stray
+    /// keystroke must not be left in the buffer to answer the next real question by accident.
+    /// </summary>
+    public bool StopRequested()
+    {
+        if (!Interactive) return false;
+
+        var asked = false;
+
+        try
+        {
+            while (Console.KeyAvailable)
+            {
+                var key = Console.ReadKey(intercept: true);
+
+                if (key.Key is ConsoleKey.Escape || key.KeyChar is 'q' or 'Q') asked = true;
+            }
+        }
+        catch (InvalidOperationException) { return false; }   // input redirected after all
+
+        return asked;
+    }
 
     public (MenuKey Key, char Character) ReadMenuKey()
     {

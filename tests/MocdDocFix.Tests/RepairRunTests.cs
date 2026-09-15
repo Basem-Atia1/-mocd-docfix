@@ -320,6 +320,30 @@ public class RepairRunTests : IDisposable
         Assert.Equal(RowState.NotStarted, rows[2].State());
     }
 
+    /// <summary>
+    /// Quiet never interrupts, so the way out is a keypress noticed between documents. The one
+    /// in progress finishes and is recorded; nothing after it is started.
+    /// </summary>
+    [Fact]
+    public async Task Pressing_q_in_quiet_stops_after_the_document_in_progress()
+    {
+        UploadsSucceed();
+        var rows = new[] { Fixable(1), Fixable(2), Fixable(3) };
+
+        _prompts.Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+        _prompts.StopRequests = new Queue<bool>(new[] { true });
+
+        var summary = await Subject(WatchMode.Quiet).RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.True(summary.Stopped);
+        Assert.Equal(1, summary.Corrected);
+        Assert.Equal(RowState.Corrected, rows[0].State());
+        Assert.Equal(RowState.NotStarted, rows[1].State());
+
+        // And the ledger on disk says so, because it is written as each row finishes.
+        Assert.Equal(RowState.Corrected, _ledger.Read().Single(r => r.Row == 1).State());
+    }
+
     [Fact]
     public async Task An_empty_ledger_is_not_an_error()
     {

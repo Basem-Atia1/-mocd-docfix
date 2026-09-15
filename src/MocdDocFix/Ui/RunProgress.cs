@@ -79,9 +79,32 @@ public sealed class RunProgress
     /// <returns>False to stop the run.</returns>
     public bool CarryOn()
     {
-        if (Mode != WatchMode.Watch) return true;
+        if (Mode == WatchMode.Watch)
+            return _prompts.YesNo("  Carry on to the next document?", defaultYes: true);
 
-        return _prompts.YesNo("  Carry on to the next document?", defaultYes: true);
+        // Quiet and Unattended never interrupt to ask — so instead the operator can say stop
+        // whenever they like, and it is noticed here, between documents. Pressing q part-way
+        // through an upload does not abandon it; the document finishes and the run ends.
+        if (!_prompts.StopRequested()) return true;
+
+        _prompts.Blank();
+        _prompts.Say("Stopping at your request. The document just finished is recorded; " +
+                     "nothing further will be started.", Tone.Warn);
+
+        return false;
+    }
+
+    /// <summary>
+    /// Said once before the loop begins, so the way out is known before it is wanted. Watch
+    /// asks after every document and needs no telling.
+    /// </summary>
+    public void SayHowToStop()
+    {
+        if (Mode == WatchMode.Watch) return;
+
+        _prompts.Blank();
+        _prompts.Say("Press q at any time to stop. The document in progress is always finished " +
+                     "and recorded first.", Tone.Muted);
     }
 
     private static string Short(string value, int width) =>
