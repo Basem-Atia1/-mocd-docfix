@@ -36,10 +36,17 @@ repair-*.csv
 errors-*.txt
 
 # Secrets — API keys and CRM credentials are never stored in the repo.
+#
+# They live in %APPDATA%\mocd-docfix\, outside this tree, encrypted per Windows account, so
+# nothing below should ever match. These patterns are the second line of defence for the day
+# somebody drops a copy in here to "try something".
 appsettings.*.json
 !appsettings.Example.json
 *.env
 secrets.json
+secrets.dat
+config.json
+credentials*.json
 
 # ---------------------------------------------------------------------------
 # .NET
