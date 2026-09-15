@@ -220,6 +220,37 @@ public class DocumentTypeAuthorityTests
         Assert.Contains("which service", opinion.Detail);
     }
 
+    // ---- what we search the backlog for ----
+
+    [Fact]
+    public void The_name_with_its_noisy_ends_trimmed_is_the_second_thing_we_try()
+    {
+        var terms = DocumentTypeAuthority.SearchTerms("A Copy of Board of Director's Decision");
+
+        Assert.Equal("A Copy of Board of Director's Decision", terms[0]);
+        Assert.Equal("Board of Director's Decision", terms[1]);
+    }
+
+    [Fact]
+    public void A_name_with_nothing_noisy_on_its_ends_is_not_searched_for_twice()
+    {
+        var terms = DocumentTypeAuthority.SearchTerms("Board of Director's Decision");
+
+        Assert.Equal("Board of Director's Decision", terms[0]);
+        Assert.DoesNotContain(terms.Skip(1), t =>
+            t.Equals("Board of Director's Decision", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void A_name_that_is_nothing_but_noise_still_searches_for_something_or_nothing_safely()
+    {
+        // "A copy of the document" trims away to nothing. It must not throw, and it must not
+        // produce an empty search term that would match every work item in the project.
+        var terms = DocumentTypeAuthority.SearchTerms("A copy of the document");
+
+        Assert.DoesNotContain(terms, string.IsNullOrWhiteSpace);
+    }
+
     // ---- the order-free matcher over story bodies and workbooks ----
 
     [Fact]

@@ -77,6 +77,21 @@ public static class DocumentTypeAuthority
             .Where(w => w.Length > 0)
             .ToList();
 
+        // The whole name with its noisy ends cut off, and everything between them kept. "A Copy
+        // of Board of Director's Decision" becomes "Board of Director's Decision" — which DevOps
+        // does write, and which the full name does not match. It has to come second, ahead of
+        // the windows: it is still one contiguous run of characters, so WIQL CONTAINS can still
+        // find it, and it carries more of the name than any shorter window does. Add() skips it
+        // when the name had no noisy ends, so a clean name never spends two of its six slots
+        // saying one thing.
+        var from = 0;
+        var to = words.Count - 1;
+
+        while (from <= to && IsNoise(words[from])) from++;
+        while (to >= from && IsNoise(words[to])) to--;
+
+        if (to - from + 1 >= 2) Add(string.Join(' ', words.Skip(from).Take(to - from + 1)));
+
         // WIQL CONTAINS matches a run of characters, not a bag of words, so a term has to be a
         // phrase that really appears. Reshuffling "A Copy of Certificate of Good Conduct and
         // Behavior" into "Certificate Behavior" produced a phrase in no title anywhere and found
