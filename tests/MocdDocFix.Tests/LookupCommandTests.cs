@@ -31,7 +31,7 @@ public class LookupCommandTests : IDisposable
     private readonly FakePrompts _prompts = new();
 
     private BackupStore Backups() => new(Path.Combine(_root, "backup"));
-    private StateStore States() => new(Path.Combine(_root, "state.jsonl"));
+    private LedgerStore Ledger() => new(Path.Combine(_root, "repair-dev.csv"));
 
     public LookupCommandTests()
     {
@@ -47,7 +47,7 @@ public class LookupCommandTests : IDisposable
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 
     private LookupCommand Command() =>
-        new(_files, _read, Backups(), States(), _prompts);
+        new(_files, _read, Backups(), _prompts, Ledger());
 
     /// <summary>
     /// One look-up, through the same entry point the menu uses — so every test covers what is
@@ -56,8 +56,8 @@ public class LookupCommandTests : IDisposable
     private async Task<LookupReport> Look(string asked) =>
         (await Command().RunAsync(new[] { asked }, CancellationToken.None))[0];
 
-    /// <summary>A document this tool backed up and migrated, so its own notes have something.</summary>
-    private void WeHaveBeenHere(MigrationState state)
+    /// <summary>A document this tool backed up and corrected, so its own notes have something.</summary>
+    private void WeHaveBeenHere(RowState state)
     {
         var backups = Backups();
         var saved = backups.Save(DocumentId, OldFileId, ".png", Content);
@@ -65,8 +65,20 @@ public class LookupCommandTests : IDisposable
             "Screenshot.png", "image/png", ".png", null, Correct, saved.LocalPath, saved.Bytes,
             Verifier.OurHash(Content), DateTimeOffset.UtcNow));
 
-        States().Append(new StateRecord(DocumentId, state, DateTimeOffset.UtcNow,
-            NewFileId, NewPath, "Deleted the old file and its record."));
+        Ledger().Write(new[]
+        {
+            new LedgerRow
+            {
+                Row = 1,
+                DocId = DocumentId,
+                DocFileId = OldFileId,
+                DocFileName = "Screenshot.png",
+                OldFilePath = OldPath,
+                NewFilePath = NewPath,
+                Verdict = RowVerdicts.Fix,
+                FinalState = RowStates.Text(state)
+            }
+        });
     }
 
     // ---- asked by path ----
@@ -160,7 +172,7 @@ public class LookupCommandTests : IDisposable
     [Fact]
     public async Task An_id_crm_no_longer_has_is_still_checked_against_the_backup_path()
     {
-        WeHaveBeenHere(MigrationState.Deleted);
+        WeHaveBeenHere(RowState.Deleted);
         _read.RawRecords.Remove($"mocd_documentfiles:{OldFileId}");
         _read.MissingRecords.Add($"mocd_documentfiles:{OldFileId}");
 
@@ -189,19 +201,19 @@ public class LookupCommandTests : IDisposable
 
     // ---- what this tool itself knows ----
 
+    /// <summary>
+    /// What this tool knows is now the backup folder alone — how far a document got is the
+    /// ledger's business, and it is read there rather than repeated here.
+    /// </summary>
     [Fact]
-    public async Task The_backup_and_the_state_are_reported_beside_the_two_systems()
+    public async Task The_backup_is_reported_beside_the_two_systems()
     {
-        WeHaveBeenHere(MigrationState.Deleted);
+        WeHaveBeenHere(RowState.Deleted);
 
         var report = await Look(OldPath);
 
         Assert.Equal(DocumentId, report.Backup?.DocumentId);
-        Assert.Equal(MigrationState.Deleted, report.State?.State);
-
-        var said = string.Join("\n", _prompts.Messages);
-        Assert.Contains("backed up", said);
-        Assert.Contains("Deleted", said);
+        Assert.Contains("backed up", string.Join("\n", _prompts.Messages));
     }
 
     /// <summary>
@@ -211,7 +223,7 @@ public class LookupCommandTests : IDisposable
     [Fact]
     public async Task The_new_path_of_a_migrated_document_is_recognised_too()
     {
-        WeHaveBeenHere(MigrationState.Repointed);
+        WeHaveBeenHere(RowState.Corrected);
         _files.Files[NewPath] = (Convert.ToBase64String(Content), "VHASH");
 
         var report = await Look(NewPath);
@@ -233,13 +245,15 @@ public class LookupCommandTests : IDisposable
     [Fact]
     public async Task Nothing_is_deleted_uploaded_or_written()
     {
-        WeHaveBeenHere(MigrationState.Repointed);
+        WeHaveBeenHere(RowState.Corrected);
 
         await Command().RunAsync(new[] { OldPath, OldFileId.ToString() }, CancellationToken.None);
 
         Assert.Empty(_files.Deleted);
         Assert.Empty(_files.Uploads);
-        Assert.Equal(MigrationState.Repointed, States().LoadLatest()[DocumentId].State);
+
+        // The ledger is read, never written — a look-up must not advance anything.
+        Assert.Equal(RowState.Corrected, Ledger().Read()[0].State());
     }
 
     [Fact]

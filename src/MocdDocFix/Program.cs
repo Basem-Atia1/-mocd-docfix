@@ -101,7 +101,7 @@ while (true)
     }
 
     var wizard = new Wizard(prompts, envName, env.IsProduction, env.CrmUrl, env.FileServiceBaseUrl,
-        session.WizardActions(CancellationToken.None));
+        session.Actions(CancellationToken.None));
 
     try
     {

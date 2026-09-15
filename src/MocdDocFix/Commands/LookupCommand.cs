@@ -32,7 +32,6 @@ public sealed record LookupReport(
     string? VendorHash,
     IReadOnlyList<Guid> PointingAtThePath,
     ManifestEntry? Backup,
-    StateRecord? State,
 
     /// <summary>Why CRM could not be asked, when it could not. Not the same as "not there".</summary>
     string? CrmProblem = null,
@@ -60,17 +59,23 @@ public sealed class LookupCommand
     private readonly IFileServiceClient _files;
     private readonly ICrmReadClient _read;
     private readonly BackupStore _backups;
-    private readonly StateStore _state;
     private readonly IPrompts _prompts;
+    private readonly LedgerStore? _ledger;
 
+    /// <param name="ledger">
+    /// Optional. Asking about the file a document uses NOW is as reasonable as asking about the
+    /// one it used to, and only the ledger knows which document a corrected path belongs to —
+    /// the backup manifest records old paths alone. Without it a new path is still checked
+    /// against both systems; it just cannot be attributed to a document.
+    /// </param>
     public LookupCommand(IFileServiceClient files, ICrmReadClient read, BackupStore backups,
-        StateStore state, IPrompts prompts)
+        IPrompts prompts, LedgerStore? ledger = null)
     {
         _files = files;
         _read = read;
         _backups = backups;
-        _state = state;
         _prompts = prompts;
+        _ledger = ledger;
     }
 
     public async Task<IReadOnlyList<LookupReport>> RunAsync(
@@ -193,7 +198,7 @@ public sealed class LookupCommand
                 Array.Empty<Guid>(), p => crmProblem ??= p);
 
         return new LookupReport(asked, askedId, path, record, recordIsGone, onTheServer,
-            bytes, vendorHash, pointing, backup, StateOf(backup, path),
+            bytes, vendorHash, pointing, backup,
             crmProblem, serverProblem, usingThisFileId);
     }
 
@@ -232,25 +237,16 @@ public sealed class LookupCommand
         var byOldPath = manifest.FirstOrDefault(m => FilePaths.Same(m.OldFilePath, path));
         if (byOldPath is not null) return byOldPath;
 
-        var byNewPath = _state.LoadLatest().Values
+        // A corrected path names no old file, so the manifest cannot match it. The ledger holds
+        // both, and is the only thing that can say which document a new path belongs to.
+        var corrected = _ledger?.Read()
             .FirstOrDefault(r => FilePaths.Same(r.NewFilePath, path));
 
-        return byNewPath is null
+        return corrected is null
             ? null
-            : manifest.FirstOrDefault(m => m.DocumentId == byNewPath.DocumentId);
+            : manifest.FirstOrDefault(m => m.DocumentId == corrected.DocId);
     }
 
-    private StateRecord? StateOf(ManifestEntry? backup, string? path)
-    {
-        var latest = _state.LoadLatest();
-
-        if (backup is not null && latest.TryGetValue(backup.DocumentId, out var byDocument))
-            return byDocument;
-
-        return path is null
-            ? null
-            : latest.Values.FirstOrDefault(r => FilePaths.Same(r.NewFilePath, path));
-    }
 
     // ---- the screen ----
 
@@ -363,7 +359,7 @@ public sealed class LookupCommand
     {
         _prompts.Section("WHAT THIS TOOL KNOWS", Tone.Normal);
 
-        if (report.Backup is null && report.State is null)
+        if (report.Backup is null)
         {
             _prompts.Info("    nothing — this file has never been through this tool", Tone.Muted);
             return;
@@ -377,18 +373,6 @@ public sealed class LookupCommand
             _prompts.Info($"      document    {backup.DocumentId}", Tone.Muted);
         }
 
-        if (report.State is { } state)
-        {
-            _prompts.Info($"    got as far as {state.State} on {state.At.LocalDateTime:yyyy-MM-dd HH:mm}",
-                Tone.Muted);
-
-            if (!string.IsNullOrWhiteSpace(state.Detail))
-                foreach (var line in Screen.Wrap(state.Detail!, Screen.Width - 6))
-                    _prompts.Info($"      {line}", Tone.Muted);
-
-            if (state.NewFilePath is not null)
-                _prompts.Info($"      new file    {state.NewFilePath}", Tone.Muted);
-        }
     }
 
     /// <summary>
