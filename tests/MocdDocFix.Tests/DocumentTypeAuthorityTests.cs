@@ -219,4 +219,91 @@ public class DocumentTypeAuthorityTests
         Assert.Equal(AdoVerdict.CannotTell, opinion.Verdict);
         Assert.Contains("which service", opinion.Detail);
     }
+
+    // ---- the order-free matcher over story bodies and workbooks ----
+
+    [Fact]
+    public void The_words_that_carry_identity_survive_and_the_noise_does_not()
+    {
+        Assert.Equal(new[] { "good", "conduct", "life" },
+            DocumentTypeAuthority.MeaningfulWords("a good conduct life"));
+
+        // "Copy" and "of" are noise; "A" and the possessive "s" are too short to identify anything.
+        Assert.Equal(new[] { "board", "director", "decision" },
+            DocumentTypeAuthority.MeaningfulWords("A Copy of Board of Director's Decision"));
+    }
+
+    [Fact]
+    public void A_name_written_in_another_order_with_other_words_between_is_still_a_mention()
+    {
+        const string body =
+            "The system shall display the below list of documents. " +
+            "Certificate of good conduct and behavior, valid for the life of the appointment.";
+
+        Assert.True(DocumentTypeAuthority.Mentions(body, "a good conduct life"));
+    }
+
+    [Fact]
+    public void The_same_words_scattered_across_a_whole_file_are_not_a_mention()
+    {
+        // Exactly the words, far enough apart that they are three unrelated cells of a workbook
+        // rather than one phrase. Without the window this is the false positive that would fire
+        // on almost any shared string table.
+        var body = "good " + new string('x', DocumentTypeAuthority.NearbyWindow) +
+                   " conduct " + new string('y', DocumentTypeAuthority.NearbyWindow) + " life";
+
+        Assert.False(DocumentTypeAuthority.Mentions(body, "a good conduct life"));
+    }
+
+    [Fact]
+    public void Punctuation_and_case_are_not_allowed_to_hide_a_mention()
+    {
+        Assert.True(DocumentTypeAuthority.Mentions(
+            "Upload the BOARD OF DIRECTORS' DECISION here.",
+            "A Copy of Board of Director's Decision"));
+    }
+
+    [Fact]
+    public void A_name_with_one_meaningful_word_falls_back_to_looking_for_the_name_itself()
+    {
+        // One word is not a set — "passport" alone would match any sentence mentioning a
+        // passport, so the whole phrase has to appear.
+        Assert.True(DocumentTypeAuthority.Mentions("Attach the passport copy.", "Passport Copy"));
+        Assert.False(DocumentTypeAuthority.Mentions("Attach the passport.", "Passport Copy"));
+    }
+
+    /// <summary>
+    /// CRM writes "Board of Director's Decision" and the backlog writes "Board of Directors'
+    /// Decision". Refusing to match on a plural would be the same miss this whole matcher exists
+    /// to stop, so a trailing "s" is taken off both sides before they are compared.
+    /// </summary>
+    [Fact]
+    public void A_plural_and_a_singular_are_the_same_word()
+    {
+        Assert.True(DocumentTypeAuthority.Mentions(
+            "Attach the board of directors decision.", "Board of Director's Decision"));
+
+        Assert.True(DocumentTypeAuthority.Mentions(
+            "Attach the board of director decision.", "Board of Directors' Decision"));
+
+        // "address" was never a plural, and must not become "addres".
+        Assert.True(DocumentTypeAuthority.Mentions(
+            "The registered address proof is required.", "Address Proof"));
+    }
+
+    [Fact]
+    public void A_word_is_not_answered_by_a_longer_word_that_contains_it()
+    {
+        Assert.False(DocumentTypeAuthority.Mentions(
+            "Reported misconduct by a director of the board.", "Board Director Conduct"));
+    }
+
+    [Fact]
+    public void Nothing_to_match_against_is_never_a_mention()
+    {
+        Assert.False(DocumentTypeAuthority.Mentions(null, "Board Decision"));
+        Assert.False(DocumentTypeAuthority.Mentions("", "Board Decision"));
+        Assert.False(DocumentTypeAuthority.Mentions("Board Decision", null));
+        Assert.False(DocumentTypeAuthority.Mentions("Board Decision", "   "));
+    }
 }

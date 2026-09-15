@@ -127,6 +127,114 @@ public static class DocumentTypeAuthority
         Noise.Contains(word, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// How close the words of a name have to be to each other before their being in the same file
+    /// means they are the same phrase.
+    ///
+    /// The matcher below is order-free, which is what lets CRM's "A copy of the certificate of
+    /// good conduct and behavior" find a story that writes the same thing in another order.
+    /// Order-free with no distance limit is useless: a workbook's shared string table is every
+    /// cell value in the document, a few hundred kilobytes, and "all of these words appear
+    /// somewhere in it" is true of almost any name you care to ask about. The window is what
+    /// keeps the rule honest.
+    /// </summary>
+    public const int NearbyWindow = 160;
+
+    /// <summary>
+    /// The words of a name that carry identity: the noise words dropped, and anything under three
+    /// characters with them. "Director's" normalises to "director s", and the orphaned "s" is no
+    /// more use than "of".
+    /// </summary>
+    public static IReadOnlyList<string> MeaningfulWords(string? phrase) =>
+        Normalise(phrase)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length >= 3 && !IsNoise(w))
+            .ToList();
+
+    /// <summary>
+    /// Whether a body of text — a story description, a test's steps, a workbook's strings — is
+    /// talking about this document type.
+    ///
+    /// Every meaningful word has to be there, and they all have to fall inside one
+    /// <see cref="NearbyWindow"/> span. A name that boils down to a single meaningful word gets
+    /// no set to match, so the phrase itself has to appear: "Passport Copy" is not answered by a
+    /// sentence that merely says "passport".
+    /// </summary>
+    public static bool Mentions(string? text, string? phrase)
+    {
+        var haystack = Normalise(text);
+        if (haystack.Length == 0) return false;
+
+        var words = MeaningfulWords(phrase);
+
+        if (words.Count < 2)
+        {
+            var whole = Normalise(phrase);
+            return whole.Length > 0 && haystack.Contains(whole, StringComparison.Ordinal);
+        }
+
+        // Whole words, not runs of characters, so "conduct" is not answered by "misconduct" —
+        // and stemmed, so CRM's "Director's Decision" is answered by the backlog's "Directors'
+        // Decision". The two systems were written by different hands and disagree about plurals
+        // constantly; refusing to match on that alone would be the same miss in a new place.
+        var wanted = words.Select(Stem).ToList();
+        var found = new List<(int At, int Word)>();
+        var hit = new bool[wanted.Count];
+
+        var at = 0;
+
+        while (at < haystack.Length)
+        {
+            var end = haystack.IndexOf(' ', at);
+            if (end < 0) end = haystack.Length;
+
+            var stem = Stem(haystack[at..end]);
+
+            for (var word = 0; word < wanted.Count; word++)
+            {
+                if (!string.Equals(stem, wanted[word], StringComparison.Ordinal)) continue;
+
+                found.Add((at, word));
+                hit[word] = true;
+            }
+
+            at = end + 1;
+        }
+
+        // One word missing settles it — no window can cover a word that is not there.
+        if (hit.Any(h => !h)) return false;
+
+        var seen = new int[words.Count];
+        var distinct = 0;
+        var first = 0;
+
+        for (var last = 0; last < found.Count; last++)
+        {
+            if (seen[found[last].Word]++ == 0) distinct++;
+
+            while (distinct == words.Count)
+            {
+                if (found[last].At - found[first].At <= NearbyWindow) return true;
+
+                if (--seen[found[first].Word] == 0) distinct--;
+                first++;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A word with a plural "s" taken off it, so "director" and "directors" are one word.
+    ///
+    /// Deliberately the crudest rule that works: a trailing "s", unless the word ends in "ss"
+    /// and taking it off would maul a word that was never plural ("address"). Anything cleverer
+    /// is a stemmer, and a stemmer would start folding words a document name relies on being
+    /// different.
+    /// </summary>
+    private static string Stem(string word) =>
+        word.Length >= 4 && word[^1] == 's' && word[^2] != 's' ? word[..^1] : word;
+
+    /// <summary>
     /// The service a work item title names. Titles are pipe-delimited and lead with the channel
     /// (Portal, NPOP, CRM, MoCE) then the service, so the first segment that is neither a channel
     /// nor a step ("Verify …", "Documents") is the one that names it.
