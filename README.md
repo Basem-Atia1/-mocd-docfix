@@ -116,6 +116,18 @@ it**, and run again. The two columns you own:
 Anything else in either column is treated as "leave this row alone" and listed at the end of
 the run, so a typo can never cause a write.
 
+The verdict is yours once the row exists — a re-scan never overwrites it. Where a fresh look at
+CRM would write something different, the run says so and asks whether to keep your answers or
+take the scan's. Rows marked `ignore` that no run has touched are offered back the same way:
+leave them, give them the verdict the scan makes, or set them to `review` and the tool waits
+while you type the answers into the sheet. That is the way back from a fill-down that set a
+whole column to `ignore` by accident.
+
+A row the tool finds already correct in CRM — corrected by hand, or by a run whose ledger was
+lost — is never uploaded a second time. It is settled from what CRM holds: `skip` if the path
+never changed, `done` otherwise, with the final state saying whether the old file is still on
+the server and still owed to the delete step.
+
 ### Stopping
 
 - **Watch** asks after every document.

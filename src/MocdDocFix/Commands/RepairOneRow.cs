@@ -15,7 +15,13 @@ namespace MocdDocFix.Commands;
 /// reading it as "they look wrong" would annotate the row with something untrue and then carry
 /// on regardless.
 /// </param>
-public sealed record RowOutcome(bool Corrected, string? FailedStep, string? Failure, bool StopAsked = false)
+/// <param name="WasAlreadyRight">
+/// CRM had this document filed correctly before the run reached it. Counted apart from a
+/// correction because nothing was uploaded and nothing was written — the row was settled by
+/// asking, which is worth telling the operator about separately.
+/// </param>
+public sealed record RowOutcome(bool Corrected, string? FailedStep, string? Failure,
+    bool StopAsked = false, bool WasAlreadyRight = false)
 {
     public static RowOutcome Ok() => new(true, null, null);
 
@@ -24,6 +30,12 @@ public sealed record RowOutcome(bool Corrected, string? FailedStep, string? Fail
 
     /// <summary>The operator asked to stop. Nothing was written to CRM for this document.</summary>
     public static RowOutcome Stopped() => new(false, null, null, StopAsked: true);
+
+    /// <summary>
+    /// CRM already had it right, so nothing was uploaded and nothing was changed. Not a
+    /// correction — the row has been settled by looking, not by working.
+    /// </summary>
+    public static RowOutcome AlreadyRight() => new(false, null, null, WasAlreadyRight: true);
 
     public static RowOutcome Broke(string step, string why) => new(false, step, why);
 
@@ -72,6 +84,13 @@ public sealed class RepairOneRow
     {
         if (!Guid.TryParse(row.CorrectServiceCatalogueId, out var correct))
             return RowOutcome.Broke("check", "No correct service catalogue on this row.");
+
+        // ---- 0. is there anything to do at all? ----
+        //
+        // A row can say fix and already be right: somebody corrected it in CRM, or an earlier
+        // run did the work and was cut short before recording it. Uploading again would put a
+        // third copy of the file on the server and point CRM at it for nothing.
+        if (await AlreadyRightAsync(row, correct, ct)) return RowOutcome.AlreadyRight();
 
         // ---- 1. back up ----
 
@@ -241,6 +260,71 @@ public sealed class RepairOneRow
 
         return RowOutcome.Ok();
     }
+
+    /// <summary>
+    /// Whether CRM already has this document filed correctly, and settles the row if so.
+    ///
+    /// Asks CRM what the record holds now rather than trusting the ledger, then asks the file
+    /// server whether the old file is still there — because those are two different questions
+    /// and the answer to the second decides whether anything is still owed:
+    ///
+    /// - the record was always right, and the old path is the current one: nothing to do, ever;
+    /// - the record has been corrected and the old file is still on the server: the deletion is
+    ///   still owed, so the row is marked corrected and pending it;
+    /// - the record has been corrected and the old file has gone: the work is complete.
+    ///
+    /// Only reads. Whatever it finds, nothing is uploaded and nothing in CRM is changed.
+    /// </summary>
+    private async Task<bool> AlreadyRightAsync(LedgerRow row, Guid correct, CancellationToken ct)
+    {
+        var record = await _read.GetRawRecordAsync("mocd_documentfiles", row.DocFileId, ct);
+        var now = ReadString(record, "mocd_filepath");
+
+        if (now is null) return false;
+
+        var filed = FilePathParser.Parse(now).CategorySegment;
+        if (!Guid.TryParse(filed, out var under) || under != correct) return false;
+
+        _progress.Step("already correct in CRM", now);
+
+        var wasAlwaysRight = FilePaths.Same(now, row.OldFilePath);
+        var oldFileStillThere = !wasAlwaysRight &&
+                                (await _files.DownloadAsync(row.OldFilePath, ct)).Success;
+
+        if (wasAlwaysRight)
+        {
+            row.Verdict = RowVerdicts.Skip;
+            row.Notes = Note(row.Notes,
+                $"checked {Now()} — CRM already files this under the right catalogue and the " +
+                "path has not changed, so there is nothing to correct and nothing to delete");
+        }
+        else
+        {
+            row.NewFilePath = now;
+            row.Verdict = RowVerdicts.Done;
+
+            if (oldFileStillThere)
+            {
+                row.FinalState = RowStates.Text(RowState.Corrected);
+                row.Notes = Note(row.Notes,
+                    $"checked {Now()} — CRM was already corrected by something other than this " +
+                    $"run, and the old file is still on the server at {row.OldFilePath}, so the " +
+                    "delete step still has work to do here");
+            }
+            else
+            {
+                row.FinalState = RowStates.Text(RowState.Deleted);
+                row.Notes = Note(row.Notes,
+                    $"checked {Now()} — CRM was already corrected and the old file is no longer " +
+                    "on the server, so nothing is outstanding");
+            }
+        }
+
+        row.Error = string.Empty;
+        return true;
+    }
+
+    private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm");
 
     /// <summary>Appends to the notes cell without discarding what is already in it.</summary>
     private static string Note(string existing, string addition) =>

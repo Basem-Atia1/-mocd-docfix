@@ -10,6 +10,11 @@ namespace MocdDocFix.Commands;
 /// <param name="ScanSays">What a fresh look at CRM would put in the verdict column.</param>
 public sealed record VerdictDisagreement(LedgerRow Row, string ScanSays);
 
+/// <param name="Excluded">
+/// Rows the operator has marked ignore and that no run has touched. Reported so a whole column
+/// set to "ignore" by one careless fill in Excel can be undone from inside the tool; they are
+/// still protected from the refresh like any other excluded row.
+/// </param>
 /// <param name="Disagreements">
 /// Rows whose verdict differs from what the scan would write. Not acted on: the operator is
 /// asked whether to keep their own answers or take CRM's, because either can be the right one
@@ -17,7 +22,8 @@ public sealed record VerdictDisagreement(LedgerRow Row, string ScanSays);
 /// </param>
 public sealed record Merged(
     IReadOnlyList<LedgerRow> Rows, int Added, int Refreshed, int Protected, int Vanished,
-    IReadOnlyList<string> Notes, IReadOnlyList<VerdictDisagreement> Disagreements);
+    IReadOnlyList<string> Notes, IReadOnlyList<VerdictDisagreement> Disagreements,
+    IReadOnlyList<VerdictDisagreement> Excluded);
 
 /// <summary>
 /// Brings one ledger up to date from a fresh read of CRM, instead of starting a second one.
@@ -44,6 +50,7 @@ public static class LedgerMerge
         var rows = new List<LedgerRow>(existing);
         var notes = new List<string>();
         var disagreements = new List<VerdictDisagreement>();
+        var excluded = new List<VerdictDisagreement>();
         int added = 0, refreshed = 0, protectedRows = 0;
 
         foreach (var scanned in fresh)
@@ -56,6 +63,12 @@ public static class LedgerMerge
                 added++;
                 continue;
             }
+
+            // A row excluded by hand and never worked on. Kept out of the refresh like any other
+            // protected row, but recorded — a whole column set to "ignore" by one careless fill
+            // in Excel is otherwise impossible to undo from inside the tool.
+            if (row.Verdict2() == RowVerdict.Ignore && row.State() == RowState.NotStarted)
+                excluded.Add(new VerdictDisagreement(row, scanned.Verdict));
 
             if (HasBeenActedOn(row))
             {
@@ -84,7 +97,8 @@ public static class LedgerMerge
         }
 
         return new Merged(rows, added, refreshed, protectedRows,
-            existing.Count - seen.Count(id => byDocument.ContainsKey(id)), notes, disagreements);
+            existing.Count - seen.Count(id => byDocument.ContainsKey(id)), notes, disagreements,
+            excluded);
     }
 
     /// <summary>
@@ -94,6 +108,16 @@ public static class LedgerMerge
     public static void TakeScanVerdicts(IReadOnlyList<VerdictDisagreement> disagreements)
     {
         foreach (var (row, scanSays) in disagreements) row.Verdict = scanSays;
+    }
+
+    /// <summary>
+    /// Sends the rows back to the operator to decide one at a time — what they get by answering
+    /// "let me type them myself". Review is the verdict that means exactly that: a person must
+    /// look. It sorts near the top of the sheet, and no run acts on the row until it changes.
+    /// </summary>
+    public static void MarkForReview(IReadOnlyList<VerdictDisagreement> rows)
+    {
+        foreach (var (row, _) in rows) row.Verdict = RowVerdicts.Review;
     }
 
     /// <summary>

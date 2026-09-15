@@ -174,6 +174,7 @@ public sealed class Session : IDisposable
 
         var merged = LedgerMerge.Into(existing, scanned);
         AskAboutVerdicts(merged);
+        var typeThemMyself = AskAboutExcluded(merged);
         _ledger.Write(merged.Rows);
 
         _prompts.Section("The ledger is up to date with CRM");
@@ -190,7 +191,103 @@ public sealed class Session : IDisposable
                 _prompts.Bullet($"… and {merged.Notes.Count - 10} more", Tone.Muted);
         }
 
-        return merged.Rows;
+        return typeThemMyself ? ReadBackHandEdits(merged.Rows) : merged.Rows;
+    }
+
+    /// <summary>
+    /// Holds the run while the operator types verdicts into the sheet, then reads the sheet back.
+    ///
+    /// Without this the rows just written would be worked on from memory and the edits would only
+    /// be noticed on the next scan — which is a poor answer to somebody who has just asked to
+    /// decide those rows by hand.
+    /// </summary>
+    private IReadOnlyList<LedgerRow> ReadBackHandEdits(IReadOnlyList<LedgerRow> fallback)
+    {
+        _prompts.Blank();
+        _prompts.Say("Open the ledger, set the verdict on those rows to fix, skip or whatever " +
+                     "you mean, then save and close it.", Tone.Warn);
+        _prompts.Field("file", _ledger.Path, Tone.Muted);
+
+        if (!_prompts.YesNo("  Saved and closed? Answer yes and I will read it back.",
+                defaultYes: true))
+        {
+            _prompts.Say("Carrying on with the ledger as it stands.", Tone.Muted);
+            return fallback;
+        }
+
+        // Excel may still hold the file for a moment after it closes; the store asks and retries.
+        var reread = _ledger.Read();
+        if (reread.Count == 0) return fallback;
+
+        _prompts.Say($"{reread.Count} row(s) read back from the sheet.", Tone.Good);
+        return Reconciled(reread);
+    }
+
+    /// <summary>
+    /// Offers a way back for rows marked ignore by hand that no run has touched.
+    ///
+    /// Excluding a row is meant to be deliberate, and nothing in the tool overrides it. But one
+    /// fill-down in Excel can set four hundred cells to ignore in a second, and until now the
+    /// only way back was to edit every one of them by hand — the tool refuses to touch an
+    /// excluded verdict precisely so that a real exclusion sticks.
+    ///
+    /// So it asks. Leave them, give them the verdict the scan would have written, or send them
+    /// to review and type the answers in the sheet.
+    /// </summary>
+    /// <returns>True when the operator wants to type the verdicts themselves.</returns>
+    private bool AskAboutExcluded(Merged merged)
+    {
+        if (merged.Excluded.Count == 0) return false;
+
+        _prompts.Section($"{merged.Excluded.Count} row(s) are marked ignore and have never been " +
+                         "worked on", Tone.Warn);
+
+        foreach (var (row, scanSays) in merged.Excluded.Take(10))
+            _prompts.Bullet($"row {row.Row} ({row.DocFileName}): ignored — the scan makes it " +
+                            $"'{scanSays}'", Tone.Muted);
+
+        if (merged.Excluded.Count > 10)
+            _prompts.Bullet($"… and {merged.Excluded.Count - 10} more", Tone.Muted);
+
+        _prompts.Blank();
+
+        var answer = new Asker(_prompts).Ask("What should happen to them?", new[]
+        {
+            new Choice("Leave them ignored", "they are excluded on purpose",
+                "Nothing changes. No run will look at those rows, and the next scan will ask " +
+                "this again. Use this when you meant to exclude them."),
+
+            new Choice("Give them the verdict the scan makes", "undo the exclusion",
+                "Each of those rows takes the verdict a fresh look at CRM would write — fix, " +
+                "skip or review, whichever it is. Use this when a fill-down in Excel set the " +
+                "column to ignore by accident. Their final state and notes are untouched, and " +
+                "you can still edit any of them afterwards."),
+
+            new Choice("Let me type them myself", "send them to review and pause",
+                "Each of those rows is set to review, which no run acts on, and the tool waits " +
+                "while you open the sheet and write the verdict you want on each one — fix, " +
+                "skip or anything else in the list. It reads the sheet back when you are done.")
+        }, defaultIndex: 0);
+
+        if (answer.Kind != AnswerKind.Chosen || answer.Index == 0)
+        {
+            _prompts.Say("Left excluded.", Tone.Muted);
+            _prompts.Blank();
+            return false;
+        }
+
+        if (answer.Index == 1)
+        {
+            LedgerMerge.TakeScanVerdicts(merged.Excluded);
+            _prompts.Say($"{merged.Excluded.Count} row(s) given the scan's verdict.", Tone.Muted);
+            _prompts.Blank();
+            return false;
+        }
+
+        LedgerMerge.MarkForReview(merged.Excluded);
+        _prompts.Say($"{merged.Excluded.Count} row(s) set to review for you to decide.",
+            Tone.Muted);
+        return true;
     }
 
     /// <summary>

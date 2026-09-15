@@ -322,4 +322,87 @@ public class RepairOneRowTests : IDisposable
         Assert.Equal(string.Empty, row.NewFilePath);
         Assert.Empty(_files.Uploads);
     }
+
+    // ---- already right in CRM ----
+    //
+    // Somebody corrects a document in CRM by hand, or an earlier run finished the upload and the
+    // ledger never learned of it. The row still says fix. Uploading a second copy would be wrong
+    // twice over: it would orphan a file and it would tell the operator work was done that was
+    // already done. So CRM is asked first, and the row is settled from what it says.
+
+    /// <summary>
+    /// Corrected elsewhere, old file still on the server. The correction is not owed; the
+    /// deletion still is, and the row has to say so or the old file is stranded forever.
+    /// </summary>
+    [Fact]
+    public async Task A_row_crm_already_corrected_is_marked_done_and_left_for_the_delete_step()
+    {
+        _read.RawRecords[$"mocd_documentfiles:{Record}"] = PortalRecord(NewPath);
+        var row = Row();
+
+        var outcome = await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.True(outcome.WasAlreadyRight);
+        Assert.False(outcome.Corrected);
+        Assert.Equal(RowVerdict.Done, row.Verdict2());
+        Assert.Equal(RowState.Corrected, row.State());
+        Assert.Equal(NewPath, row.NewFilePath);
+        Assert.Contains("still on the server", row.Notes);
+
+        Assert.Empty(_files.Uploads);
+        Assert.Empty(_write.UpdatedFiles);
+    }
+
+    /// <summary>Corrected elsewhere and the old file already gone: nothing is outstanding.</summary>
+    [Fact]
+    public async Task A_row_crm_corrected_whose_old_file_has_gone_is_finished()
+    {
+        _read.RawRecords[$"mocd_documentfiles:{Record}"] = PortalRecord(NewPath);
+        _files.Files.Remove(OldPath);
+        var row = Row();
+
+        var outcome = await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.True(outcome.WasAlreadyRight);
+        Assert.Equal(RowVerdict.Done, row.Verdict2());
+        Assert.Equal(RowState.Deleted, row.State());
+        Assert.Contains("no longer", row.Notes);
+        Assert.Empty(_files.Uploads);
+    }
+
+    /// <summary>
+    /// Filed correctly all along — the path CRM holds is the one the ledger calls old. There is
+    /// no second copy anywhere, so there is nothing to delete and the row is a skip, not a done.
+    /// </summary>
+    [Fact]
+    public async Task A_row_that_was_always_right_becomes_a_skip_with_nothing_to_delete()
+    {
+        var alreadyRight = $@"DigitalServices\{Correct}\20250509\a3f10000-0000-0000-0000-000000000001.jpg";
+        _read.RawRecords[$"mocd_documentfiles:{Record}"] = PortalRecord(alreadyRight);
+
+        var row = Row();
+        row.OldFilePath = alreadyRight;
+
+        var outcome = await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.True(outcome.WasAlreadyRight);
+        Assert.Equal(RowVerdict.Skip, row.Verdict2());
+        Assert.Equal(RowState.NotStarted, row.State());
+        Assert.Contains("nothing to delete", row.Notes);
+        Assert.Empty(_files.Uploads);
+    }
+
+    /// <summary>The check reads CRM and nothing else. A row still filed wrongly is corrected.</summary>
+    [Fact]
+    public async Task A_row_crm_still_files_wrongly_is_corrected_as_usual()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+        var row = Row();
+
+        var outcome = await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.False(outcome.WasAlreadyRight);
+        Assert.True(outcome.Corrected);
+        Assert.Single(_files.Uploads);
+    }
 }

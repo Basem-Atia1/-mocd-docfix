@@ -264,4 +264,75 @@ public class LedgerMergeTests
         Assert.Equal(0, merged.Added);
         Assert.Equal(2, merged.Refreshed);
     }
+
+    /// <summary>
+    /// One fill-down in Excel sets four hundred cells to ignore in a second, and the merge is
+    /// deliberately unable to overrule an excluded verdict. So the rows are reported instead —
+    /// that report is the only way back that does not mean editing every cell by hand.
+    /// </summary>
+    [Fact]
+    public void A_row_excluded_by_hand_and_never_worked_on_is_reported()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Ignore);
+        var scanned = Row(One, verdict: RowVerdicts.Fix);
+
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { scanned });
+
+        var reported = Assert.Single(merged.Excluded);
+        Assert.Same(existing, reported.Row);
+        Assert.Equal(RowVerdicts.Fix, reported.ScanSays);
+        Assert.Equal(RowVerdict.Ignore, existing.Verdict2());   // still not touched
+    }
+
+    /// <summary>
+    /// Excluded and already acted on is a different thing: the row has a history to protect, and
+    /// offering to undo the exclusion would offer to redo the work.
+    /// </summary>
+    [Theory]
+    [InlineData(RowStates.Corrected)]
+    [InlineData(RowStates.Deleted)]
+    [InlineData(RowStates.Ignore)]
+    public void An_excluded_row_that_has_been_acted_on_is_not_offered_back(string state)
+    {
+        var existing = Row(One, verdict: RowVerdicts.Ignore, finalState: state);
+
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { Row(One) });
+
+        Assert.Empty(merged.Excluded);
+    }
+
+    [Fact]
+    public void A_row_nobody_excluded_is_not_offered_back()
+    {
+        var merged = LedgerMerge.Into(new[] { Row(One, verdict: RowVerdicts.Skip) },
+            new[] { Row(One, verdict: RowVerdicts.Fix) });
+
+        Assert.Empty(merged.Excluded);
+    }
+
+    [Fact]
+    public void Taking_the_scans_verdict_undoes_an_exclusion()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Ignore);
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { Row(One, verdict: RowVerdicts.Fix) });
+
+        LedgerMerge.TakeScanVerdicts(merged.Excluded);
+
+        Assert.Equal(RowVerdict.Fix, existing.Verdict2());
+    }
+
+    /// <summary>
+    /// The other way back: the operator wants to decide each row themselves, so they are put
+    /// where a person has to look and no run will act on them in the meantime.
+    /// </summary>
+    [Fact]
+    public void Marking_for_review_hands_the_rows_back_to_the_operator()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Ignore);
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { Row(One, verdict: RowVerdicts.Fix) });
+
+        LedgerMerge.MarkForReview(merged.Excluded);
+
+        Assert.Equal(RowVerdict.Review, existing.Verdict2());
+    }
 }

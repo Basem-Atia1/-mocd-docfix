@@ -16,7 +16,7 @@ public sealed record SkipTally(string Why, int Count);
 /// found before the operator assumes the row was done.
 /// </param>
 public sealed record RepairSummary(
-    int Corrected, int Declined, int Failed, bool Stopped,
+    int Corrected, int Declined, int Failed, bool Stopped, int AlreadyRight,
     IReadOnlyList<SkipTally> Skips, IReadOnlyList<string> Unrecognised);
 
 /// <summary>
@@ -54,7 +54,7 @@ public sealed class RepairRun
     public async Task<RepairSummary> RunAsync(IReadOnlyList<LedgerRow> working,
         IReadOnlyList<LedgerRow> wholeLedger, CancellationToken ct)
     {
-        int corrected = 0, declined = 0, failed = 0;
+        int corrected = 0, declined = 0, failed = 0, alreadyRight = 0;
         var stopped = false;
 
         _progress.SayHowToStop();
@@ -111,6 +111,11 @@ public sealed class RepairRun
                 _errors.Append(i + 1, working.Count, row, outcome.FailedStep!, outcome.Failure!);
                 _progress.Failed(row, row.Error);
             }
+            else if (outcome.WasAlreadyRight)
+            {
+                alreadyRight++;
+                _progress.Skipped(row, "CRM already had it right — nothing was uploaded");
+            }
             else if (!outcome.StopAsked)
             {
                 declined++;
@@ -135,7 +140,7 @@ public sealed class RepairRun
             if (!_progress.CarryOn()) { stopped = true; break; }
         }
 
-        return new RepairSummary(corrected, declined, failed, stopped,
+        return new RepairSummary(corrected, declined, failed, stopped, alreadyRight,
             skips.Select(s => new SkipTally(s.Key, s.Value)).ToList(), unrecognised);
     }
 
