@@ -25,9 +25,19 @@ public sealed class LedgerStore
     /// </summary>
     private bool _backedUpThisSitting;
 
-    public LedgerStore(string path) => Path = path;
+    private readonly LedgerWorkbook _workbook;
+
+    public LedgerStore(string path)
+    {
+        Path = path;
+
+        _workbook = new LedgerWorkbook(System.IO.Path.ChangeExtension(path, ".xlsx"));
+    }
 
     public string Path { get; }
+
+    /// <summary>Where the readable copy goes. Regenerated from the CSV, never read back.</summary>
+    public string WorkbookPath => _workbook.Path;
 
     public bool Exists => File.Exists(Path);
 
@@ -40,15 +50,41 @@ public sealed class LedgerStore
         return csv.GetRecords<LedgerRow>().ToList();
     }
 
+    /// <summary>
+    /// Sorts by verdict, renumbers, and writes both files — the CSV the tool reads back, and
+    /// the workbook beside it for reading and filtering.
+    ///
+    /// A failure to write the workbook must not lose the ledger: the CSV goes down first, and
+    /// the workbook is attempted afterwards. Excel holding the .xlsx open is the ordinary case
+    /// of that, and it is not worth failing a run over.
+    /// </summary>
     public void Write(IReadOnlyList<LedgerRow> rows)
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
         BackUpOnce();
 
-        using var writer = new StreamWriter(Path, append: false, Utf8);
-        using var csv = new CsvWriter(writer, Config());
-        csv.WriteRecords(rows);
+        var ordered = LedgerOrder.Sorted(rows);
+
+        using (var writer = new StreamWriter(Path, append: false, Utf8))
+        using (var csv = new CsvWriter(writer, Config()))
+        {
+            csv.WriteRecords(ordered);
+        }
+
+        try
+        {
+            _workbook.Write(ordered);
+        }
+        catch (IOException)
+        {
+            // Almost always Excel with the file open. The CSV is written and is the one that
+            // matters; the workbook catches up on the next row.
+            LastWorkbookProblem = $"could not write {_workbook.Path} — is it open in Excel?";
+        }
     }
+
+    /// <summary>Why the workbook could not be rewritten, when it could not. Null otherwise.</summary>
+    public string? LastWorkbookProblem { get; private set; }
 
     /// <summary>Renames the current ledger out of the way. Returns where it was kept.</summary>
     public string StartNewKeepingOld()

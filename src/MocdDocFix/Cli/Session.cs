@@ -49,9 +49,12 @@ public sealed class Session : IDisposable
         // once a correction has overwritten a record. Everything else is one file each.
         _backups = new BackupStore(Path.Combine(appConfig.DataRoot, "backup", envName));
 
-        _ledger = new LedgerStore(Path.Combine(appConfig.DataRoot, $"repair-{envName}.csv"));
-        _journal = new ChangeJournal(Path.Combine(appConfig.DataRoot, $"changes-{envName}.jsonl"));
-        _errors = new ErrorLog(Path.Combine(appConfig.DataRoot, $"errors-{envName}.txt"));
+        // One folder per environment, so dev and production can never be read for each other.
+        var reports = Path.Combine(appConfig.DataRoot, "reports", envName);
+
+        _ledger = new LedgerStore(Path.Combine(reports, $"repair-{envName}.csv"));
+        _journal = new ChangeJournal(Path.Combine(reports, $"changes-{envName}.jsonl"));
+        _errors = new ErrorLog(Path.Combine(reports, $"errors-{envName}.txt"));
 
         _crmHttp = CrmHttp.Create(env);
         _read = new CrmReadClient(_crmHttp, env);
@@ -237,7 +240,13 @@ public sealed class Session : IDisposable
                     progress, _prompts, _errors)
                 .RunAsync(rows, all, ct);
 
-            var details = new List<string> { $"ledger → {_ledger.Path}" };
+            var details = new List<string>
+            {
+                $"ledger   → {_ledger.Path}",
+                $"workbook → {_ledger.WorkbookPath}   (read-only view; edit the .csv)"
+            };
+
+            if (_ledger.LastWorkbookProblem is { } stale) details.Add($"NOTE: {stale}");
 
             foreach (var skip in summary.Skips) details.Add($"skipped: {skip.Count} — {skip.Why}");
 

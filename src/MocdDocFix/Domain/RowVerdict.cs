@@ -15,6 +15,9 @@ public static class RowVerdicts
     public const string Ignore = "ignore";
     public const string Redo = "redo";
 
+    /// <summary>Every value the operator may type, for the workbook's dropdown.</summary>
+    public static readonly IReadOnlyList<string> All = new[] { Fix, Skip, Review, Redo, Ignore };
+
     public static RowVerdict Parse(string? cell) => (cell ?? string.Empty).Trim().ToLowerInvariant() switch
     {
         Fix => RowVerdict.Fix,

@@ -16,6 +16,13 @@ public static class RowStates
     public const string Ignore = "ignore";
     public const string Failed = "failed";
 
+    /// <summary>
+    /// Every value the column may hold, for the workbook's dropdown. The blank comes first
+    /// because it is a real answer — not started — and the operator needs a way to choose it.
+    /// </summary>
+    public static readonly IReadOnlyList<string> All =
+        new[] { string.Empty, Corrected, Deleted, Ignore, Failed };
+
     public static RowState Parse(string? cell)
     {
         var text = (cell ?? string.Empty).Trim().ToLowerInvariant();
