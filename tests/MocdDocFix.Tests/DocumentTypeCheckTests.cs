@@ -492,6 +492,62 @@ public class DocumentTypeCheckTests : IDisposable
             m => m.Contains("may be stale", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// The change asked for: fetching the workbook and then returning to the same question with
+    /// the same answer wasted the fetch. What was just downloaded is read, and where it answers
+    /// the question the menu does not come back.
+    /// </summary>
+    [Fact]
+    public async Task Downloading_the_spreadsheet_settles_the_type_instead_of_asking_again()
+    {
+        var drop = Path.Combine(_root, "drop");
+
+        _ado.Attachments[Emap] = new()
+        {
+            new AdoAttachment(27632,
+                "1.1.10 CRM- Employee Appointment Request Form- Display Submitted Documents",
+                "MoCD_NPOP_Employee Appointment Request_DD.csv",
+                "https://devops.example/attachment")
+        };
+
+        _ado.WritesOnDownload =
+            "Document Type,Mandatory\nA Copy of Board of Director's Decision,Yes\n";
+
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "5" });   // "Find the spreadsheet"
+
+        var ruling = await CheckWithFolders(null, drop)
+            .RuleOnAsync("A Copy of Board of Director's Decision", Emap, CancellationToken.None);
+
+        Assert.Equal(AdoVerdict.Agrees, ruling.Verdict);
+        Assert.Equal(Emap, ruling.Service);
+
+        // Asked once. If the menu came back the queue would be empty and ReadLine would throw,
+        // so this assertion and that throw both prove the same thing.
+        Assert.Single(_prompts.Questions);
+    }
+
+    [Fact]
+    public async Task Going_away_to_save_the_file_yourself_works_the_same_way()
+    {
+        // "Wait — I will go and look" re-enters the enquiry, so a workbook saved into the drop
+        // folder while the question sat on screen is read without choosing anything else.
+        var folder = Path.Combine(_root, "drop");
+        Directory.CreateDirectory(folder);
+
+        _prompts.ReadLineQueue = new Queue<string>(new[] { "6", "" });   // wait, then Enter
+
+        var check = CheckWithFolders(null, folder);
+
+        File.WriteAllText(Path.Combine(folder, "MoCD_NPOP_Employee Appointment Request_DD.csv"),
+            "A Copy of Board of Director's Decision,Mandatory");
+
+        var ruling = await check.RuleOnAsync("A Copy of Board of Director's Decision", Emap,
+            CancellationToken.None);
+
+        Assert.Equal(AdoVerdict.Agrees, ruling.Verdict);
+        Assert.Contains("MoCD_NPOP_Employee Appointment Request", ruling.Detail);
+    }
+
     // ---- stage 2: the story bodies, read live ----
 
     private static AdoWorkItemText Story(int id, string title, string body) => new(id, title, body);

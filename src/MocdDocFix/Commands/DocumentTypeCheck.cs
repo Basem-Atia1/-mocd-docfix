@@ -522,7 +522,11 @@ public sealed class DocumentTypeCheck
 
             case 4:
                 FetchTheSpreadsheets(name, crmService);
-                return Ask(name, crmService, opinion);
+
+                // Not back to the same question with the same answer. Everything is asked again
+                // from scratch, and stage 3 reads what the download just put on disk — which is
+                // the point of having fetched it.
+                return SearchAgain(name, crmService, null, opinion);
 
             case 5:
                 _prompts.Blank();
@@ -603,6 +607,7 @@ public sealed class DocumentTypeCheck
 
             if (File.Exists(to))
             {
+                _fetched[to] = attachment;
                 _prompts.Info("      already here", Tone.Good);
                 continue;
             }
@@ -611,6 +616,10 @@ public sealed class DocumentTypeCheck
             {
                 var got = _ado.DownloadAttachmentAsync(attachment, to, CancellationToken.None)
                     .GetAwaiter().GetResult();
+
+                // Remembered so the file can be traced back to the work item it hung off, which
+                // is the only thing that says which service the workbook belongs to.
+                if (got) _fetched[to] = attachment;
 
                 _prompts.Info(got ? $"      downloaded to {to}" : "      could not be downloaded",
                     got ? Tone.Good : Tone.Warn);
