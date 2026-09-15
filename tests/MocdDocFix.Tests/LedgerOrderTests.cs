@@ -27,17 +27,39 @@ public class LedgerOrderTests
     /// A typo must not be buried among hundreds of skipped rows — it goes last, where the eye
     /// ends up, rather than into the middle.
     /// </summary>
+    /// <summary>
+    /// A finished row is the one thing nobody needs to look at again. Leaving it among the
+    /// outstanding work is what made a corrected document still read as "to do".
+    /// </summary>
     [Fact]
-    public void An_unrecognised_verdict_sorts_last()
+    public void Finished_rows_sink_below_everything_still_outstanding()
+    {
+        var sorted = LedgerOrder.Sorted(new[]
+        {
+            Row(RowVerdicts.Done, "finished"),
+            Row(RowVerdicts.Fix, "to do"),
+            Row(RowVerdicts.Review, "decide"),
+            Row(RowVerdicts.Ignore, "excluded")
+        });
+
+        Assert.Equal("finished", sorted[^1].DocName);
+        Assert.Equal("to do", sorted[0].DocName);
+    }
+
+    [Fact]
+    public void An_unrecognised_verdict_sorts_below_the_work_but_above_the_finished()
     {
         var sorted = LedgerOrder.Sorted(new[]
         {
             Row("fixx", "typo"),
+            Row(RowVerdicts.Done, "finished"),
             Row(RowVerdicts.Ignore, "ignored"),
             Row(RowVerdicts.Fix, "work")
         });
 
-        Assert.Equal("typo", sorted[^1].DocName);
+        // A typo needs attention, so it must not be buried under the rows that do not.
+        Assert.Equal(new[] { "work", "ignored", "typo", "finished" },
+            sorted.Select(r => r.DocName));
     }
 
     /// <summary>Two documents of the same kind stay neighbours, run after run.</summary>

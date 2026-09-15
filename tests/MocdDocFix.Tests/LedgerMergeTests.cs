@@ -98,10 +98,26 @@ public class LedgerMergeTests
         Assert.Equal("https://crm.example/new", existing.CrmLinkOfDoc);
     }
 
+    /// <summary>
+    /// A rescan resetting a finished row to "fix" would offer work that is not outstanding —
+    /// and the operator would then watch the tool upload a file it had already corrected.
+    /// </summary>
+    [Fact]
+    public void A_finished_row_is_not_put_back_to_fix_by_a_rescan()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Done,
+            finalState: RowStates.Text(RowState.Corrected));
+
+        LedgerMerge.Into(new[] { existing }, new[] { Row(One, verdict: RowVerdicts.Fix) });
+
+        Assert.Equal(RowVerdict.Done, existing.Verdict2());
+    }
+
     [Theory]
     [InlineData(RowVerdicts.Ignore)]
     [InlineData(RowVerdicts.Redo)]
-    public void The_two_words_only_the_operator_writes_are_never_overwritten(string mine)
+    [InlineData(RowVerdicts.Done)]
+    public void The_words_a_scan_could_not_have_written_are_never_overwritten(string mine)
     {
         var existing = Row(One, verdict: mine);
         var scanned = Row(One, verdict: RowVerdicts.Fix);

@@ -13,6 +13,7 @@ public class LedgerRowTests
     [InlineData("skip", RowVerdict.Skip)]
     [InlineData("ignore", RowVerdict.Ignore)]
     [InlineData("redo", RowVerdict.Redo)]
+    [InlineData("done", RowVerdict.Done)]
     public void Every_verdict_the_operator_may_type_is_understood(string cell, RowVerdict expected) =>
         Assert.Equal(expected, RowVerdicts.Parse(cell));
 
@@ -23,7 +24,7 @@ public class LedgerRowTests
     [Theory]
     [InlineData("fixx")]
     [InlineData("f")]
-    [InlineData("done")]
+    [InlineData("finished")]
     [InlineData("")]
     [InlineData(null)]
     public void Anything_else_is_unrecognised_rather_than_the_value_it_resembles(string? cell) =>

@@ -79,7 +79,7 @@ public static class LedgerMerge
     /// </summary>
     private static bool HasBeenActedOn(LedgerRow row) =>
         row.State() is RowState.Corrected or RowState.Deleted or RowState.Ignore ||
-        row.Verdict2() is RowVerdict.Ignore or RowVerdict.Redo;
+        row.Verdict2() is RowVerdict.Ignore or RowVerdict.Redo or RowVerdict.Done;
 
     /// <summary>
     /// Everything CRM is the authority on. The four columns the operator owns — verdict, final
@@ -113,9 +113,11 @@ public static class LedgerMerge
         row.CrmLinkOfDoc = scanned.CrmLinkOfDoc;
         row.CrmLinkOfDocFile = scanned.CrmLinkOfDocFile;
 
-        // The scan's verdict is CRM's current answer, so it wins — except where the operator
-        // has used one of the two words only they write. Those are instructions, not findings.
-        if (row.Verdict2() is not (RowVerdict.Ignore or RowVerdict.Redo))
+        // The scan's verdict is CRM's current answer, so it wins — except where the column
+        // already holds something a scan could not have written: the operator's own two words,
+        // or the run's record that this document is finished. Overwriting any of those with
+        // "fix" would offer work that is not outstanding.
+        if (row.Verdict2() is not (RowVerdict.Ignore or RowVerdict.Redo or RowVerdict.Done))
             row.Verdict = scanned.Verdict;
     }
 }

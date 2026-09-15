@@ -83,6 +83,26 @@ public class DeleteOldFilesTests : IDisposable
         Assert.Single(_files.Deleted);
     }
 
+    /// <summary>
+    /// Eligibility is the final state alone. A corrected row's verdict reads "done", and this
+    /// step must still remove its old file — reading the verdict here would strand every
+    /// document the tool has finished.
+    /// </summary>
+    [Theory]
+    [InlineData(RowVerdicts.Done)]
+    [InlineData(RowVerdicts.Fix)]
+    [InlineData(RowVerdicts.Skip)]
+    public async Task The_verdict_has_no_bearing_on_what_is_deleted(string verdict)
+    {
+        var row = Row();
+        row.Verdict = verdict;
+
+        var summary = await Run(row);
+
+        Assert.Equal(1, summary.Deleted);
+        Assert.Contains(OldPath, _files.Deleted);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData(RowStates.Deleted)]

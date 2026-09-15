@@ -232,6 +232,11 @@ public sealed class RepairOneRow
 
         row.NewFilePath = newFile.FilePath;
         row.FinalState = RowStates.Text(RowState.Corrected);
+
+        // The verdict is the column the eye lands on first, and a finished row still reading
+        // "fix" says the opposite of the truth. Nothing acts on this value afterwards — the
+        // delete step and Check it all both run on the final state — so it is safe to say so.
+        row.Verdict = RowVerdicts.Done;
         row.Error = string.Empty;
 
         return RowOutcome.Ok();

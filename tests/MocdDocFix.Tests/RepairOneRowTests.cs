@@ -109,6 +109,9 @@ public class RepairOneRowTests : IDisposable
         Assert.NotEqual(string.Empty, row.BackupPath);
         Assert.Equal(string.Empty, row.Error);
 
+        // A finished row must not go on reading "fix", which says the opposite of the truth.
+        Assert.Equal(RowVerdict.Done, row.Verdict2());
+
         var update = Assert.Single(_write.UpdatedFiles);
         Assert.Equal(Record, update.RecordId);
         Assert.Equal(NewPath, update.FilePath);

@@ -218,7 +218,8 @@ public class RepairRunTests : IDisposable
         Assert.Equal(RowState.NotStarted, rows[2].State());
 
         // And the ledger says the same, because it was written as each row finished.
-        Assert.Equal(RowState.Corrected, _ledger.Read()[0].State());
+        Assert.Equal(RowState.Corrected,
+            _ledger.Read().Single(r => r.DocId == rows[0].DocId).State());
     }
 
     /// <summary>Unattended is unattended, not unstoppable.</summary>
@@ -291,11 +292,13 @@ public class RepairRunTests : IDisposable
 
         Assert.Equal(1, summary.Corrected);
 
+        // By doc id, not position: a corrected row sinks to the bottom of the sheet, and the
+        // row number is positional by design.
         var onDisk = _ledger.Read();
         Assert.Equal(3, onDisk.Count);
-        Assert.Equal(RowState.NotStarted, onDisk[0].State());
-        Assert.Equal(RowState.Corrected, onDisk[1].State());
-        Assert.Equal(RowState.NotStarted, onDisk[2].State());
+        Assert.Equal(RowState.NotStarted, onDisk.Single(r => r.DocId == all[0].DocId).State());
+        Assert.Equal(RowState.Corrected, onDisk.Single(r => r.DocId == all[1].DocId).State());
+        Assert.Equal(RowState.NotStarted, onDisk.Single(r => r.DocId == all[2].DocId).State());
     }
 
     /// <summary>
@@ -345,7 +348,8 @@ public class RepairRunTests : IDisposable
         Assert.Equal(1, summary.Corrected);
         Assert.Equal(RowState.Corrected, rows[0].State());
         Assert.Single(_write.UpdatedFiles);
-        Assert.Equal(RowState.Corrected, _ledger.Read().Single(r => r.Row == 1).State());
+        Assert.Equal(RowState.Corrected,
+            _ledger.Read().Single(r => r.DocId == rows[0].DocId).State());
 
         // And nothing after it was begun.
         Assert.Equal(RowState.NotStarted, rows[1].State());

@@ -76,6 +76,7 @@ public static class LedgerRecovery
 
         row.NewFilePath = entry.New?.Path ?? row.NewFilePath;
         row.FinalState = RowStates.Text(RowState.Corrected);
+        row.Verdict = RowVerdicts.Done;
         row.Error = string.Empty;
         row.Notes = Add(row.Notes, $"recovered from the change journal {Now()}");
 

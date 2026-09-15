@@ -25,6 +25,11 @@ public static class LedgerOrder
         RowVerdict.Review => 2,
         RowVerdict.Redo => 3,
         RowVerdict.Ignore => 4,
+        RowVerdict.Unrecognised => 5,
+
+        // Last. A finished row is the one thing nobody needs to look at again, and leaving it
+        // among the outstanding work is what made a corrected document still read as "to do".
+        RowVerdict.Done => 6,
         _ => 5
     };
 
