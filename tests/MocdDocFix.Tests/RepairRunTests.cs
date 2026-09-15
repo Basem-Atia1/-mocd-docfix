@@ -321,27 +321,54 @@ public class RepairRunTests : IDisposable
     }
 
     /// <summary>
-    /// Quiet never interrupts, so the way out is a keypress noticed between documents. The one
-    /// in progress finishes and is recorded; nothing after it is started.
+    /// Quiet never interrupts, so the way out is a keypress. Whenever it is pressed, the
+    /// document in progress is finished and recorded before the run ends — nothing is left
+    /// half done, and nothing after it is started.
     /// </summary>
     [Fact]
-    public async Task Pressing_q_in_quiet_stops_after_the_document_in_progress()
+    public async Task Pressing_q_in_quiet_finishes_the_document_in_progress_then_stops()
     {
         UploadsSucceed();
         var rows = new[] { Fixable(1), Fixable(2), Fixable(3) };
 
         _prompts.Answer(ConfirmChoice.Yes, ConfirmChoice.Yes, ConfirmChoice.Yes);
+
+        // Pressed while document 1 was uploading — so it is noticed at the check that runs
+        // before that document's own eye-check, not at a boundary.
         _prompts.StopRequests = new Queue<bool>(new[] { true });
 
         var summary = await Subject(WatchMode.Quiet).RunAsync(rows, rows, CancellationToken.None);
 
         Assert.True(summary.Stopped);
+
+        // Finished, not abandoned: uploaded, CRM updated, recorded.
+        Assert.Equal(1, summary.Corrected);
+        Assert.Equal(RowState.Corrected, rows[0].State());
+        Assert.Single(_write.UpdatedFiles);
+        Assert.Equal(RowState.Corrected, _ledger.Read().Single(r => r.Row == 1).State());
+
+        // And nothing after it was begun.
+        Assert.Equal(RowState.NotStarted, rows[1].State());
+        Assert.Single(_files.Uploads);
+    }
+
+    /// <summary>
+    /// Unattended has no question to intercept the keystroke, so it is noticed at the boundary
+    /// — with the same result: the document in progress is complete.
+    /// </summary>
+    [Fact]
+    public async Task Pressing_q_in_unattended_also_finishes_the_document_first()
+    {
+        UploadsSucceed();
+        var rows = new[] { Fixable(1), Fixable(2) };
+        _prompts.StopRequests = new Queue<bool>(new[] { true });
+
+        var summary = await Subject(WatchMode.Unattended).RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.True(summary.Stopped);
         Assert.Equal(1, summary.Corrected);
         Assert.Equal(RowState.Corrected, rows[0].State());
         Assert.Equal(RowState.NotStarted, rows[1].State());
-
-        // And the ledger on disk says so, because it is written as each row finishes.
-        Assert.Equal(RowState.Corrected, _ledger.Read().Single(r => r.Row == 1).State());
     }
 
     /// <summary>

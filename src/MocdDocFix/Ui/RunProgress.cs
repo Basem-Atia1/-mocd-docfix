@@ -76,16 +76,41 @@ public sealed class RunProgress
     /// not like types "no", and a prompt that accepts any keystroke as "carry on" would move to
     /// the next document anyway. Answering no stops the run where it stands.
     /// </summary>
+    /// <summary>
+    /// Once asked, it stays asked. A q pressed during an upload is noticed long before the
+    /// document is finished, and the answer must survive until the boundary where stopping is
+    /// safe — not be forgotten because the next look at the keyboard found nothing.
+    /// </summary>
+    private bool _stopAsked;
+
+    /// <summary>
+    /// Takes any pending keystroke out of the buffer and remembers whether it was a request to
+    /// stop.
+    ///
+    /// Called before every question a document asks, not only between documents. A q pressed
+    /// while a file was uploading is still sitting there when the eye-check appears, and a
+    /// prompt would read it as the answer — so it is claimed here first, where it means what
+    /// the operator intended.
+    /// </summary>
+    /// <returns>True once a stop has been asked for, at any point.</returns>
+    public bool NoticeStopRequest()
+    {
+        if (Mode == WatchMode.Watch) return false;
+        if (_prompts.StopRequested()) _stopAsked = true;
+
+        return _stopAsked;
+    }
+
     /// <returns>False to stop the run.</returns>
     public bool CarryOn()
     {
         if (Mode == WatchMode.Watch)
             return _prompts.YesNo("  Carry on to the next document?", defaultYes: true);
 
-        // Quiet and Unattended never interrupt to ask — so instead the operator can say stop
-        // whenever they like, and it is noticed here, between documents. Pressing q part-way
-        // through an upload does not abandon it; the document finishes and the run ends.
-        if (!_prompts.StopRequested()) return true;
+        // Quiet and Unattended never interrupt to ask, so the operator says stop whenever they
+        // like and it takes effect here — after the document in progress has been finished and
+        // recorded, never part-way through one.
+        if (!NoticeStopRequest()) return true;
 
         Stopping();
         return false;

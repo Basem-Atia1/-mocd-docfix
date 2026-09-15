@@ -150,6 +150,11 @@ public sealed class RepairOneRow
             _opener.Open(saved.LocalPath);
             _opener.Open(staged.LocalPath);
 
+            // A q pressed while this document was being uploaded is still in the buffer and
+            // would otherwise be read as the answer to the question below. Claim it first: it
+            // meant "stop when this document is done", and it is remembered until then.
+            _progress.NoticeStopRequest();
+
             var looksRight = _prompts.Confirm("Do these two files look the same?");
 
             // Quit is not "they look wrong". It is also where a q pressed during the upload
