@@ -14,7 +14,6 @@ namespace MocdDocFix.Cli;
 public sealed class Session : IDisposable
 {
     private readonly AppConfig _appConfig;
-    private readonly DocumentTypeDecisions _typeDecisions;
     private readonly ResolvedEnvironment _env;
     private readonly string _envName;
     private readonly IPrompts _prompts;
@@ -29,7 +28,6 @@ public sealed class Session : IDisposable
     private readonly BackupStore _backups;
     private readonly StateStore _state;
     private readonly ScanCommand _scan;
-    private readonly DocumentTypeCheck _typeCheck;
     private readonly ShellFileOpener _opener = new();
     private readonly RepointedListWriter _repointedList;
     private readonly DocumentReportStore _docReports;
@@ -45,11 +43,8 @@ public sealed class Session : IDisposable
     /// </summary>
     private IReadOnlyList<ScanRow> _pending = Array.Empty<ScanRow>();
 
-    /// <param name="ado">
-    /// The DevOps backlog, for the scan's third opinion. Null leaves the scan exactly as it was.
-    /// </param>
     public Session(AppConfig appConfig, ResolvedEnvironment env, string envName,
-        IPrompts prompts, bool dryRun, IAdoClient? ado = null)
+        IPrompts prompts, bool dryRun)
     {
         _appConfig = appConfig;
         _env = env;
@@ -83,22 +78,10 @@ public sealed class Session : IDisposable
         _fileHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         _files = new FileServiceClient(_fileHttp, env);
 
-        // The decisions file sits beside config.json rather than under the environment: a
-        // document type belongs to the same service in dev as it does in production, and being
-        // asked the same awkward question again after switching environment would be absurd.
-        _typeDecisions = new DocumentTypeDecisions(
-            Path.Combine(ConfigStore.DefaultDirectory, "document-types.json"));
-
-        // Held on the session, not built inside the scan, because the upload step asks it again
-        // for each document it is about to move — with the same per-type cache, so asking twice
-        // costs one query.
-        _typeCheck = new DocumentTypeCheck(ado, _typeDecisions, prompts,
-            appConfig.Ado.LocalCopy, appConfig.Ado.DropFolder);
 
         _scan = new ScanCommand(_read, _reporter, env.CrmUrl, appConfig.ServiceCatalogues,
             new GroupedReportWriter(runRoot),
             new GuidListWriter(runRoot),
-            _typeCheck,
             _docReports, _backups);
     }
 
@@ -115,15 +98,6 @@ public sealed class Session : IDisposable
     /// the migrate step so the operator can remove a file right after repointing it, without a
     /// second implementation of what "safe to delete" means.
     /// </summary>
-    /// <summary>
-    /// Where the backlog stands on one document type. Handed to the upload step so it can ask
-    /// again for each document it is about to move, against the same per-type cache and the same
-    /// saved decisions the scan used — so a second look costs nothing and cannot contradict the
-    /// first by accident.
-    /// </summary>
-    private Task<TypeRuling> CheckTypeAsync(string? documentType, string? crmService, CancellationToken ct) =>
-        _typeCheck.RuleOnAsync(documentType, crmService, ct);
-
     private Task<string?> DeleteOneAsync(Guid documentId, CancellationToken ct) =>
         new DeleteCommand(_files, _read, _write, _backups, _state, _prompts, _docReports).DeleteOneAsync(documentId, ct);
 
@@ -147,14 +121,6 @@ public sealed class Session : IDisposable
             WriteEachDocument(result);
 
             var details = result.Banner().Split(Environment.NewLine).ToList();
-
-            if (result.DevOpsSummary() is { } devops)
-            {
-                details.Add("");
-                details.Add(devops);
-                foreach (var name in result.DevOpsCouldNotTell().Take(10))
-                    details.Add($"  could not be told about: {name}");
-            }
 
             details.Add("");
             details.Add($"grouped report → {result.GroupsPath}");
@@ -235,8 +201,7 @@ public sealed class Session : IDisposable
         MigrateAsync: async () =>
         {
             var summary = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
-                    _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports,
-                    CheckTypeAsync)
+                    _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports)
                 .RunAsync(_envName, ct);
 
             // Each document's own account first — that is where the detail is, and it is the
@@ -475,8 +440,7 @@ public sealed class Session : IDisposable
                 return 0;
 
             var migrated = await new MigrateCommand(_files, _read, _write, _backups, _state, _reporter,
-                    _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports,
-                    CheckTypeAsync)
+                    _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList, _docReports)
                 .RunAsync(_envName, ct);
 
             if (migrated.Migrated == 0) return 0;
@@ -546,7 +510,7 @@ public sealed class Session : IDisposable
 
                 var summary = await new MigrateCommand(_files, _read, _write, _backups, _state,
                         _reporter, _prompts, _opener, _env.CrmUrl, DeleteOneAsync, _repointedList,
-                        _docReports, CheckTypeAsync)
+                        _docReports)
                     .RunAsync(_envName, ct);
 
                 Console.WriteLine($"Migrated {summary.Migrated}, skipped {summary.Skipped}, failed {summary.Failed}.");

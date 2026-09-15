@@ -217,7 +217,7 @@ public class ScanCommandTests : IDisposable
 
         return (new ScanCommand(_crm, new Reporter(_dir), "https://crm/MoCD",
                 new[] { EmployeeAppointment, GamRequest },
-                new GroupedReportWriter(_dir), new GuidListWriter(_dir), null, reports, backups),
+                new GroupedReportWriter(_dir), new GuidListWriter(_dir), reports, backups),
             reports, backups);
     }
 
@@ -237,7 +237,6 @@ public class ScanCommandTests : IDisposable
         var text = File.ReadAllText(path);
         Assert.Contains("STEP 1", text);
         Assert.Contains("Re-upload", text);
-        Assert.Contains("DevOps", text);
     }
 
     [Fact]

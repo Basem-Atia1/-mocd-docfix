@@ -13,7 +13,7 @@ namespace MocdDocFix.Tests;
 /// </summary>
 public class CheckLinesTests
 {
-    private static ScanRow Row(string verdict, int group = 3, string ado = nameof(AdoVerdict.Agrees)) =>
+    private static ScanRow Row(string verdict, int group = 3) =>
         new(DocumentId: Guid.Parse("2c9d5572-a77b-f111-b10f-00505601095a"),
             DocumentFileId: Guid.NewGuid(),
             FileName: "cert.jpg",
@@ -30,10 +30,7 @@ public class CheckLinesTests
             Reason: "the path names a document type, not a service catalogue",
             Solution: "Re-upload under the correct catalogue and repoint the document.",
             CrossCheckSource: "mocd_employeeappintmentrequest",
-            CrmLink: "https://crm/doc",
-            AdoVerdict: ado,
-            AdoService: "Employee Appointment",
-            AdoEvidence: "27628 34143");
+            CrmLink: "https://crm/doc");
 
     private static string Said(ScanRow row, bool? crossCheckAgrees = null)
     {
@@ -58,34 +55,6 @@ public class CheckLinesTests
     /// Agreement is printed, not only disagreement — a check that speaks up only to object
     /// cannot be told from one that never ran, which is how the DevOps check first read.
     /// </summary>
-    [Fact]
-    public void DevOps_agreement_is_said_out_loud_with_its_work_items()
-    {
-        var said = Said(Row(nameof(Verdict.Fix)));
-
-        Assert.Contains("DevOps", said);
-        Assert.Contains("agrees", said);
-        Assert.Contains("27628 34143", said);
-    }
-
-    [Fact]
-    public void DevOps_disagreement_names_the_service_the_backlog_says()
-    {
-        var said = Said(Row(nameof(Verdict.Review), group: 6, ado: nameof(AdoVerdict.Disagrees)));
-
-        Assert.Contains("DISAGREES", said);
-        Assert.Contains("NEEDS A HUMAN", said);
-    }
-
-    [Fact]
-    public void A_check_that_never_ran_says_so_rather_than_implying_agreement()
-    {
-        var said = Said(Row(nameof(Verdict.Fix), ado: nameof(AdoVerdict.NotChecked)));
-
-        Assert.Contains("not checked", said);
-        Assert.DoesNotContain("agrees", said);
-    }
-
     [Fact]
     public void A_correct_document_says_so_in_one_line()
     {

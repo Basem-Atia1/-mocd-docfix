@@ -17,7 +17,6 @@ public class TargetedReportTests : IDisposable
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), "docfix-tr-" + Guid.NewGuid());
     private readonly FakeCrmReadClient _read = new();
-    private readonly FakeAdoClient _ado = new();
     private readonly FakePrompts _prompts = new();
 
     public TargetedReportTests()
@@ -38,23 +37,20 @@ public class TargetedReportTests : IDisposable
 
     private string ReportsRoot => Path.Combine(_root, "reports");
 
-    private TargetedCommand Command(bool withDevOps)
+    private TargetedCommand Command()
     {
         var reporter = new Reporter(Path.Combine(ReportsRoot, "_whole-run"));
 
         var scan = new ScanCommand(_read, reporter, "https://crm/MoCD", new[] { Correct },
-            null, null,
-            withDevOps
-                ? new DocumentTypeCheck(_ado, new DocumentTypeDecisions(Path.Combine(_root, "d.json")), _prompts)
-                : null);
+            null, null);
 
         return new TargetedCommand(_read, scan, reporter, _prompts,
             rows => Task.FromResult(rows.Count),
             new DocumentReportStore(ReportsRoot));
     }
 
-    private Task<TargetedSummary> Run(bool withDevOps = true) =>
-        Command(withDevOps).RunAsync("dev",
+    private Task<TargetedSummary> Run() =>
+        Command().RunAsync("dev",
             new[] { "cbaf6bfb-d01d-f111-b119-005056010908" },
             forceReview: false, isProduction: false, CancellationToken.None);
 
@@ -92,33 +88,4 @@ public class TargetedReportTests : IDisposable
         Assert.Contains("Employee Appointment Request", text);
     }
 
-    // ---- the DevOps answer is always said, agreement included ----
-
-    [Fact]
-    public async Task Agreement_is_said_on_screen_and_written_down()
-    {
-        _ado.Titles["Academic Qualification Certificate"] = new()
-        {
-            "NPOP|Employee Appointment Request|Documents|Verify the academic qualification",
-            "Portal | Confirm Employment | Verify the academic qualification certificate"
-        };
-
-        var summary = await Run();
-
-        Assert.Contains(_prompts.Messages, m => m.Contains("DevOps") && m.Contains("agrees"));
-        Assert.Contains("agrees", File.ReadAllText(summary.ScanPath));
-    }
-
-    /// <summary>
-    /// The complaint that prompted this: the check ran, agreed, and said nothing — which is
-    /// indistinguishable from never having run at all.
-    /// </summary>
-    [Fact]
-    public async Task Not_being_set_up_is_said_too_rather_than_looking_like_nothing_happened()
-    {
-        var summary = await Run(withDevOps: false);
-
-        Assert.Contains(_prompts.Messages, m => m.Contains("DevOps") && m.Contains("not checked"));
-        Assert.Contains("not checked", File.ReadAllText(summary.ScanPath));
-    }
 }

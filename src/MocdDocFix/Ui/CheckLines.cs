@@ -22,11 +22,6 @@ public static class CheckLines
         prompts.Field("current path", row.OldFilePath ?? "(none)", Tone.Muted);
         prompts.Field("filed under", FiledUnder(row), Tone.Muted);
 
-        // Said out loud on every document, agreement included. A check whose agreement is silent
-        // is indistinguishable from a check that never ran — which is how it read the first time
-        // this was used.
-        WriteDevOps(prompts, row);
-
         if (crossCheckAgrees is { } agrees && row.CrossCheckSource is { } source)
             prompts.Field("parent request", $"{source} {(agrees ? "agrees" : "DISAGREES")}",
                 agrees ? Tone.Muted : Tone.Warn);
@@ -67,40 +62,5 @@ public static class CheckLines
         prompts.Blank();
         prompts.Field("should be under", row.CorrectCatalogueId?.ToString() ?? "(none)", Tone.Muted);
         prompts.Say($"SOLUTION  {row.Solution}");
-    }
-
-    /// <summary>What the DevOps backlog made of this document's type, whatever it said.</summary>
-    public static void WriteDevOps(IPrompts prompts, ScanRow row) =>
-        WriteDevOps(prompts, row.AdoVerdict, row.AdoService, row.AdoEvidence);
-
-    public static void WriteDevOps(IPrompts prompts, string verdict, string? service, string? evidence)
-    {
-        var (text, tone) = DevOps(verdict, service, evidence);
-        prompts.Field("DevOps", text, tone);
-    }
-
-    /// <summary>
-    /// The one sentence that says where the backlog stands — shared by the screen, the step-1
-    /// report and the upload briefing, so a document cannot be described one way at the check
-    /// and another way at the moment it is moved.
-    /// </summary>
-    public static (string Text, Tone Tone) DevOps(string verdict, string? service, string? evidence)
-    {
-        var items = string.IsNullOrWhiteSpace(evidence) ? "" : $"   (work items {evidence})";
-
-        return verdict switch
-        {
-            nameof(AdoVerdict.Agrees) =>
-                ($"agrees — {(string.IsNullOrWhiteSpace(service) ? "same service" : service)}{items}",
-                    Tone.Good),
-
-            nameof(AdoVerdict.Disagrees) =>
-                ($"DISAGREES — the backlog says {service}{items}", Tone.Danger),
-
-            nameof(AdoVerdict.CannotTell) =>
-                ("asked, but could not tell — left to the CRM answer", Tone.Warn),
-
-            _ => ("not checked — DevOps is not set up for this run", Tone.Muted)
-        };
     }
 }

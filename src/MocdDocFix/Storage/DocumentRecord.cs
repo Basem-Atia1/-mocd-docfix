@@ -56,7 +56,6 @@ public static class DocumentRecord
 
             ("CRM says", row.ServiceCatalogueName),
             ("Parent request", row.CrossCheckSource),
-            ("DevOps says", DevOps(row)),
             ("", null),
 
             ("Current path", row.OldFilePath),
@@ -67,28 +66,4 @@ public static class DocumentRecord
             ("Checked at", DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss"))
         };
 
-    /// <summary>
-    /// What the DevOps backlog made of this document type. Recorded whatever it said, agreement
-    /// included — a check that only speaks up to disagree cannot be told from one that never ran.
-    /// </summary>
-    private static string DevOps(ScanRow row)
-    {
-        var evidence = string.IsNullOrWhiteSpace(row.AdoEvidence)
-            ? ""
-            : $"   (work items {row.AdoEvidence})";
-
-        return row.AdoVerdict switch
-        {
-            nameof(AdoVerdict.Agrees) =>
-                $"agrees — {(row.AdoService.Length > 0 ? row.AdoService : "the same service")}{evidence}",
-
-            nameof(AdoVerdict.Disagrees) =>
-                $"DISAGREES — the backlog says {row.AdoService}{evidence}",
-
-            nameof(AdoVerdict.CannotTell) =>
-                "asked, but could not tell — the CRM answer was used",
-
-            _ => "not checked — DevOps was not set up for this run"
-        };
-    }
 }

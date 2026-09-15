@@ -39,42 +39,6 @@ public sealed record ScanResult(
     public int WithFilePath => All.Count(r => !string.IsNullOrWhiteSpace(r.OldFilePath));
     public int WithoutFilePath => All.Count(r => string.IsNullOrWhiteSpace(r.OldFilePath));
 
-    /// <summary>
-    /// What the DevOps cross-check made of the run, counted by document type rather than by
-    /// file — the question was asked once per type, so reporting it per file would inflate it.
-    /// Null when DevOps was not consulted at all.
-    /// </summary>
-    public string? DevOpsSummary()
-    {
-        var byType = All
-            .Where(r => !string.IsNullOrWhiteSpace(r.DocumentTypeName))
-            .GroupBy(r => r.DocumentTypeName, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.First().AdoVerdict)
-            .ToList();
-
-        int Count(AdoVerdict v) => byType.Count(x => x == v.ToString());
-
-        // Nothing to report when the backlog was never consulted — saying "0 agree, 0 disagree"
-        // would read as a check that ran and found nothing, which is a different thing entirely.
-        var checkedTypes = byType.Count(x => !string.IsNullOrEmpty(x) &&
-                                             x != nameof(AdoVerdict.NotChecked));
-
-        if (checkedTypes == 0) return null;
-
-        return $"DevOps cross-check: {checkedTypes} document type(s) — " +
-               $"{Count(AdoVerdict.Agrees)} agree, " +
-               $"{Count(AdoVerdict.Disagrees)} disagree, " +
-               $"{Count(AdoVerdict.CannotTell)} could not be told.";
-    }
-
-    /// <summary>The document types DevOps could not settle, for the report and the screen.</summary>
-    public IReadOnlyList<string> DevOpsCouldNotTell() => All
-        .Where(r => r.AdoVerdict == nameof(AdoVerdict.CannotTell) &&
-                    !string.IsNullOrWhiteSpace(r.DocumentTypeName))
-        .Select(r => r.DocumentTypeName)
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToList();
-
     /// <summary>The banner printed at the top of every run — spec section 5.0.</summary>
     public string Banner() => string.Join(Environment.NewLine,
         $"In scope (document types across the configured services) ... {TotalInScope}",
@@ -98,14 +62,9 @@ public sealed class ScanCommand
     private readonly IReadOnlyList<Guid> _catalogues;
     private readonly GroupedReportWriter? _grouped;
     private readonly GuidListWriter? _guids;
-    private readonly DocumentTypeCheck? _devops;
     private readonly DocumentReportStore? _perDocument;
     private readonly BackupStore? _backups;
 
-    /// <param name="devops">
-    /// The DevOps cross-check. Optional: with DevOps not configured the scan behaves exactly as
-    /// it always has, and every row reads "not checked" rather than implying an answer.
-    /// </param>
     /// <param name="perDocument">
     /// Where each document's own step-1 report goes. Supplied by the wizard, so a full run
     /// writes what a targeted run writes: one readable file in the document's own folder,
@@ -116,7 +75,6 @@ public sealed class ScanCommand
     public ScanCommand(ICrmReadClient crm, Reporter reporter, string crmUrl,
         IReadOnlyList<Guid> catalogues,
         GroupedReportWriter? grouped = null, GuidListWriter? guids = null,
-        DocumentTypeCheck? devops = null,
         DocumentReportStore? perDocument = null, BackupStore? backups = null)
     {
         _crm = crm;
@@ -125,7 +83,6 @@ public sealed class ScanCommand
         _catalogues = catalogues;
         _grouped = grouped;
         _guids = guids;
-        _devops = devops;
         _perDocument = perDocument;
         _backups = backups;
     }
@@ -162,28 +119,6 @@ public sealed class ScanCommand
                 document.CrossCheckCatalogueId,
                 _ => isCatalogue);
 
-            // The third authority. Asked once per document type however many files share it, and
-            // only able to make a row safer: a disagreement moves it to group 6, where a human
-            // decides. It never promotes a row into being fixed.
-            var ruling = _devops is null
-                ? TypeRuling.NotChecked(document.DocumentTypeName)
-                : await _devops.RuleOnAsync(document.DocumentTypeName, serviceCatalogueName, ct);
-
-            if (ruling.Verdict == AdoVerdict.Disagrees && classification.Verdict != Verdict.Skip)
-            {
-                classification = classification with
-                {
-                    Verdict = Verdict.Review,
-                    Group = 6,
-                    Reason = $"DevOps cross-check: {ruling.Detail}",
-                    Solution = "Not touched automatically — the backlog and the CRM document " +
-                               "type disagree about which service owns this document, so there " +
-                               "is no catalogue we can be sure is right. Decide which applies, " +
-                               "then re-scan.",
-                    CorrectCatalogueId = null
-                };
-            }
-
             rows.Add(new ScanRow(
                 DocumentId: document.DocumentId,
                 DocumentFileId: document.DocumentFileId,
@@ -201,13 +136,7 @@ public sealed class ScanCommand
                 Reason: classification.Reason,
                 Solution: classification.Solution,
                 CrossCheckSource: document.CrossCheckSource,
-                CrmLink: Reporter.CrmLink(_crmUrl, document.DocumentId),
-                AdoVerdict: ruling.Verdict.ToString(),
-                AdoService: ruling.Service ?? "",
-                AdoEvidence: string.Join(" ", ruling.Evidence
-                    .Where(h => h.WorkItemId > 0)
-                    .Take(5)
-                    .Select(h => h.WorkItemId))));
+                CrmLink: Reporter.CrmLink(_crmUrl, document.DocumentId)));
         }
 
         var fix = rows.Where(r => r.Verdict == nameof(Verdict.Fix)).ToList();

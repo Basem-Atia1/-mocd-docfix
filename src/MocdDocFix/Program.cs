@@ -85,9 +85,9 @@ while (true)
     // Asked for once, then read from the encrypted store. Declining, or having no VPN, leaves
     // the scan doing exactly what it did before: the backlog is a third opinion, not a
     // dependency, and nothing downstream fails without it.
-    var ado = AdoSetup.Connect(appConfig, secrets, prompts, configStore.Save);
 
-    using var session = new Session(appConfig, env, envName, prompts, options.DryRun, ado);
+
+    using var session = new Session(appConfig, env, envName, prompts, options.DryRun);
 
     if (options.Command != "guided")
     {

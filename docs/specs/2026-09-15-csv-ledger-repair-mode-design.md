@@ -143,7 +143,7 @@ Starting a new one renames the existing file with a timestamp; it is never overw
 
 The ledger is no longer a report. Because a correction overwrites the old
 `mocd_documentfile` in place, the record of what a document used to be exists nowhere in CRM
-and nowhere on the file server — only in this CSV and in `record.json` under the backup
+and nowhere on the file server — only in this CSV and in `crm.json` under the backup
 folder. Two guards follow from that.
 
 **`<DataRoot>\changes-<env>.jsonl` — an append-only journal.** One line per change, written
@@ -260,7 +260,7 @@ The steps, in order:
 
 1. **Back up.** Download the old file, save it under
    `backup\<env>\<file name>__<doc id>\old\`, save the complete old `mocd_documentfile` as
-   `record.json` beside it. Write `backup path`.
+   `crm.json` beside it. Write `backup path`.
 2. **Upload** the same bytes with `Category` = the correct catalogue, sending the extension
    and applicationId in the style the old record used (`FileRecordCopier.ExtensionFor`,
    `ApplicationIdFor`). Write `new file path`.
@@ -303,7 +303,7 @@ Per row:
 1. **Ask the file server whether the old file is still at `old file path`.** If it is not,
    refuse the row, say so, and move on. Nothing is written. This guards against a ledger that
    has gone stale because somebody removed the file outside the tool.
-2. **Read `record.json`** from the backup folder. Compare its four values against the ledger's
+2. **Read `crm.json`** from the backup folder. Compare its four values against the ledger's
    columns 16–19 and report any field where they differ. **The snapshot is what gets
    written** — it is the record as it actually was, so it cannot be wrong — and the report
    makes clear that the CSV's value was not used.
@@ -422,7 +422,7 @@ at all on a clean row but still halts and asks on a failed one; all three write 
 ledger for the same input, so the choice cannot change the outcome.
 
 **`RedoRunTests`** — a row whose old file is gone is refused and nothing is written; a
-disagreement between ledger and `record.json` is reported and the snapshot is what is written;
+disagreement between ledger and `crm.json` is reported and the snapshot is what is written;
 after a revert the row is `verdict=fix`, blank final state, and the new path has moved into
 `superseded paths`; a row at `old files deleted` is refused.
 
@@ -459,7 +459,7 @@ Accepted deliberately: the cross-check was stopping runs to ask questions the op
 not answer at the keyboard.
 
 **In-place modification is the only route back.** A correction overwrites the old record, so
-CRM no longer remembers the before-state. The ledger, the journal and `record.json` are it.
+CRM no longer remembers the before-state. The ledger, the journal and `crm.json` are it.
 Mitigated by the journal and the `.bak` copies, not eliminated by them.
 
 **Unattended has no human in it.** The automated checks prove the new copy is byte-identical
