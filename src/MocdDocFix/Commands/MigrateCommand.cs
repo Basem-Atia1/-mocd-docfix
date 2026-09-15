@@ -26,8 +26,6 @@ public sealed record MigrateSummary(
     /// <summary>How many old files were removed here, when the operator took the offer.</summary>
     int OldFilesRemoved = 0);
 
-/// <param name="Why">Said as it should appear on screen, without a count.</param>
-public sealed record SkipTally(string Why, int Count);
 
 /// <summary>
 /// Phase 3. Upload, verify, show the operator, ask, then write CRM — in that order, so the
