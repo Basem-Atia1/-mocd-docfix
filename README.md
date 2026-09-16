@@ -117,28 +117,59 @@ Anything else in either column is treated as "leave this row alone" and listed a
 the run, so a typo can never cause a write.
 
 The verdict is yours once the row exists — a re-scan never overwrites it. Where a fresh look at
-CRM would write something different, the run says so and asks whether to keep your answers or
-take the scan's. Rows marked `ignore` that no run has touched are offered back the same way:
-leave them, give them the verdict the scan makes, or set them to `review` and the tool waits
-while you type the answers into the sheet. That is the way back from a fill-down that set a
-whole column to `ignore` by accident.
+CRM would write something different, the run says so and asks. It asks twice, because those
+rows are two different situations: the ones where you have told the tool not to fix something
+it wants fixed, and the ones where the tool has learned something since. Anything that would
+rewrite a verdict in bulk confirms the count first.
+
+Rows marked `ignore` that no run has touched are offered back the same way: leave them, give
+them the verdict the scan makes, or set them to `review` and the tool waits while you type the
+answers into the sheet. That is the way back from a fill-down that set a whole column to
+`ignore` by accident. Their facts are kept up to date from CRM like any other row — ignoring a
+row means do not act on it, not do not look at it. Putting `ignore` in the **final state**
+column is different: that closes the row, and nothing looks at it again.
 
 A row the tool finds already correct in CRM — corrected by hand, or by a run whose ledger was
-lost — is never uploaded a second time. It is settled from what CRM holds: `skip` if the path
-never changed, `done` otherwise, with the final state saying whether the old file is still on
-the server and still owed to the delete step.
+lost — is never uploaded a second time. Every row marked `fix` is checked against CRM once,
+before the run starts, and you are shown the list and asked. They settle as `skip` if the path
+never changed, and `done` otherwise, with the final state saying whether the old file is still
+on the server and still owed to the delete step. A row whose path is right but whose file is
+missing from the server is **not** settled: it keeps `fix` so the run can put the file back.
+
+A row the ledger calls finished that CRM still files wrongly is reported at the end of the
+scan, with the choice of putting it back to `fix`, to `review`, or leaving it alone. Nothing
+else would ever mention it.
 
 One row is one document, but one *file* can belong to several. A correction writes to the
 `mocd_documentfile` record, and more than one `mocd_document` can point at the same one — so
 correcting one row moves the file under every row that shares it. Those rows keep the old path
 they recorded, and the scan names them: "row 99 · doc 2d8b172a (a.png): the same document file
 record was corrected by row 408 · doc 07d2e3c9". That is why a row you never worked on can turn
-up already right, with the ledger saying `fix` and CRM saying `skip`.
+up already right, with the ledger saying `fix` and CRM saying `skip`. Such a row settles as
+`done` with **no** final state: the old file belongs to the row that corrected it, and two rows
+must never queue the same deletion. The scan also says how many distinct files the sheet holds
+when it is fewer than the number of rows.
+
+Documents CRM no longer returns are kept — deleting the row would throw away the record of what
+was done — and no run acts on them. The message says which kind of gone they are: out of scope
+now, because their service is not one the tool is set up for any more, or genuinely absent.
 
 The row number is positional. The sheet is sorted by verdict and renumbered every time it is
 written, so a document that was row 1 this morning can be row 408 this afternoon. That is why
 every message names the head of the document id beside the row number: the number finds the
 line in today's sheet, the id says which document it is.
+
+### Deleting the old files
+
+The step acts on rows saying `corrected and pending the delete of old docs`, and re-checks each
+one against CRM immediately before its file goes. A file that is **not there** counts as done,
+not as a refusal — the outcome the step exists to reach is that the old file is gone, and it
+is. Only a server that genuinely refuses is a refusal.
+
+Afterwards it offers to check that the files really went, and separately to check the ones
+earlier runs removed — that asks the server once per row, so it says how many first. A file
+found still sitting there gets a note on its row, and the **next** delete run lists those rows
+and asks whether to remove them. Your final state is never changed behind your back.
 
 ### Stopping
 

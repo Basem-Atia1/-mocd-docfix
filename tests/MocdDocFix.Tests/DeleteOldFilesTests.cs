@@ -219,4 +219,68 @@ public class DeleteOldFilesTests : IDisposable
 
         Assert.Equal(RowState.Deleted, _ledger.Read()[0].State());
     }
+
+    /// <summary>
+    /// "No" from the server is two answers. A file that is not there is the outcome the step
+    /// exists to reach, and used to be reported as a refusal that never cleared.
+    /// </summary>
+    [Fact]
+    public async Task A_row_whose_old_file_is_already_gone_counts_as_deleted()
+    {
+        _files.Files.Remove(OldPath);
+        _files.DeleteRefusal = "not found";
+
+        var row = Row();
+        var summary = await Run(row);
+
+        Assert.Equal(1, summary.Deleted);
+        Assert.Equal(1, summary.AlreadyGone);
+        Assert.Equal(0, summary.Refused);
+        Assert.Equal(RowState.Deleted, row.State());
+        Assert.Contains("already gone", row.Notes);
+    }
+
+    [Fact]
+    public async Task A_refusal_while_the_file_is_still_there_is_still_a_refusal()
+    {
+        _files.DeleteRefusal = "permission denied";
+
+        var row = Row();
+        var summary = await Run(row);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.Equal(1, summary.Refused);
+        Assert.Equal(RowState.Corrected, row.State());
+    }
+
+    /// <summary>
+    /// The check after the run. It changes no final state — the row is marked in its notes, and
+    /// the next run is what offers it back.
+    /// </summary>
+    [Fact]
+    public async Task A_file_still_on_the_server_after_the_delete_is_marked_for_recheck()
+    {
+        _files.PretendToDelete = true;
+
+        var row = Row();
+        var summary = await Run(row);
+
+        Assert.Equal(1, summary.FoundAgain);
+        Assert.Contains(DeleteOldFiles.Recheck, row.Notes);
+        Assert.Equal(RowState.Deleted, row.State());
+    }
+
+    [Fact]
+    public async Task A_row_marked_for_recheck_is_offered_again_and_cleared()
+    {
+        var row = Row();
+        row.FinalState = RowStates.Text(RowState.Deleted);
+        row.Notes = $"said deleted, but the old file is still there {DeleteOldFiles.Recheck}";
+
+        var summary = await Run(row);
+
+        Assert.Equal(1, summary.Deleted);
+        Assert.Contains(OldPath, _files.Deleted);
+        Assert.DoesNotContain(DeleteOldFiles.Recheck, row.Notes);
+    }
 }

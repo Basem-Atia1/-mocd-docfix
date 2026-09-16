@@ -36,6 +36,13 @@ public sealed class Session : IDisposable
     private readonly ErrorLog _errors;
     private readonly LedgerBuilder _builder;
 
+    /// <summary>
+    /// Documents CRM stopped returning at the last scan. Held so the repair run can pass over
+    /// them: the message says nothing will act on them, and until now the loop knew nothing
+    /// about it and would have tried to correct one that still said fix.
+    /// </summary>
+    private HashSet<Guid> _gone = new();
+
     public Session(AppConfig appConfig, ResolvedEnvironment env, string envName,
         IPrompts prompts, bool dryRun)
     {
@@ -171,28 +178,80 @@ public sealed class Session : IDisposable
             _prompts.Say($"{scanned.Count} document(s) written to {_ledger.Path}", Tone.Good);
             return scanned;
         }
-
         var merged = LedgerMerge.Into(existing, scanned);
         ReportMoved(merged);
+        AskAboutStillWrong(merged);
         AskAboutVerdicts(merged);
         var typeThemMyself = AskAboutExcluded(merged);
         _ledger.Write(merged.Rows);
+
+        _gone = merged.Gone.Select(r => r.DocId).ToHashSet();
 
         _prompts.Section("The ledger is up to date with CRM");
         _prompts.Field("file", _ledger.Path, Tone.Muted);
         _prompts.Say($"{merged.Rows.Count} row(s): {merged.Added} new since last time, " +
                      $"{merged.Refreshed} refreshed, {merged.Protected} left as they are because " +
-                     "they have already been worked on or you excluded them.");
+                     "they have already been worked on or you closed them.");
 
-        if (merged.Notes.Count > 0)
-        {
-            _prompts.Blank();
-            foreach (var note in merged.Notes.Take(10)) _prompts.Bullet(note, Tone.Warn);
-            if (merged.Notes.Count > 10)
-                _prompts.Bullet($"… and {merged.Notes.Count - 10} more", Tone.Muted);
-        }
+        SayHowManyFiles(merged.Rows);
+        ReportGone(merged);
 
         return typeThemMyself ? ReadBackHandEdits(merged.Rows) : merged.Rows;
+    }
+
+    /// <summary>
+    /// How many distinct files those rows are, when it is not the same as how many rows.
+    ///
+    /// One mocd_documentfile can be the file of several mocd_document records, so correcting one
+    /// row can settle another. Without this the sheet reads as more work than there is, and a
+    /// row going green on its own looks like a bug.
+    /// </summary>
+    private void SayHowManyFiles(IReadOnlyList<LedgerRow> rows)
+    {
+        var files = rows.Where(r => r.DocFileId != Guid.Empty)
+            .Select(r => r.DocFileId)
+            .Distinct()
+            .Count();
+
+        var shared = rows.Count(r => r.DocFileId != Guid.Empty) - files;
+        if (shared <= 0) return;
+
+        _prompts.Say($"{rows.Count} rows · {files} distinct files — {shared} row(s) share a file " +
+                     "with another row, so correcting one settles the other.", Tone.Muted);
+    }
+
+    /// <summary>
+    /// Rows CRM no longer returns, and which kind of gone they are.
+    ///
+    /// The two causes want different reactions. A document type moved to another service, or a
+    /// change to the services this tool is configured for, takes whole blocks of rows out of
+    /// scope and is not a problem at all. A document that is still in scope and simply absent
+    /// has been deleted, and that is worth knowing.
+    /// </summary>
+    private void ReportGone(Merged merged)
+    {
+        if (merged.Gone.Count == 0) return;
+
+        var configured = _appConfig.ServiceCatalogues
+            .Select(c => c.ToString())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        _prompts.Blank();
+
+        foreach (var row in merged.Gone.Take(10))
+        {
+            var outOfScope = row.ServiceCatalogueId.Length > 0 &&
+                             !configured.Contains(row.ServiceCatalogueId);
+
+            _prompts.Bullet(outOfScope
+                ? $"{row.Ref()}: its service is not one this tool is set up for any more — out " +
+                  "of scope, not missing. Kept, and nothing will act on it."
+                : $"{row.Ref()}: CRM did not return this document. Kept in the ledger, but " +
+                  "nothing will act on it.", Tone.Warn);
+        }
+
+        if (merged.Gone.Count > 10)
+            _prompts.Bullet($"… and {merged.Gone.Count - 10} more", Tone.Muted);
     }
 
     /// <summary>
@@ -277,6 +336,13 @@ public sealed class Session : IDisposable
             return false;
         }
 
+        if (!Confirm(merged.Excluded.Count))
+        {
+            _prompts.Say("Left excluded.", Tone.Muted);
+            _prompts.Blank();
+            return false;
+        }
+
         if (answer.Index == 1)
         {
             LedgerMerge.TakeScanVerdicts(merged.Excluded);
@@ -340,6 +406,84 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// Asks CRM which of the rows marked fix are already right, and offers to settle them in one
+    /// question before any work starts.
+    ///
+    /// Asked here rather than row by row inside the loop: Quiet and Unattended have nobody to
+    /// interrupt, and a question per document in Watch would bury the answer among four hundred
+    /// others. One list, one answer, the same in all three modes — and nothing is written to the
+    /// ledger until the answer is given.
+    /// </summary>
+    private async Task SettleAlreadyCorrectAsync(
+        IReadOnlyList<LedgerRow> working, IReadOnlyList<LedgerRow> whole, CancellationToken ct)
+    {
+        var fixes = working.Count(r => r.Verdict2() == RowVerdict.Fix &&
+                                       r.State() is not (RowState.Corrected or RowState.Deleted));
+        if (fixes == 0) return;
+
+        _prompts.Blank();
+        _prompts.Say($"Asking CRM about the {fixes} row(s) marked fix. This writes nothing.",
+            Tone.Muted);
+
+        var scan = await new AlreadyCorrect(_read, _files).FindAsync(working, ct);
+
+        if (scan.MissingFile.Count > 0)
+        {
+            _prompts.Section($"{scan.MissingFile.Count} row(s) are filed correctly in CRM, but " +
+                             "their file is not on the server", Tone.Warn);
+
+            foreach (var m in scan.MissingFile.Take(10))
+                _prompts.Bullet($"{m.Row.Ref()}: nothing at {m.NowAt}", Tone.Muted);
+
+            if (scan.MissingFile.Count > 10)
+                _prompts.Bullet($"… and {scan.MissingFile.Count - 10} more", Tone.Muted);
+
+            _prompts.Blank();
+            _prompts.Say("They keep their verdict, so the run will put the file back from the " +
+                         "old copy. If that has gone too, the row will fail and say so.",
+                Tone.Muted);
+            _prompts.Blank();
+        }
+
+        if (scan.Settled.Count == 0) return;
+
+        _prompts.Section($"{scan.Settled.Count} row(s) marked fix are already correct in CRM",
+            Tone.Warn);
+
+        foreach (var s in scan.Settled.Take(10))
+            _prompts.Bullet($"{s.Row.Ref()}: {Why(s)}", Tone.Muted);
+
+        if (scan.Settled.Count > 10)
+            _prompts.Bullet($"… and {scan.Settled.Count - 10} more", Tone.Muted);
+
+        _prompts.Blank();
+
+        if (!_prompts.YesNo($"  Settle those {scan.Settled.Count} row(s)? Nothing is uploaded " +
+                            "and nothing in CRM is changed.", defaultYes: true))
+        {
+            _prompts.Say("Left as they are. The run will look at each one again.", Tone.Muted);
+            _prompts.Blank();
+            return;
+        }
+
+        AlreadyCorrect.Apply(scan.Settled);
+        _ledger.Write(whole);
+
+        _prompts.Say($"{scan.Settled.Count} row(s) settled without uploading anything.", Tone.Good);
+        _prompts.Blank();
+    }
+
+    /// <summary>Why one row needs no work, said the way it should appear in the list.</summary>
+    private static string Why(AlreadyCorrectRow settled) => settled.As switch
+    {
+        SettleAs.AlwaysRight => "the path never changed — nothing to correct, nothing to delete",
+        SettleAs.BySibling =>
+            $"its file was corrected by {settled.Sibling!.Ref()}, which shares the same record",
+        SettleAs.PendingDelete => "already corrected — its old file is still on the server",
+        _ => "already corrected — its old file has gone"
+    };
+
+    /// <summary>
     /// Says which rows describe a file that has moved since the ledger last looked, and what
     /// moved it.
     ///
@@ -386,6 +530,72 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// Rows the ledger calls finished that CRM still files under the wrong catalogue.
+    ///
+    /// Nothing else in the tool would ever mention them. A done row is refreshed for its name
+    /// alone, the repair run skips it, and Check it all only looks at old files — so a done that
+    /// is not true is the one mistake invisible in every mode. The scan has already read the
+    /// answer for these rows, so saying it costs nothing.
+    /// </summary>
+    private void AskAboutStillWrong(Merged merged)
+    {
+        if (merged.StillWrong.Count == 0) return;
+
+        _prompts.Section($"{merged.StillWrong.Count} row(s) are marked finished, but CRM still " +
+                         "files them under the wrong catalogue", Tone.Warn);
+
+        foreach (var d in merged.StillWrong.Take(10))
+            _prompts.Bullet($"{d.Row.Ref()}: says '{d.Row.Verdict}'" +
+                            (d.Row.FinalState.Length > 0 ? $" / '{d.Row.FinalState}'" : "") +
+                            $"{Because(d.ScanReason)}", Tone.Muted);
+
+        if (merged.StillWrong.Count > 10)
+            _prompts.Bullet($"… and {merged.StillWrong.Count - 10} more", Tone.Muted);
+
+        _prompts.Blank();
+
+        var answer = new Asker(_prompts).Ask("What should happen to them?", new[]
+        {
+            new Choice("Keep them as they are", "I know about these",
+                "Nothing changes. The rows stay finished and no run will look at them. The next " +
+                "scan will say this again."),
+
+            new Choice("Put them back to fix", "let the run correct them",
+                "Each row takes the verdict fix and loses its final state, so the repair run " +
+                "works on it like any other. Its old path and backup are untouched, so Redo can " +
+                "still reach what was done before."),
+
+            new Choice("Put them to review", "I will look at each one",
+                "Each row takes the verdict review and loses its final state. No run acts on a " +
+                "review row — it sorts near the top of the sheet and waits for you.")
+        }, defaultIndex: 0);
+
+        if (answer.Kind != AnswerKind.Chosen || answer.Index == 0)
+        {
+            _prompts.Say("Left as they are.", Tone.Muted);
+            _prompts.Blank();
+            return;
+        }
+
+        if (!Confirm(merged.StillWrong.Count))
+        {
+            _prompts.Say("Left as they are.", Tone.Muted);
+            _prompts.Blank();
+            return;
+        }
+
+        var verdict = answer.Index == 1 ? RowVerdicts.Fix : RowVerdicts.Review;
+
+        foreach (var (row, _) in merged.StillWrong)
+        {
+            row.Verdict = verdict;
+            row.FinalState = string.Empty;
+        }
+
+        _prompts.Say($"{merged.StillWrong.Count} row(s) set to {verdict}.", Tone.Muted);
+        _prompts.Blank();
+    }
+    /// <summary>
     /// Where the ledger's verdicts and a fresh scan disagree, asks which to believe.
     ///
     /// Both can be right. A verdict typed by hand is a decision — reading the reason and moving
@@ -394,44 +604,65 @@ public sealed class Session : IDisposable
     /// document type in CRM since, and the ledger would go on offering work that no longer
     /// exists.
     ///
-    /// So the tool does not choose. It only asks when there is something to ask about.
+    /// Asked as two questions, because one list held two opposite situations and gave them one
+    /// answer: rows where the operator is overruling the tool, and rows where the tool has
+    /// learned something since. Nobody can answer both at once.
     /// </summary>
     private void AskAboutVerdicts(Merged merged)
     {
-        if (merged.Disagreements.Count == 0) return;
+        var overruling = merged.Disagreements
+            .Where(d => string.Equals(d.ScanSays, RowVerdicts.Fix, StringComparison.Ordinal))
+            .ToList();
 
-        _prompts.Section($"{merged.Disagreements.Count} row(s) have a verdict CRM would write " +
-                         "differently", Tone.Warn);
+        var newer = merged.Disagreements.Except(overruling).ToList();
 
-        foreach (var d in merged.Disagreements.Take(10))
+        AskAboutOneGroup(overruling,
+            "row(s) where you have told the tool not to fix something it wants fixed",
+            "Keep my answers",
+            "Those rows keep what you typed. Use this when you have read the reason and decided " +
+            "— that is what the column is for. Everything else on the row is still brought up " +
+            "to date from CRM: the paths, the catalogues, the reason and the solution.",
+            "Fix them after all",
+            "Each of those rows takes 'fix', the verdict a fresh look at CRM writes for them, " +
+            "and the next run will correct them. Any verdict you typed on those rows is lost.");
+
+        AskAboutOneGroup(newer,
+            "row(s) the tool no longer thinks need what the ledger says",
+            "Keep my answers",
+            "Those rows keep what you typed. Use this when you mean to work on them anyway.",
+            "Take what CRM says",
+            "The verdict column of those rows is replaced by what a fresh look at CRM makes of " +
+            "them — usually because somebody has corrected a document type since the ledger was " +
+            "built. Any verdict you typed on those rows is lost.");
+    }
+
+    /// <summary>One half of the verdict question. Nothing is written unless it is confirmed.</summary>
+    private void AskAboutOneGroup(IReadOnlyList<VerdictDisagreement> rows, string heading,
+        string keepLabel, string keepHelp, string takeLabel, string takeHelp)
+    {
+        if (rows.Count == 0) return;
+
+        _prompts.Section($"{rows.Count} {heading}", Tone.Warn);
+
+        foreach (var d in rows.Take(10))
             _prompts.Bullet($"{d.Row.Ref()}: the ledger says " +
                             $"'{d.Row.Verdict}', CRM says '{d.ScanSays}'{Because(d.ScanReason)}",
                 Tone.Muted);
 
-        if (merged.Disagreements.Count > 10)
-            _prompts.Bullet($"… and {merged.Disagreements.Count - 10} more", Tone.Muted);
+        if (rows.Count > 10) _prompts.Bullet($"… and {rows.Count - 10} more", Tone.Muted);
 
         _prompts.Blank();
 
         var answer = new Asker(_prompts).Ask("Which should the ledger keep?", new[]
         {
-            new Choice("Keep what the file says", "leave my own answers alone",
-                "Nothing in the verdict column is touched. Use this when you have edited the " +
-                "ledger by hand — moved rows to fix or to ignore — and mean those edits to " +
-                "stand. Everything else on the row is still brought up to date from CRM: the " +
-                "paths, the catalogues, the reason and the solution."),
-
-            new Choice("Take what CRM says", "overwrite those verdicts with the scan's",
-                "The verdict column of those rows is replaced by what a fresh look at CRM " +
-                "makes of them. Use this when the ledger has gone stale — somebody has fixed " +
-                "document types since it was built — and you want the tool's own reading back. " +
-                "Any verdict you typed on those rows is lost.")
+            new Choice(keepLabel, "leave my own answers alone", keepHelp),
+            new Choice(takeLabel, "overwrite those verdicts with the scan's", takeHelp)
         }, defaultIndex: 0);
 
-        if (answer.Kind == AnswerKind.Chosen && answer.Index == 1)
+        if (answer.Kind == AnswerKind.Chosen && answer.Index == 1 && Confirm(rows.Count))
         {
-            LedgerMerge.TakeScanVerdicts(merged.Disagreements);
-            _prompts.Say($"{merged.Disagreements.Count} verdict(s) taken from CRM.", Tone.Muted);
+            LedgerMerge.TakeScanVerdicts(rows);
+            _prompts.Say($"{rows.Count} verdict(s) taken from CRM.", Tone.Muted);
         }
         else
         {
@@ -439,6 +670,23 @@ public sealed class Session : IDisposable
         }
 
         _prompts.Blank();
+    }
+
+    /// <summary>
+    /// The last gate before a verdict column is rewritten in bulk.
+    ///
+    /// The list above it shows ten rows and a count. Answering for four hundred on the strength
+    /// of ten is easy to do by accident, and there is no undo but typing them all back.
+    /// </summary>
+    private bool Confirm(int count)
+    {
+        if (count <= 1) return true;
+
+        _prompts.Blank();
+        _prompts.Warn($"This changes the verdict on {count} row(s). It cannot be undone from " +
+                      "inside the tool.", Tone.Danger);
+
+        return _prompts.YesNo($"  Change all {count}?", defaultYes: false, Tone.Danger);
     }
 
     /// <summary>
@@ -542,12 +790,16 @@ public sealed class Session : IDisposable
             var all = await OpenLedgerAsync(mayRebuild: true, ct);
             if (all.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
 
-            var rows = NarrowToOneDocument(all);
+            // Documents CRM stopped returning. The scan says nothing will act on them, and
+            // this is what makes that true — the loop reads the verdict and nothing else.
+            var rows = NarrowToOneDocument(all).Where(r => !_gone.Contains(r.DocId)).ToList();
             if (rows.Count == 0) return StepOutcome.Of("Nothing to work on.");
 
             if (_dryRun)
                 return StepOutcome.Of($"Dry run — {rows.Count} row(s) would be worked on.",
                     $"ledger → {_ledger.Path}");
+
+            await SettleAlreadyCorrectAsync(rows, all, ct);
 
             WarnAboutInPlace();
 
@@ -597,7 +849,14 @@ public sealed class Session : IDisposable
             return new StepOutcome(
                 summary.Aborted
                     ? "Nothing was deleted."
-                    : $"{summary.Deleted} old file(s) deleted, {summary.Refused} refused.",
+                    : $"{summary.Deleted} old file(s) deleted, {summary.Refused} refused." +
+                      (summary.AlreadyGone > 0
+                          ? $" {summary.AlreadyGone} of them were already gone."
+                          : string.Empty) +
+                      (summary.Checked > 0
+                          ? $" {summary.Checked} checked afterwards, {summary.FoundAgain} still " +
+                            "on the server."
+                          : string.Empty),
                 summary.Reasons);
         },
 
@@ -621,7 +880,7 @@ public sealed class Session : IDisposable
             var rows = await OpenLedgerAsync(mayRebuild: false, ct);
             if (rows.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
 
-            var summary = await new CheckItAll(_files, _read).RunAsync(rows, ct);
+            var summary = await new CheckItAll(_files, _read, _env.CrmUrl).RunAsync(rows, ct);
 
             return new StepOutcome(
                 summary.NotAsExpected == 0

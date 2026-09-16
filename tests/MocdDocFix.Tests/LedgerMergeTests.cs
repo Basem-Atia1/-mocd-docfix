@@ -241,7 +241,7 @@ public class LedgerMergeTests
 
         Assert.Equal(2, merged.Rows.Count);
         Assert.Contains(merged.Rows, r => r.DocId == Two);
-        Assert.Contains(merged.Notes, n => n.Contains("no longer"));
+        Assert.Contains(merged.Gone, r => r.DocId == Two);
     }
 
     [Fact]
@@ -411,5 +411,65 @@ public class LedgerMergeTests
 
         Assert.Equal("Path already correct — matches the document type's catalogue.",
             Assert.Single(merged.Disagreements).ScanReason);
+    }
+
+    /// <summary>
+    /// Ignoring a row means do not act on it, not do not look at it. There is no history to
+    /// protect on a row no run has touched, and freezing it left the sheet describing CRM as it
+    /// was weeks ago while the screen showed the truth.
+    /// </summary>
+    [Fact]
+    public void An_ignored_row_no_run_has_touched_takes_crms_facts()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Ignore);
+
+        var scanned = Row(One, verdict: RowVerdicts.Fix);
+        scanned.ReasonOfBug = "the new reason";
+        scanned.Group = 3;
+
+        LedgerMerge.Into(new[] { existing }, new[] { scanned });
+
+        Assert.Equal("the new reason", existing.ReasonOfBug);
+        Assert.Equal(3, existing.Group);
+        Assert.Equal(RowVerdict.Ignore, existing.Verdict2());
+    }
+
+    /// <summary>A final state of ignore is the operator closing the row, and it is honoured.</summary>
+    [Fact]
+    public void A_row_closed_by_hand_is_still_frozen()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Ignore,
+            finalState: RowStates.Text(RowState.Ignore));
+
+        var scanned = Row(One, verdict: RowVerdicts.Fix);
+        scanned.ReasonOfBug = "the new reason";
+
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { scanned });
+
+        Assert.Equal("the old reason", existing.ReasonOfBug);
+        Assert.Empty(merged.Excluded);
+    }
+
+    /// <summary>
+    /// The one mistake that was invisible in every mode: a row saying done that CRM still files
+    /// wrongly. The scan has read the answer anyway, so saying it costs nothing.
+    /// </summary>
+    [Fact]
+    public void A_finished_row_crm_still_files_wrongly_is_reported()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Done);
+        var merged = LedgerMerge.Into(new[] { existing },
+            new[] { Row(One, verdict: RowVerdicts.Fix) });
+
+        Assert.Equal(One, Assert.Single(merged.StillWrong).Row.DocId);
+    }
+
+    [Fact]
+    public void A_finished_row_crm_agrees_with_is_not_reported()
+    {
+        var merged = LedgerMerge.Into(new[] { Row(One, verdict: RowVerdicts.Done) },
+            new[] { Row(One, verdict: RowVerdicts.Skip) });
+
+        Assert.Empty(merged.StillWrong);
     }
 }

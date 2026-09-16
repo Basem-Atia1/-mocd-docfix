@@ -14,7 +14,7 @@ public class CheckItAllTests
     private readonly FakeFileServiceClient _files = new();
     private readonly FakeCrmReadClient _read = new();
 
-    private CheckItAll Subject() => new(_files, _read);
+    private CheckItAll Subject() => new(_files, _read, "https://crm.example");
 
     private static LedgerRow Row(string finalState) => new()
     {
@@ -55,14 +55,34 @@ public class CheckItAllTests
     [Fact]
     public async Task A_deleted_row_something_in_crm_still_refers_to_is_reported()
     {
-        _read.FilesByPath[OldPath] = new List<Guid> { Guid.NewGuid() };
+        var other = Guid.Parse("4d9b77e2-0000-0000-0000-0000000000ff");
+        _read.FilesByPath[OldPath] = new List<Guid> { other };
 
         var summary = await Subject().RunAsync(
             new[] { Row(RowStates.Deleted) }, CancellationToken.None);
 
         Assert.Equal(1, summary.NotAsExpected);
-        Assert.Contains(summary.Problems, p =>
-            p.Contains("still refer", StringComparison.OrdinalIgnoreCase));
+
+        // Named and linked, not counted: "3 records" is not something anybody can act on.
+        var problem = Assert.Single(summary.Problems);
+        Assert.Contains(other.ToString(), problem);
+        Assert.Contains("https://crm.example", problem);
+    }
+
+    /// <summary>
+    /// The row's own record is excluded, the way the delete step excludes it. Counting it made
+    /// the two checks disagree about the same row.
+    /// </summary>
+    [Fact]
+    public async Task The_rows_own_record_is_not_reported_as_something_else_pointing_at_it()
+    {
+        _read.FilesByPath[OldPath] = new List<Guid> { Record };
+
+        var summary = await Subject().RunAsync(
+            new[] { Row(RowStates.Deleted) }, CancellationToken.None);
+
+        Assert.Equal(0, summary.NotAsExpected);
+        Assert.Empty(summary.Problems);
     }
 
     [Fact]

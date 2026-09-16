@@ -285,9 +285,15 @@ public sealed class RepairOneRow
         var filed = FilePathParser.Parse(now).CategorySegment;
         if (!Guid.TryParse(filed, out var under) || under != correct) return false;
 
+        var wasAlwaysRight = FilePaths.Same(now, row.OldFilePath);
+
+        // The catalogue in the path is right, but that is not the same as the document working.
+        // A record naming a file nobody can fetch is still broken, and correcting the row is
+        // what puts the file back — so this is not a row to settle.
+        if (!wasAlwaysRight && !(await _files.DownloadAsync(now, ct)).Success) return false;
+
         _progress.Step("already correct in CRM", now);
 
-        var wasAlwaysRight = FilePaths.Same(now, row.OldFilePath);
         var oldFileStillThere = !wasAlwaysRight &&
                                 (await _files.DownloadAsync(row.OldFilePath, ct)).Success;
 

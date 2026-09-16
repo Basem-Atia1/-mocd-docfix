@@ -42,6 +42,17 @@ public sealed record PathMoved(LedgerRow Row, string NowAt, LedgerRow? Corrected
 /// asked whether to keep their own answers or take CRM's, because either can be the right one
 /// and the tool cannot tell which.
 /// </param>
+/// <param name="StillWrong">
+/// Rows the ledger treats as finished that CRM still files under the wrong catalogue. Nothing
+/// would otherwise look at them again: a done row is refreshed for its name alone and the run
+/// skips it, so a wrong done is the one mistake that is invisible in every mode. The scan has
+/// already read the answer for these rows, so saying it costs nothing.
+/// </param>
+/// <param name="Gone">
+/// Rows CRM no longer returns. Kept in the ledger — deleting them would throw away the record
+/// of what was done — but handed back so nothing acts on them and the operator can be told
+/// which kind of gone they are.
+/// </param>
 /// <param name="Moved">
 /// Rows whose file has moved without this ledger moving it. Reported rather than absorbed,
 /// because the row is now describing a file somebody else has already corrected.
@@ -49,7 +60,8 @@ public sealed record PathMoved(LedgerRow Row, string NowAt, LedgerRow? Corrected
 public sealed record Merged(
     IReadOnlyList<LedgerRow> Rows, int Added, int Refreshed, int Protected, int Vanished,
     IReadOnlyList<string> Notes, IReadOnlyList<VerdictDisagreement> Disagreements,
-    IReadOnlyList<VerdictDisagreement> Excluded, IReadOnlyList<PathMoved> Moved);
+    IReadOnlyList<VerdictDisagreement> Excluded, IReadOnlyList<PathMoved> Moved,
+    IReadOnlyList<VerdictDisagreement> StillWrong, IReadOnlyList<LedgerRow> Gone);
 
 /// <summary>
 /// Brings one ledger up to date from a fresh read of CRM, instead of starting a second one.
@@ -83,6 +95,7 @@ public static class LedgerMerge
         var disagreements = new List<VerdictDisagreement>();
         var excluded = new List<VerdictDisagreement>();
         var moved = new List<PathMoved>();
+        var stillWrong = new List<VerdictDisagreement>();
         int added = 0, refreshed = 0, protectedRows = 0;
 
         foreach (var scanned in fresh)
@@ -111,6 +124,12 @@ public static class LedgerMerge
                 row.CrmLinkOfDoc = scanned.CrmLinkOfDoc;
                 row.CrmLinkOfDocFile = scanned.CrmLinkOfDocFile;
                 protectedRows++;
+
+                // Finished, according to the ledger. The scan has just read the record anyway,
+                // and if it still wants this document fixed then the row is not finished at all.
+                if (string.Equals(scanned.Verdict, RowVerdicts.Fix, StringComparison.Ordinal))
+                    stillWrong.Add(Disagreement(row, scanned));
+
                 continue;
             }
 
@@ -141,15 +160,11 @@ public static class LedgerMerge
             refreshed++;
         }
 
-        foreach (var row in existing.Where(r => !seen.Contains(r.DocId)))
-        {
-            notes.Add($"{row.Ref()}: CRM no longer returns this document — " +
-                      "kept in the ledger, but nothing will act on it");
-        }
+        var gone = existing.Where(r => !seen.Contains(r.DocId)).ToList();
 
         return new Merged(rows, added, refreshed, protectedRows,
             existing.Count - seen.Count(id => byDocument.ContainsKey(id)), notes, disagreements,
-            excluded, moved);
+            excluded, moved, stillWrong, gone);
     }
 
     /// <summary>
@@ -190,12 +205,18 @@ public static class LedgerMerge
     }
 
     /// <summary>
-    /// True once a run has changed something for this row, or the operator has excluded it.
-    /// A failed row has not been acted on successfully, so it is still refreshed.
+    /// True once a run has changed something for this row, or the operator has closed it by
+    /// hand. A failed row has not been acted on successfully, so it is still refreshed.
+    ///
+    /// The verdict "ignore" is deliberately absent. Ignoring a row means do not act on it, not
+    /// do not look at it: there is no history to protect on a row no run has touched, and
+    /// freezing its path, catalogue and reason left the sheet describing CRM as it was weeks
+    /// ago. A final state of "ignore" is the operator saying the row is closed, and that is
+    /// still honoured.
     /// </summary>
     private static bool HasBeenActedOn(LedgerRow row) =>
         row.State() is RowState.Corrected or RowState.Deleted or RowState.Ignore ||
-        row.Verdict2() is RowVerdict.Ignore or RowVerdict.Redo or RowVerdict.Done;
+        row.Verdict2() is RowVerdict.Redo or RowVerdict.Done;
 
     /// <summary>
     /// Everything CRM is the authority on. The columns the operator owns — verdict, final state,
