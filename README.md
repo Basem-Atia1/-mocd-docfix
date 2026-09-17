@@ -16,7 +16,7 @@ one row per document, nothing done without a record of it.
 ## Setting up
 
 ```
-git clone https://github.com/<owner>/mocd-docfix.git
+git clone https://github.com/Basem-Atia1/-mocd-docfix.git mocd-docfix
 cd mocd-docfix
 publish.cmd
 bin\docfix\docfix.exe
