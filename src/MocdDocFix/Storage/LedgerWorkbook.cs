@@ -6,13 +6,14 @@ namespace MocdDocFix.Storage;
 /// <summary>
 /// The ledger itself: the file the operator edits and every mode reads.
 ///
-/// It is a workbook rather than a CSV because three of the things asked for cannot live in
-/// comma-separated text at all — a dropdown on the two edited columns, widths fitted to the
-/// contents, and a frozen header. A dropdown on a file nothing reads back would be decoration,
-/// so the file carrying it has to be the authority.
+/// It is a workbook rather than plain text because three of the things asked for cannot live in
+/// a comma-separated file at all — a dropdown on the two edited columns, set column widths, and
+/// a frozen header. A dropdown on a file nothing reads back would be decoration, so the file
+/// carrying it has to be the authority.
 ///
-/// The CSV written beside it is a copy: plain text for grepping and diffing, and something
-/// readable if the workbook is ever damaged. Nothing reads it.
+/// It is also the only file written. A plain-text copy used to be kept beside it; nothing ever
+/// read it, and one falling behind looked current while showing fewer corrections than had
+/// really happened.
 /// </summary>
 public sealed class LedgerWorkbook
 {
@@ -149,8 +150,7 @@ public sealed class LedgerWorkbook
 
         sheet.Cell(1, 1).CreateComment().AddText(
             "This is the ledger. Edit verdict and final state here, save, and close it before " +
-            "running docfix — the tool rewrites this file after every document. The .csv " +
-            "beside it is a copy the tool maintains; editing that one changes nothing.");
+            "running docfix — the tool rewrites this file after every document.");
 
         // Built in memory, written beside the ledger, and moved over it — rather than saved
         // straight onto it. A process killed mid-save (the console window closed, the machine

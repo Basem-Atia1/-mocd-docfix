@@ -77,12 +77,6 @@ public sealed class Session : IDisposable
         // that is the one outcome worse than waiting.
         _ledger.AskToRetry = WaitForExcel;
 
-        _ledger.WarnAboutCsv = why =>
-        {
-            _prompts.Blank();
-            _prompts.Warn(why, Tone.Warn);
-            _prompts.Blank();
-        };
     }
 
     /// <summary>
@@ -811,13 +805,7 @@ public sealed class Session : IDisposable
                     progress, _prompts, _errors)
                 .RunAsync(rows, all, ct);
 
-            var details = new List<string>
-            {
-                $"ledger → {_ledger.Path}   (edit this one)",
-                $"copy   → {_ledger.CsvPath}   (plain text, regenerated)"
-            };
-
-            if (_ledger.LastCsvProblem is { } stale) details.Add($"NOTE: {stale}");
+            var details = new List<string> { $"ledger → {_ledger.Path}" };
 
             foreach (var skip in summary.Skips) details.Add($"skipped: {skip.Count} — {skip.Why}");
 

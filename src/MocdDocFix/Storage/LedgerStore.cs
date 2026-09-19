@@ -1,28 +1,20 @@
-using System.Globalization;
-using System.Text;
-using CsvHelper;
-using CsvHelper.Configuration;
 using MocdDocFix.Domain;
 
 namespace MocdDocFix.Storage;
 
 /// <summary>
-/// The ledger on disk: one workbook per environment, with a CSV copy beside it.
+/// The ledger on disk: one workbook per environment.
 ///
 /// **The workbook is the ledger.** It is what the operator edits — the verdict and final state
 /// columns are dropdowns, which only works if the file carrying them is the file read back —
-/// and it is what every mode reads. The CSV is regenerated from it on every write and is never
-/// read: it exists so the ledger is also greppable, diffable plain text, and so a damaged
-/// workbook is not the end of the record.
+/// and it is what every mode reads.
 ///
-/// Both are rewritten in full the moment a row finishes. Rewriting the whole file for one cell
-/// is deliberate: the operator opens it between runs, so it must be complete at every instant,
-/// and a crash then loses at most the row in flight.
+/// It is rewritten in full the moment a row finishes. Rewriting the whole file for one cell is
+/// deliberate: the operator opens it between runs, so it must be complete at every instant, and
+/// a crash then loses at most the row in flight.
 /// </summary>
 public sealed class LedgerStore
 {
-    private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: true);
-
     private readonly LedgerWorkbook _workbook;
 
     /// <summary>
@@ -33,22 +25,18 @@ public sealed class LedgerStore
     private bool _backedUpThisSitting;
 
     /// <param name="path">
-    /// Either the .xlsx or the .csv — the other is derived. Both spellings are accepted so a
-    /// caller need not know which of the pair is the authority.
+    /// The .xlsx. A .csv spelling is still accepted and read as its .xlsx sibling, so a caller
+    /// holding a path from an older build does not break.
     /// </param>
     public LedgerStore(string path)
     {
         Path = System.IO.Path.ChangeExtension(path, ".xlsx");
-        CsvPath = System.IO.Path.ChangeExtension(path, ".csv");
 
         _workbook = new LedgerWorkbook(Path);
     }
 
     /// <summary>The workbook — the file the operator edits and every mode reads.</summary>
     public string Path { get; }
-
-    /// <summary>The plain-text copy. Regenerated on every write, never read back.</summary>
-    public string CsvPath { get; }
 
     public bool Exists => _workbook.Exists;
 
@@ -66,13 +54,6 @@ public sealed class LedgerStore
     /// </summary>
     public Func<string, bool>? AskToRetry { get; set; }
 
-    /// <summary>
-    /// Told once when the plain-text copy starts falling behind. Not a question — the copy is
-    /// not worth stopping a run for — but a stale file that looks current is worth saying out
-    /// loud the moment it happens rather than at the end.
-    /// </summary>
-    public Action<string>? WarnAboutCsv { get; set; }
-
     public IReadOnlyList<LedgerRow> Read() => _workbook.Read();
 
     public void Write(IReadOnlyList<LedgerRow> rows)
@@ -81,10 +62,7 @@ public sealed class LedgerStore
 
         var ordered = LedgerOrder.Sorted(rows);
 
-        // The workbook first: it is the ledger, and a failure to write it must stop the caller
-        // rather than leave the copy ahead of the original.
-        //
-        // Excel holding it open is the ordinary reason that fails, and it is entirely
+        // Excel holding the ledger open is the ordinary reason a write fails, and it is entirely
         // recoverable — so the operator is asked to close it and the write is tried again.
         // Giving up here would strand a document that has already been uploaded and had its
         // CRM record changed, with nothing on disk saying so.
@@ -107,31 +85,17 @@ public sealed class LedgerStore
             }
         }
 
+        // The plain-text copy this tool used to keep beside the ledger is gone. Nothing ever
+        // read it, and one left behind by an earlier build is worse than none: it looks current
+        // while showing fewer corrections than really happened.
         try
         {
-            using var writer = new StreamWriter(CsvPath, append: false, Utf8);
-            using var csv = new CsvWriter(writer, Config());
-            csv.WriteRecords(ordered);
-
-            LastCsvProblem = null;
+            var abandonedCopy = System.IO.Path.ChangeExtension(Path, ".csv");
+            if (File.Exists(abandonedCopy)) File.Delete(abandonedCopy);
         }
-        catch (Exception problem) when (IsLocked(problem))
-        {
-            // The copy is a convenience, so this never fails a run. But a stale copy that looks
-            // current is worse than no copy: it shows fewer corrections than really happened.
-            // So it is said once, the moment it starts, rather than whispered at the end.
-            if (LastCsvProblem is null)
-                WarnAboutCsv?.Invoke(
-                    $"The plain-text copy {CsvPath} is open in another program, so it is no " +
-                    "longer being updated and now shows less than the ledger does. The ledger " +
-                    "itself is fine. Close the .csv and it will catch up on the next document.");
-
-            LastCsvProblem = $"{CsvPath} was not rewritten — it is open in another program.";
-        }
+        catch (IOException) { }                  // tidying is never worth failing a run over
+        catch (UnauthorizedAccessException) { }
     }
-
-    /// <summary>Why the plain-text copy could not be rewritten, when it could not.</summary>
-    public string? LastCsvProblem { get; private set; }
 
     /// <summary>
     /// Where a sitting's backup copy goes.
@@ -205,16 +169,5 @@ public sealed class LedgerStore
         AggregateException many when many.InnerExceptions.Count > 0 => Innermost(many.InnerExceptions[0]),
         { InnerException: { } inner } => Innermost(inner),
         _ => problem
-    };
-
-
-    /// <summary>
-    /// A missing column is ignored rather than fatal, so a ledger written by an earlier build
-    /// still opens — the cells it lacks simply come back empty.
-    /// </summary>
-    private static CsvConfiguration Config() => new(CultureInfo.InvariantCulture)
-    {
-        MissingFieldFound = null,
-        HeaderValidated = null
     };
 }

@@ -1,7 +1,7 @@
 namespace MocdDocFix.Domain;
 
 /// <summary>
-/// One kind of corruption, explained. The wizard's menus, the grouped report and the CSV all read
+/// One kind of corruption, explained. The wizard's menus, the grouped report and the ledger all read
 /// their wording from here so they can never drift apart (spec 2026-09-13 section 4).
 /// </summary>
 /// <param name="Number">1-7. Groups 1-5 are fixed; 6 and 7 are not.</param>

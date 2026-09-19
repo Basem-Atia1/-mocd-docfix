@@ -29,17 +29,17 @@ public class LedgerWorkbookTests : IDisposable
         OldFilePath = longPath ?? @"DigitalServices\docTypeCatalogue\20250509\a3f1.jpg"
     };
 
+    /// <summary>The workbook is the ledger, and it is the only file written.</summary>
     [Fact]
-    public void The_ledger_is_the_workbook_and_the_csv_is_written_beside_it()
+    public void The_ledger_is_the_workbook_and_nothing_is_written_beside_it()
     {
         var store = Store();
 
         store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
 
         Assert.EndsWith(".xlsx", store.Path);
-        Assert.EndsWith(".csv", store.CsvPath);
         Assert.True(File.Exists(store.Path));
-        Assert.True(File.Exists(store.CsvPath));
+        Assert.Equal(new[] { store.Path }, Directory.GetFiles(_dir));
     }
 
     /// <summary>

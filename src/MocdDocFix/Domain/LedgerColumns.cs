@@ -1,9 +1,8 @@
 using System.Reflection;
-using CsvHelper.Configuration.Attributes;
 
 namespace MocdDocFix.Domain;
 
-/// <param name="Header">The name the operator reads, exactly as the CSV writes it.</param>
+/// <param name="Header">The name the operator reads at the top of the column.</param>
 /// <param name="Read">That cell's value, as text.</param>
 /// <param name="Set">
 /// Puts a cell back on a row when the workbook is read. Anything that will not convert is left
@@ -16,9 +15,9 @@ public sealed record LedgerColumn(
 /// <summary>
 /// The ledger's columns, in order, read off <see cref="LedgerRow"/> itself.
 ///
-/// Derived by reflection rather than listed again here, so the workbook and the CSV cannot
-/// drift: both take their order and their headers from the same attributes. Adding a column to
-/// LedgerRow adds it to the workbook with no second edit.
+/// Derived by reflection rather than listed again here, so the header the operator reads and the
+/// property the tool writes cannot drift apart. Adding a column to LedgerRow adds it to the
+/// workbook with no second edit.
 /// </summary>
 public static class LedgerColumns
 {
@@ -27,12 +26,13 @@ public static class LedgerColumns
     private static IReadOnlyList<LedgerColumn> Build() =>
         typeof(LedgerRow)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.GetCustomAttribute<IndexAttribute>() is not null)
-            .OrderBy(p => p.GetCustomAttribute<IndexAttribute>()!.Index)
-            .Select(p => new LedgerColumn(
-                p.GetCustomAttribute<NameAttribute>()?.Names.FirstOrDefault() ?? p.Name,
-                row => p.GetValue(row)?.ToString() ?? string.Empty,
-                (row, text) => p.SetValue(row, Convert(p.PropertyType, text))))
+            .Select(p => (Property: p, Column: p.GetCustomAttribute<ColumnAttribute>()))
+            .Where(x => x.Column is not null)
+            .OrderBy(x => x.Column!.Index)
+            .Select(x => new LedgerColumn(
+                x.Column!.Header,
+                row => x.Property.GetValue(row)?.ToString() ?? string.Empty,
+                (row, text) => x.Property.SetValue(row, Convert(x.Property.PropertyType, text))))
             .ToList();
 
     /// <summary>

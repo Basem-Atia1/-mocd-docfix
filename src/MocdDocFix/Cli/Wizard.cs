@@ -62,7 +62,7 @@ public sealed class Wizard
             var mode = _asker.Ask("What do you want to do?", new[]
             {
                 new Choice("Repair run", "build the ledger, then work through it",
-                    "Reads every document in the seven services and writes one CSV — the " +
+                    "Reads every document in the seven services and writes one workbook — the " +
                     "ledger. You look at it, edit the verdict column where you disagree, and " +
                     "it works through the rows marked fix: back up, upload under the correct " +
                     "catalogue, check the copy four ways, show you both, and update the record " +

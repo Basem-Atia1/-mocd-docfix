@@ -180,8 +180,8 @@ public sealed class RedoRun
             var snap = inSnapshot ?? string.Empty;
             if (string.Equals(inLedger, snap, StringComparison.OrdinalIgnoreCase)) return;
 
-            reasons.Add($"row {row.Row}: the csv's {column} says '{inLedger}' and the snapshot " +
-                        $"says '{snap}' — the snapshot was written, the csv was not used");
+            reasons.Add($"row {row.Row}: the ledger's {column} says '{inLedger}' and the snapshot " +
+                        $"says '{snap}' — the snapshot was written, the ledger was not used");
         }
     }
 

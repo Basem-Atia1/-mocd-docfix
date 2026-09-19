@@ -43,15 +43,23 @@ public class LedgerStoreTests : IDisposable
         Assert.Equal(2, back[1].Row);
     }
 
-    /// <summary>Excel will not show Arabic file names correctly without the BOM.</summary>
+    /// <summary>
+    /// The workbook is the only ledger. Nothing ever read the plain-text copy, and one left
+    /// behind by an earlier build is worse than none: it looks current while showing fewer
+    /// corrections than really happened.
+    /// </summary>
     [Fact]
-    public void The_file_is_written_with_a_byte_order_mark()
+    public void No_csv_is_written_and_an_old_one_is_removed()
     {
+        var csv = Path.Combine(_dir, "repair-dev.csv");
+        File.WriteAllText(csv, "row,doc id\r\n1,whatever\r\n");
+
         var store = Store();
         store.Write(new[] { Row(1) });
 
-        var first = File.ReadAllBytes(store.CsvPath).Take(3).ToArray();
-        Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, first);
+        Assert.True(File.Exists(store.Path));
+        Assert.False(File.Exists(csv));
+        Assert.Empty(Directory.GetFiles(_dir, "*.csv"));
     }
 
     /// <summary>
