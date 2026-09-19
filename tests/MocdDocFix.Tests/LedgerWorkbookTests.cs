@@ -7,7 +7,8 @@ namespace MocdDocFix.Tests;
 
 /// <summary>
 /// The workbook is the ledger: it is what the operator edits, with dropdowns on the two columns
-/// they set, and it is what every mode reads. The CSV beside it is a copy.
+/// they set, and it is what every mode reads. It is also the only file written, and it carries
+/// three tabs — still to fix, awaiting deletion, and finished.
 /// </summary>
 [Collection(LedgerCollection.Name)]
 public class LedgerWorkbookTests : IDisposable
@@ -386,5 +387,67 @@ public class LedgerWorkbookTests : IDisposable
             Assert.True(sheet.Column(c).Width >= 6, $"column {c} is too narrow");
             Assert.True(sheet.Column(c).Width <= 60, $"column {c} is wider than the cap");
         }
+    }
+
+    /// <summary>
+    /// One tab per mode: what is still to fix, what is waiting to be deleted, and what is over.
+    /// Reading hands them all back as one list, because nothing above the workbook knows tabs
+    /// exist.
+    /// </summary>
+    [Fact]
+    public void Rows_are_split_across_three_tabs_and_read_back_as_one_list()
+    {
+        var toFix = Row(RowVerdicts.Fix, "Board Decision");
+
+        var awaitingDelete = Row(RowVerdicts.Done, "Passport");
+        awaitingDelete.FinalState = RowStates.Corrected;
+
+        var over = Row(RowVerdicts.Done, "Licence");
+        over.FinalState = RowStates.Deleted;
+
+        var book = new LedgerWorkbook(LedgerPath);
+        book.Write(new[] { toFix, awaitingDelete, over });
+
+        using (var raw = new XLWorkbook(LedgerPath))
+        {
+            Assert.Equal(2, raw.Worksheet("ledger").RangeUsed()!.RowCount());      // header + 1
+            Assert.Equal(2, raw.Worksheet("corrected").RangeUsed()!.RowCount());
+            Assert.Equal(2, raw.Worksheet("finished").RangeUsed()!.RowCount());
+        }
+
+        Assert.Equal(3, book.Read().Count);
+    }
+
+    /// <summary>
+    /// Settled by the pre-run check, or by a sibling sharing the document file record: done,
+    /// with no final state, because there was never a delete of its own to queue.
+    /// </summary>
+    [Fact]
+    public void A_done_row_with_no_final_state_is_finished()
+    {
+        var settled = Row(RowVerdicts.Done, "Board Decision");
+        settled.FinalState = string.Empty;
+
+        new LedgerWorkbook(LedgerPath).Write(new[] { settled });
+
+        using var raw = new XLWorkbook(LedgerPath);
+
+        Assert.Equal(2, raw.Worksheet("finished").RangeUsed()!.RowCount());
+
+        // Header only. An empty tab still carries its headings, so it reads as one row.
+        Assert.Equal(1, raw.Worksheet("ledger").RangeUsed()!.RowCount());
+    }
+
+    /// <summary>Each tab reads 1, 2, 3 down the page rather than carrying its neighbours' gaps.</summary>
+    [Fact]
+    public void Row_numbers_start_again_on_each_tab()
+    {
+        var awaitingDelete = Row(RowVerdicts.Done, "Passport");
+        awaitingDelete.FinalState = RowStates.Corrected;
+
+        var book = new LedgerWorkbook(LedgerPath);
+        book.Write(new[] { Row(RowVerdicts.Fix, "Board Decision"), awaitingDelete });
+
+        Assert.All(book.Read(), r => Assert.Equal(1, r.Row));
     }
 }

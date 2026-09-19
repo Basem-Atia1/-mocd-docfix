@@ -53,18 +53,29 @@ public sealed class LedgerWorkbook
     public bool Exists => File.Exists(Path);
 
     /// <summary>
-    /// The rows as the operator left them. Columns are found by header, not by position, so a
-    /// workbook whose columns have been dragged around still reads correctly — and one missing
-    /// a column reads the rest rather than failing.
+    /// Every row from every tab, as one list, in workbook order. Columns are found by header,
+    /// not by position, so a workbook whose columns have been dragged around still reads
+    /// correctly — and one missing a column reads the rest rather than failing.
+    ///
+    /// Every worksheet is read rather than the three that are expected, so a ledger written by
+    /// an earlier build — one sheet, whatever it was called — still opens.
     /// </summary>
     public IReadOnlyList<LedgerRow> Read()
     {
         if (!Exists) return Array.Empty<LedgerRow>();
 
         using var workbook = new XLWorkbook(Path);
-        var sheet = workbook.Worksheets.FirstOrDefault();
-        var used = sheet?.RangeUsed();
-        if (sheet is null || used is null || used.RowCount() < 2) return Array.Empty<LedgerRow>();
+
+        var rows = new List<LedgerRow>();
+        foreach (var sheet in workbook.Worksheets) rows.AddRange(ReadSheet(sheet));
+
+        return rows;
+    }
+
+    private static IReadOnlyList<LedgerRow> ReadSheet(IXLWorksheet sheet)
+    {
+        var used = sheet.RangeUsed();
+        if (used is null || used.RowCount() < 2) return Array.Empty<LedgerRow>();
 
         var byHeader = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (var c = 1; c <= used.ColumnCount(); c++)
@@ -124,8 +135,37 @@ public sealed class LedgerWorkbook
         if (File.Exists(leftOver)) File.Delete(leftOver);
 
         using var workbook = new XLWorkbook();
-        var sheet = workbook.Worksheets.Add(SheetName);
 
+        foreach (var tab in LedgerTabs.All)
+        {
+            // Numbered inside its own tab, so every sheet reads 1, 2, 3 down the page. Sorting
+            // the whole ledger and splitting it afterwards would leave each tab carrying the
+            // gaps its neighbours took.
+            var mine = LedgerOrder.Sorted(rows.Where(r => LedgerTabs.Of(r) == tab).ToList());
+            Fill(workbook.Worksheets.Add(LedgerTabs.Name(tab)), mine);
+        }
+
+        // Built in memory, written beside the ledger, and moved over it — rather than saved
+        // straight onto it. A process killed mid-save (the console window closed, the machine
+        // shut down) otherwise leaves a half-written workbook, and half a workbook opens as
+        // nothing at all. A move within one folder is atomic on NTFS, so what is on disk is
+        // always one whole version or the other.
+        //
+        // Through a stream because ClosedXML picks its format from the file extension and
+        // refuses to save to anything but .xlsx — and a temporary file named .xlsx is a file
+        // somebody opens by mistake, which is the very thing the previous\ folder exists to stop.
+        using var built = new MemoryStream();
+        workbook.SaveAs(built);
+
+        var temporary = Path + ".tmp";
+
+        File.WriteAllBytes(temporary, built.ToArray());
+        File.Move(temporary, Path, overwrite: true);
+    }
+
+    /// <summary>One sheet: the header, its rows, the dropdowns and the widths.</summary>
+    private static void Fill(IXLWorksheet sheet, IReadOnlyList<LedgerRow> rows)
+    {
         var columns = LedgerColumns.All;
 
         for (var c = 0; c < columns.Count; c++)
@@ -150,24 +190,8 @@ public sealed class LedgerWorkbook
 
         sheet.Cell(1, 1).CreateComment().AddText(
             "This is the ledger. Edit verdict and final state here, save, and close it before " +
-            "running docfix — the tool rewrites this file after every document.");
-
-        // Built in memory, written beside the ledger, and moved over it — rather than saved
-        // straight onto it. A process killed mid-save (the console window closed, the machine
-        // shut down) otherwise leaves a half-written workbook, and half a workbook opens as
-        // nothing at all. A move within one folder is atomic on NTFS, so what is on disk is
-        // always one whole version or the other.
-        //
-        // Through a stream because ClosedXML picks its format from the file extension and
-        // refuses to save to anything but .xlsx — and a temporary file named .xlsx is a file
-        // somebody opens by mistake, which is the very thing the previous\ folder exists to stop.
-        using var built = new MemoryStream();
-        workbook.SaveAs(built);
-
-        var temporary = Path + ".tmp";
-
-        File.WriteAllBytes(temporary, built.ToArray());
-        File.Move(temporary, Path, overwrite: true);
+            "running docfix — the tool rewrites this file after every document. A row moves " +
+            "between the three tabs on its own as its final state changes.");
     }
 
     /// <summary>The fixed width for each column, by header, with a default for the rest.</summary>

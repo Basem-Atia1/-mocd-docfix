@@ -104,7 +104,12 @@ public sealed class LedgerRow
     /// row 408 this afternoon, and "row 99" in yesterday's message points at somebody else
     /// today. The head of the document id does not move, so it travels with the number.
     /// </summary>
-    public string Ref() =>
-        $"row {Row} · doc {DocId.ToString()[..8]}" +
-        (DocFileName.Length == 0 ? string.Empty : $" ({DocFileName})");
+    public string Ref()
+    {
+        var tab = LedgerTabs.Of(this);
+        var where = tab == LedgerTab.Ledger ? string.Empty : $" on the {LedgerTabs.Name(tab)} tab";
+
+        return $"row {Row}{where} · doc {DocId.ToString()[..8]}" +
+               (DocFileName.Length == 0 ? string.Empty : $" ({DocFileName})");
+    }
 }

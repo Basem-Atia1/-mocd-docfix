@@ -21,9 +21,13 @@ public static class LedgerOrder
     /// tool wrote "done", then deleted, still reads "fix" — and ranking on the verdict alone put
     /// that finished row at the very top of the sheet, among the work still outstanding. The
     /// final state is the record of what happened; the verdict is only an instruction.
+    ///
+    /// It asks <see cref="LedgerTabs"/> rather than testing the state itself, so the rule that
+    /// sorts a row and the rule that decides which tab it is written to are one rule. Two
+    /// definitions of "finished" would drift apart, and the one that drifted would put a
+    /// corrected document back among the outstanding work.
     /// </summary>
-    private static bool Finished(LedgerRow row) =>
-        row.State() is RowState.Corrected or RowState.Deleted;
+    private static bool Finished(LedgerRow row) => LedgerTabs.Of(row) != LedgerTab.Ledger;
 
     /// <summary>
     /// Where each verdict sits. Unrecognised goes last but above nothing — a typo must be
