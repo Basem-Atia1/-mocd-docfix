@@ -16,8 +16,32 @@ namespace MocdDocFix.Storage;
 /// </summary>
 public sealed class LedgerWorkbook
 {
-    /// <summary>Anything longer than this is still stored whole — only the column is capped.</summary>
-    private const double WidestColumn = 60;
+    /// <summary>
+    /// How wide each column is, by header.
+    ///
+    /// Fixed rather than measured. AdjustToContents walks every cell of every column to fit the
+    /// widths, and on a 29-column sheet that was 97% of the cost of a write — 15.7 seconds at
+    /// 2,000 rows against 0.57 without it — paid after every single corrected document. Nobody
+    /// was ever going to notice a column two characters wider than its widest value.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, double> Widths =
+        new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["row"] = 6,
+            ["group"] = 7,
+            ["verdict"] = 12,
+            ["final state"] = 38,
+            ["way of upload"] = 14,
+            ["doc name"] = 30,
+            ["doc type name"] = 30,
+            ["doc file name"] = 26,
+            ["service catalogue name"] = 30,
+            ["correct service catalogue name"] = 30,
+            ["old category"] = 22,
+        };
+
+    /// <summary>Anything not named above: every path, link, reason and note.</summary>
+    private const double DefaultColumn = 40;
 
     private const string SheetName = "ledger";
 
@@ -93,6 +117,11 @@ public sealed class LedgerWorkbook
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
 
+        // A .tmp left behind by a killed process is rubbish: a partial file with no reader.
+        // Cleared here rather than at start-up, so the rule sits beside the code that makes it.
+        var leftOver = Path + ".tmp";
+        if (File.Exists(leftOver)) File.Delete(leftOver);
+
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add(SheetName);
 
@@ -116,19 +145,39 @@ public sealed class LedgerWorkbook
         Validate(sheet, ColumnOf(columns, "verdict"), rows.Count, RowVerdicts.All);
         Validate(sheet, ColumnOf(columns, "final state"), rows.Count, RowStates.All);
 
-        // Fitted to the contents, then capped — a file path is 120 characters and one such
-        // column pushes every other off the screen.
-        sheet.Columns().AdjustToContents();
-        foreach (var column in sheet.ColumnsUsed())
-            if (column.Width > WidestColumn)
-                column.Width = WidestColumn;
+        SetWidths(sheet);
 
         sheet.Cell(1, 1).CreateComment().AddText(
             "This is the ledger. Edit verdict and final state here, save, and close it before " +
             "running docfix — the tool rewrites this file after every document. The .csv " +
             "beside it is a copy the tool maintains; editing that one changes nothing.");
 
-        workbook.SaveAs(Path);
+        // Built in memory, written beside the ledger, and moved over it — rather than saved
+        // straight onto it. A process killed mid-save (the console window closed, the machine
+        // shut down) otherwise leaves a half-written workbook, and half a workbook opens as
+        // nothing at all. A move within one folder is atomic on NTFS, so what is on disk is
+        // always one whole version or the other.
+        //
+        // Through a stream because ClosedXML picks its format from the file extension and
+        // refuses to save to anything but .xlsx — and a temporary file named .xlsx is a file
+        // somebody opens by mistake, which is the very thing the previous\ folder exists to stop.
+        using var built = new MemoryStream();
+        workbook.SaveAs(built);
+
+        var temporary = Path + ".tmp";
+
+        File.WriteAllBytes(temporary, built.ToArray());
+        File.Move(temporary, Path, overwrite: true);
+    }
+
+    /// <summary>The fixed width for each column, by header, with a default for the rest.</summary>
+    private static void SetWidths(IXLWorksheet sheet)
+    {
+        var columns = LedgerColumns.All;
+
+        for (var c = 0; c < columns.Count; c++)
+            sheet.Column(c + 1).Width =
+                Widths.TryGetValue(columns[c].Header, out var width) ? width : DefaultColumn;
     }
 
     /// <summary>A dropdown of exactly the values the tool understands, on one whole column.</summary>

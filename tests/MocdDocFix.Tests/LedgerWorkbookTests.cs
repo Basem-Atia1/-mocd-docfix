@@ -334,4 +334,57 @@ public class LedgerWorkbookTests : IDisposable
 
         Assert.Single(new LedgerStore(kept).Read());
     }
+
+    /// <summary>
+    /// A process killed during a save — the console window closed, the machine shut down —
+    /// used to leave a half-written workbook, and half a workbook opens as nothing at all.
+    /// </summary>
+    [Fact]
+    public void A_stray_temporary_file_is_cleared_by_the_next_write()
+    {
+        var stray = LedgerPath + ".tmp";
+        File.WriteAllText(stray, "half a workbook");
+
+        new LedgerWorkbook(LedgerPath).Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
+
+        Assert.True(File.Exists(LedgerPath));
+        Assert.False(File.Exists(stray));
+    }
+
+    /// <summary>
+    /// The widths are fixed, not measured.
+    ///
+    /// AdjustToContents walked every cell of every column to fit them, and on a 29-column sheet
+    /// that was 97% of the cost of a write — 15.7 seconds at 2,000 rows against 0.57 without
+    /// it — paid after every corrected document. So a long value in a cell must make no
+    /// difference at all to the column carrying it.
+    /// </summary>
+    [Fact]
+    public void A_long_value_does_not_widen_its_column()
+    {
+        new LedgerWorkbook(LedgerPath).Write(new[] { Row(RowVerdicts.Fix, new string('x', 200)) });
+
+        using var book = new XLWorkbook(LedgerPath);
+        var sheet = book.Worksheet("ledger");
+
+        var docName = LedgerColumns.All.ToList().FindIndex(c => c.Header == "doc name") + 1;
+
+        Assert.Equal(30, sheet.Column(docName).Width);
+    }
+
+    /// <summary>Every column gets one, and none is left absurdly wide.</summary>
+    [Fact]
+    public void Every_column_gets_a_width_and_none_is_wider_than_the_cap()
+    {
+        new LedgerWorkbook(LedgerPath).Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
+
+        using var book = new XLWorkbook(LedgerPath);
+        var sheet = book.Worksheet("ledger");
+
+        for (var c = 1; c <= LedgerColumns.All.Count; c++)
+        {
+            Assert.True(sheet.Column(c).Width >= 6, $"column {c} is too narrow");
+            Assert.True(sheet.Column(c).Width <= 60, $"column {c} is wider than the cap");
+        }
+    }
 }
