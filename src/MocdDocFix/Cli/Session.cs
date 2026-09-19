@@ -258,12 +258,23 @@ public sealed class Session : IDisposable
     /// <param name="remembered">What this environment was last worked on, as its default.</param>
     public async Task<LedgerScope> AskAboutScopeAsync(LedgerScope remembered, CancellationToken ct)
     {
+        var ours = _appConfig.ServiceCatalogues;
+
+        // Listed, not tucked behind '?'. Being asked to choose between "8 services" and
+        // "everything" without being shown which eight is not a choice anybody can make.
+        _prompts.Section($"The {ours.Count} services this tool works on");
+
+        foreach (var id in ours)
+            _prompts.Bullet(AppConfig.NameOf(id) ?? $"{id}   (added by hand; not one of ours)",
+                Tone.Muted);
+
+        _prompts.Blank();
+
         var answer = new Asker(_prompts).Ask("Which services are you working on?", new[]
         {
-            new Choice("The services we work on", $"{_appConfig.ServiceCatalogues.Count} services",
-                "Employee Appointment Request · General Assembly Meeting Request · GAM " +
-                "Nomination List · GAM Attendance · GAM Update · GAM Minutes of Meeting · " +
-                "By-Laws Amendment Requests · Membership Managment"),
+            new Choice("The services we work on", $"the {ours.Count} listed above",
+                "Reads every document filed under those services and no others. This is the " +
+                "list in config.json; a service can be added to it by hand."),
 
             new Choice("Every service catalogue in CRM", "asks CRM what there is first",
                 "Reads the full list of service catalogues from CRM, tells you what it found, " +

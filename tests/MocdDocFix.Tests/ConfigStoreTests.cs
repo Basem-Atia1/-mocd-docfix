@@ -121,4 +121,74 @@ public class ConfigStoreTests : IDisposable
 
         Assert.Contains("apiKey", ex.Message);
     }
+
+    /// <summary>
+    /// A config.json written before a service was added to the tool's scope.
+    ///
+    /// Load used to fall back to the defaults only when the stored list was empty, so a machine
+    /// with an older file silently stayed on seven services and the eighth never appeared —
+    /// which is exactly what happened when Membership Managment came back into scope.
+    /// </summary>
+    [Fact]
+    public void A_service_added_since_the_config_was_written_is_filled_in()
+    {
+        File.WriteAllText(ConfigPath, """
+            {
+              "Environments": {},
+              "ServiceCatalogues": [
+                "cd97bf8d-bea8-f011-b116-005056010908",
+                "3ff27d73-653e-f111-b119-005056010908",
+                "d2744b68-aa50-f111-b119-005056010908",
+                "24db2387-c15d-f111-b119-005056010908",
+                "35105602-2b5f-f111-b119-005056010908",
+                "d8155dcc-635e-f111-b119-005056010908",
+                "930f636a-077a-f111-b119-005056010908"
+              ],
+              "DataRoot": "D:/mocd-docfix-data"
+            }
+            """);
+
+        var cfg = new ConfigStore(ConfigPath, new InMemorySecretStore()).Load();
+
+        Assert.Equal(8, cfg.ServiceCatalogues.Count);
+        Assert.Contains(Guid.Parse("6bcb221c-6c2b-f111-b119-005056010908"), cfg.ServiceCatalogues);
+    }
+
+    /// <summary>A catalogue somebody added by hand is theirs, and is kept.</summary>
+    [Fact]
+    public void A_service_added_by_hand_is_not_taken_away()
+    {
+        var extra = Guid.Parse("9ee8941a-8870-f111-b119-005056010908");
+
+        var store = new ConfigStore(ConfigPath, new InMemorySecretStore());
+        var cfg = store.Load();
+        cfg.ServiceCatalogues.Add(extra);
+        store.Save(cfg);
+
+        Assert.Contains(extra, store.Load().ServiceCatalogues);
+        Assert.Equal(9, store.Load().ServiceCatalogues.Count);
+    }
+
+    /// <summary>Every in-scope service has a name, so the question can list them.</summary>
+    [Fact]
+    public void Every_in_scope_service_is_named()
+    {
+        Assert.Equal(8, AppConfig.InScopeServices.Count);
+
+        foreach (var (id, name) in AppConfig.InScopeServices)
+        {
+            Assert.NotEqual(Guid.Empty, id);
+            Assert.NotEmpty(name);
+        }
+
+        Assert.Equal("Membership Managment",
+            AppConfig.NameOf(Guid.Parse("6bcb221c-6c2b-f111-b119-005056010908")));
+    }
+
+    /// <summary>A catalogue the tool does not know by name says so rather than showing nothing.</summary>
+    [Fact]
+    public void An_unknown_catalogue_has_no_name()
+    {
+        Assert.Null(AppConfig.NameOf(Guid.Parse("9ee8941a-8870-f111-b119-005056010908")));
+    }
 }

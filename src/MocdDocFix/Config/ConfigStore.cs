@@ -25,7 +25,19 @@ public sealed class ConfigStore
 
         var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(_configPath));
         if (cfg is null) return AppConfig.Default();
-        if (cfg.ServiceCatalogues.Count == 0) cfg.ServiceCatalogues = AppConfig.Default().ServiceCatalogues;
+
+        // A service added to the tool's scope since this file was written must not be missing
+        // just because this machine has an older config.json. Falling back to the defaults only
+        // when the stored list was empty meant exactly that: an install that already had a file
+        // stayed on seven services and never saw the eighth arrive.
+        //
+        // The consequence, deliberately: taking one of these out by hand does not stick. Nothing
+        // in the tool offers to remove a service from scope, so a missing one is a stale file
+        // rather than somebody's decision.
+        foreach (var (id, _) in AppConfig.InScopeServices)
+            if (!cfg.ServiceCatalogues.Contains(id))
+                cfg.ServiceCatalogues.Add(id);
+
         return cfg;
     }
 
