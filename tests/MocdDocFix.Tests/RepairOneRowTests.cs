@@ -386,7 +386,7 @@ public class RepairOneRowTests : IDisposable
         var outcome = await Subject().RunAsync(row, CancellationToken.None);
 
         Assert.True(outcome.WasAlreadyRight);
-        Assert.Equal(RowVerdict.Skip, row.Verdict2());
+        Assert.Equal(RowVerdict.Done, row.Verdict2());
         Assert.Equal(RowState.NotStarted, row.State());
         Assert.Contains("nothing to delete", row.Notes);
         Assert.Empty(_files.Uploads);

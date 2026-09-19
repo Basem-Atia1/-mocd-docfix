@@ -30,22 +30,22 @@ public static class LedgerOrder
     private static bool Finished(LedgerRow row) => LedgerTabs.Of(row) != LedgerTab.Ledger;
 
     /// <summary>
-    /// Where each verdict sits. Unrecognised goes last but above nothing — a typo must be
-    /// visible, and burying it among hundreds of skipped rows is how it would be missed.
+    /// Where each verdict sits: the work first, then the rows wanting a decision, then the ones
+    /// deliberately left alone. Unrecognised goes near the bottom but above nothing — a typo
+    /// must stay visible rather than being buried among rows nobody is reading.
     /// </summary>
     private static int Rank(RowVerdict verdict) => verdict switch
     {
         RowVerdict.Fix => 0,
-        RowVerdict.Skip => 1,
-        RowVerdict.Review => 2,
-        RowVerdict.Redo => 3,
-        RowVerdict.Ignore => 4,
-        RowVerdict.Unrecognised => 5,
+        RowVerdict.Review => 1,
+        RowVerdict.Redo => 2,
+        RowVerdict.Ignore => 3,
+        RowVerdict.Unrecognised => 4,
 
         // Last. A finished row is the one thing nobody needs to look at again, and leaving it
         // among the outstanding work is what made a corrected document still read as "to do".
-        RowVerdict.Done => 6,
-        _ => 5
+        RowVerdict.Done => 5,
+        _ => 4
     };
 
     /// <summary>

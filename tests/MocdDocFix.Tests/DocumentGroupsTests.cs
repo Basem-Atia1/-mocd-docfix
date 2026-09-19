@@ -6,9 +6,9 @@ namespace MocdDocFix.Tests;
 public class DocumentGroupsTests
 {
     [Fact]
-    public void All_seven_groups_are_defined()
+    public void All_nine_groups_are_defined()
     {
-        Assert.Equal(new[] { 1, 2, 3, 4, 5, 6, 7 }, DocumentGroups.All.Select(g => g.Number).OrderBy(n => n));
+        Assert.Equal(new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, DocumentGroups.All.Select(g => g.Number).OrderBy(n => n));
     }
 
     [Theory]
@@ -19,7 +19,9 @@ public class DocumentGroupsTests
     [InlineData(5, true)]
     [InlineData(6, false)]
     [InlineData(7, false)]
-    public void Groups_one_to_five_are_fixed_and_six_and_seven_are_not(int number, bool willBeFixed)
+    [InlineData(8, false)]
+    [InlineData(9, false)]
+    public void Groups_one_to_five_are_fixed_and_the_rest_are_not(int number, bool willBeFixed)
     {
         Assert.Equal(willBeFixed, DocumentGroups.Get(number).WillBeFixed);
     }
@@ -50,7 +52,7 @@ public class DocumentGroupsTests
     [Fact]
     public void An_unknown_group_number_is_rejected_rather_than_returning_a_blank()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => DocumentGroups.Get(9));
+        Assert.Throws<ArgumentOutOfRangeException>(() => DocumentGroups.Get(10));
     }
 
     [Fact]

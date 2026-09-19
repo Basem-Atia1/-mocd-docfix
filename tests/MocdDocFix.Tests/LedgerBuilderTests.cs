@@ -101,26 +101,35 @@ public class LedgerBuilderTests
     }
 
     /// <summary>
-    /// Every document in scope gets a row — the correct ones too. The verdict column is what
-    /// separates them, and without the correct ones there is no denominator.
+    /// The scan still classifies every document, but a correct one comes back with a blank
+    /// verdict — which is how LedgerMerge is told not to write a row for it.
+    ///
+    /// It has to come back from the scan rather than being dropped here. A row already in the
+    /// sheet that has since been corrected elsewhere must still be matched against the scan, or
+    /// the merge would report it as having vanished from CRM.
     /// </summary>
     [Fact]
-    public async Task An_already_correct_document_still_gets_a_row_marked_skip()
+    public async Task An_already_correct_document_comes_back_with_no_verdict_to_write()
     {
         var crm = Crm(Document($@"DigitalServices\{Correct}\20250509\a3f1.jpg"));
 
         var row = Assert.Single(await Builder(crm).BuildAsync(CancellationToken.None));
 
-        Assert.Equal(RowVerdict.Skip, row.Verdict2());
+        Assert.Equal(string.Empty, row.Verdict);
         Assert.Equal(7, row.Group);
     }
 
+    /// <summary>
+    /// Not a correct document — a document with nothing behind it. It gets a row, and a person
+    /// decides what became of it.
+    /// </summary>
     [Fact]
-    public async Task A_document_with_no_file_path_gets_a_row_marked_skip()
+    public async Task A_document_with_no_file_path_is_group_eight_for_review()
     {
         var row = Assert.Single(await Builder(Crm(Document(null))).BuildAsync(CancellationToken.None));
 
-        Assert.Equal(RowVerdict.Skip, row.Verdict2());
+        Assert.Equal(RowVerdict.Review, row.Verdict2());
+        Assert.Equal(8, row.Group);
         Assert.Equal(string.Empty, row.OldFilePath);
     }
 

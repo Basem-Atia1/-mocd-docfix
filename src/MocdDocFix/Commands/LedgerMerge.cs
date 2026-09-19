@@ -173,7 +173,13 @@ public static class LedgerMerge
     /// </summary>
     public static void TakeScanVerdicts(IReadOnlyList<VerdictDisagreement> disagreements)
     {
-        foreach (var (row, scanSays) in disagreements) row.Verdict = scanSays;
+        foreach (var (row, scanSays) in disagreements)
+            // A blank is the scan saying there is nothing wrong with this document — the verdict
+            // it writes for a correctly-filed row, which is no longer written to the sheet at
+            // all. Copying the blank across would leave a cell no vocabulary recognises, and the
+            // row would then be reported as a typo at the end of every run. Done is what it
+            // means here: nothing outstanding.
+            row.Verdict = scanSays.Length == 0 ? RowVerdicts.Done : scanSays;
     }
 
     /// <summary>

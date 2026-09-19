@@ -9,22 +9,22 @@ public class LedgerOrderTests
         new() { Verdict = verdict, DocName = name, DocId = Guid.NewGuid() };
 
     [Fact]
-    public void Verdicts_sort_fix_skip_review_redo_ignore()
+    public void Verdicts_sort_fix_review_redo_ignore_then_done()
     {
         var sorted = LedgerOrder.Sorted(new[]
         {
             Row(RowVerdicts.Ignore, "e"),
             Row(RowVerdicts.Redo, "d"),
             Row(RowVerdicts.Review, "c"),
-            Row(RowVerdicts.Skip, "b"),
+            Row(RowVerdicts.Done, "b"),
             Row(RowVerdicts.Fix, "a")
         });
 
-        Assert.Equal(new[] { "a", "b", "c", "d", "e" }, sorted.Select(r => r.DocName));
+        Assert.Equal(new[] { "a", "c", "d", "e", "b" }, sorted.Select(r => r.DocName));
     }
 
     /// <summary>
-    /// A typo must not be buried among hundreds of skipped rows — it goes last, where the eye
+    /// A typo must not be buried among rows nobody is reading — it goes near the end, where the eye
     /// ends up, rather than into the middle.
     /// </summary>
     /// <summary>
@@ -132,7 +132,7 @@ public class LedgerOrderTests
         {
             Row(RowVerdicts.Ignore, "e"),
             Row(RowVerdicts.Fix, "a"),
-            Row(RowVerdicts.Skip, "b")
+            Row(RowVerdicts.Review, "b")
         });
 
         Assert.Equal(new[] { 1, 2, 3 }, sorted.Select(r => r.Row));

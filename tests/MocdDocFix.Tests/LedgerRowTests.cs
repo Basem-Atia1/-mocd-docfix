@@ -10,7 +10,9 @@ public class LedgerRowTests
     [InlineData("FIX", RowVerdict.Fix)]
     [InlineData("  Fix  ", RowVerdict.Fix)]
     [InlineData("review", RowVerdict.Review)]
-    [InlineData("skip", RowVerdict.Skip)]
+    // Legacy. Sheets written before skip left the vocabulary carry the word in hundreds of
+    // cells; if it stopped parsing, every one would read as an unrecognised typo.
+    [InlineData("skip", RowVerdict.Done)]
     [InlineData("ignore", RowVerdict.Ignore)]
     [InlineData("redo", RowVerdict.Redo)]
     [InlineData("done", RowVerdict.Done)]

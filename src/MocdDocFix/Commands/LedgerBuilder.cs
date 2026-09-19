@@ -103,10 +103,17 @@ public sealed class LedgerBuilder
             ? string.Empty
             : $@"DigitalServices\{correct}\{DateTime.Now:yyyyMMdd}\(new id){extension}";
 
+    /// <summary>
+    /// The scan's verdict as a cell.
+    ///
+    /// Verdict.Skip has no spelling in the sheet any more — a document nothing is wrong with is
+    /// not written to the ledger at all — so it maps to a blank, and LedgerMerge reads that
+    /// blank as "do not add this row".
+    /// </summary>
     private static string VerdictFor(Verdict verdict) => verdict switch
     {
         Verdict.Fix => RowVerdicts.Fix,
         Verdict.Review => RowVerdicts.Review,
-        _ => RowVerdicts.Skip
+        _ => string.Empty
     };
 }

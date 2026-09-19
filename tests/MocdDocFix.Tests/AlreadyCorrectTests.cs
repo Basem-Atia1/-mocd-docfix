@@ -53,7 +53,7 @@ public class AlreadyCorrectTests
     }
 
     [Fact]
-    public async Task A_row_whose_path_never_changed_becomes_a_skip()
+    public async Task A_row_whose_path_never_changed_is_settled_as_done()
     {
         CrmHolds(RightPath);
         _files.Files[RightPath] = ("AQID", "9f86d081");
@@ -65,7 +65,7 @@ public class AlreadyCorrectTests
 
         AlreadyCorrect.Apply(scan.Settled);
 
-        Assert.Equal(RowVerdict.Skip, row.Verdict2());
+        Assert.Equal(RowVerdict.Done, row.Verdict2());
         Assert.Equal(RowState.NotStarted, row.State());
     }
 
@@ -156,7 +156,7 @@ public class AlreadyCorrectTests
         _files.Files[RightPath] = ("AQID", "9f86d081");
 
         var row = Row(Doc);
-        row.Verdict = RowVerdicts.Skip;
+        row.Verdict = RowVerdicts.Review;
 
         var scan = await Scan(row);
 

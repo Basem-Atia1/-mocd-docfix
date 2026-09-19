@@ -12,20 +12,31 @@ public static class Classifier
         Guid? crossCheckCatalogue,
         Func<string, bool> isKnownCatalogue)
     {
-        // ---- group 7: nothing to do ----
+        // ---- groups 8 and 9: nothing this tool can do, but not nothing wrong ----
+        //
+        // Both of these were group 7, alongside documents that are simply filed correctly. They
+        // are not the same thing at all, and once correct documents stop being written to the
+        // sheet, leaving these as Skip would take them out of view without anyone deciding to.
 
+        // A record naming no file is not a document that is fine; it is a document with nothing
+        // behind it.
         if (path.SegmentCount == 0)
-            return new Classification(Verdict.Skip, 7,
+            return new Classification(Verdict.Review, 8,
                 "No file path on the document file record.",
-                "Nothing to do — this is a legacy record with no file on the vendor server.",
+                "Nothing this tool can do — there is no path to diagnose and no file to move. " +
+                "Someone has to decide what became of it.",
                 null, null);
 
+        // The file may be filed perfectly well or badly, and there is no way to tell, because
+        // the record that would say has no catalogue on it. That is a thing to put right in CRM.
         if (docTypeCatalogue is null)
-            return new Classification(Verdict.Skip, 7,
+            return new Classification(Verdict.Review, 9,
                 "The document type has no service catalogue, so there is no correct value to write.",
                 "Cannot be fixed by this tool. Set mocd_servicecatalogue on the document type " +
                 "in CRM first, then re-scan.",
                 null, path.CategorySegment);
+
+        // ---- group 7: nothing to do ----
 
         var correct = docTypeCatalogue.Value;
 

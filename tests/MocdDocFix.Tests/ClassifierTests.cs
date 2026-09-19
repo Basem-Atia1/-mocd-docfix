@@ -129,21 +129,33 @@ public class ClassifierTests
         Assert.Equal(Verdict.Fix, r.Verdict);
     }
 
+    /// <summary>
+    /// Group 9, not 7. The correct catalogue is read off the document's own type, and that field
+    /// is empty — so the path may be right or wrong and there is no way to tell. Leaving it as
+    /// skip would sweep it out of the sheet along with the documents that really are correct,
+    /// when it is a thing to be put right in CRM.
+    /// </summary>
     [Fact]
-    public void No_document_type_catalogue_is_skipped_as_unfixable()
+    public void A_document_type_with_no_catalogue_is_group_nine_and_wants_a_human()
     {
         var r = Classify(@"DigitalServices\goodConductCertificate\20260330\a.jpg", null);
 
-        Assert.Equal(Verdict.Skip, r.Verdict);
+        Assert.Equal(Verdict.Review, r.Verdict);
+        Assert.Equal(9, r.Group);
         Assert.Contains("no service catalogue", r.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Group 8. A record naming no file is not a document that is fine — it is a document with
+    /// nothing behind it.
+    /// </summary>
     [Fact]
-    public void No_file_path_is_skipped()
+    public void A_record_with_no_file_path_is_group_eight_and_wants_a_human()
     {
         var r = Classify("", EmployeeAppointment);
 
-        Assert.Equal(Verdict.Skip, r.Verdict);
+        Assert.Equal(Verdict.Review, r.Verdict);
+        Assert.Equal(8, r.Group);
         Assert.Contains("no file path", r.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -222,15 +234,20 @@ public class ClassifierTests
         Assert.Equal(4, Classify(@"DigitalServices\20260707\a.doc", GamRequest).Group);
     }
 
+    /// <summary>
+    /// Group 7 is now one thing only: a document that is filed correctly. It used to hold three,
+    /// and the other two were not "nothing to do" at all — they were problems with no remedy in
+    /// this tool, which is a different statement. They are groups 8 and 9.
+    /// </summary>
     [Fact]
-    public void Nothing_to_do_is_group_seven()
+    public void Group_seven_is_only_a_document_that_is_filed_correctly()
     {
         Assert.Equal(7, Classify(
             $@"DigitalServices\{EmployeeAppointment}\20260330\a.jpg", EmployeeAppointment).Group);
 
-        Assert.Equal(7, Classify("", EmployeeAppointment).Group);
+        Assert.Equal(8, Classify("", EmployeeAppointment).Group);
 
-        Assert.Equal(7, Classify(@"DigitalServices\goodConductCertificate\20260330\a.jpg", null).Group);
+        Assert.Equal(9, Classify(@"DigitalServices\goodConductCertificate\20260330\a.jpg", null).Group);
     }
 
     [Fact]

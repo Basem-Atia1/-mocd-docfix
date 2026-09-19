@@ -95,7 +95,7 @@ public class DeleteOldFilesTests : IDisposable
     [Theory]
     [InlineData(RowVerdicts.Done)]
     [InlineData(RowVerdicts.Fix)]
-    [InlineData(RowVerdicts.Skip)]
+    [InlineData(RowVerdicts.Review)]
     public async Task The_verdict_has_no_bearing_on_what_is_deleted(string verdict)
     {
         var row = Row();

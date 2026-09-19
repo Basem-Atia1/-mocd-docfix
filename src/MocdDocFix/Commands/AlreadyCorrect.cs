@@ -120,9 +120,11 @@ public sealed class AlreadyCorrect
         {
             row.Error = string.Empty;
 
+            // Done, not skip: skip no longer exists, and it always meant the same thing here —
+            // we looked, there was nothing to do. Nothing is outstanding, which is what done says.
             if (how == SettleAs.AlwaysRight)
             {
-                row.Verdict = RowVerdicts.Skip;
+                row.Verdict = RowVerdicts.Done;
                 row.Notes = Note(row.Notes,
                     $"checked {Now()} — CRM already files this under the right catalogue and the " +
                     "path has not changed, so there is nothing to correct and nothing to delete");

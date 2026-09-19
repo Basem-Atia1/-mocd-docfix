@@ -329,7 +329,7 @@ public class LedgerWorkbookTests : IDisposable
     {
         var store = Store();
         store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
-        store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision"), Row(RowVerdicts.Skip, "Passport") });
+        store.Write(new[] { Row(RowVerdicts.Fix, "Board Decision"), Row(RowVerdicts.Review, "Passport") });
 
         var kept = Directory.GetFiles(store.PreviousDirectory, "*.xlsx").Single();
 

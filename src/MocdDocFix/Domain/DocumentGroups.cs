@@ -4,7 +4,7 @@ namespace MocdDocFix.Domain;
 /// One kind of corruption, explained. The wizard's menus, the grouped report and the ledger all read
 /// their wording from here so they can never drift apart (spec 2026-09-13 section 4).
 /// </summary>
-/// <param name="Number">1-7. Groups 1-5 are fixed; 6 and 7 are not.</param>
+/// <param name="Number">1-9. Groups 1-5 are fixed; 6 to 9 are not.</param>
 /// <param name="ShortLabel">One line, for menus.</param>
 /// <param name="WhatIsInThePath">What the category segment actually contains.</param>
 /// <param name="WhyItIsWrong">The defect, in terms of the data.</param>
@@ -97,12 +97,31 @@ public static class DocumentGroups
 
         new DocumentGroup(7,
             "nothing to do",
-            "either the correct catalogue already, or no file path at all.",
-            "nothing is wrong with these. They are listed only so the numbers add up and you can " +
-            "see the whole population.",
-            "the path segment already equals the document type's catalogue, or the " +
-            "mocd_documentfile record has an empty mocd_filepath (a legacy row with no file).",
-            "nothing.",
+            "the correct catalogue already.",
+            "nothing is wrong with these. They are the reason the sheet is shorter than the " +
+            "population: a document nothing is wrong with is no longer written to it at all.",
+            "the path segment already equals the document type's catalogue.",
+            "nothing. It never reaches the ledger.",
+            false),
+
+        new DocumentGroup(8,
+            "the record names no file at all",
+            "nothing — the mocd_documentfile record has an empty mocd_filepath.",
+            "there is no file to move and nothing in CRM says where it went. The document " +
+            "exists, its file record exists, and between them they name no file.",
+            "the record's own mocd_filepath is blank.",
+            "nothing. It is listed so a person can judge — there is no path to diagnose and " +
+            "nothing to re-upload.",
+            false),
+
+        new DocumentGroup(9,
+            "the document type has no service catalogue",
+            "whatever it happens to hold — there is no correct value to compare it against.",
+            "the correct catalogue is read off the document's own document type, and that field " +
+            "is empty. The path may be right or wrong and there is no way to tell.",
+            "nothing does. The record that would say has nothing on it.",
+            "nothing. Set mocd_servicecatalogue on the document type in CRM and re-scan, and " +
+            "these move into a group that can be judged.",
             false)
     };
 

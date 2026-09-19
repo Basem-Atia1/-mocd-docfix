@@ -144,16 +144,16 @@ public class LedgerMergeTests
     public void Taking_the_scans_verdicts_replaces_exactly_the_rows_that_differed()
     {
         var disputed = Row(One, verdict: RowVerdicts.Fix);
-        var agreed = Row(Two, verdict: RowVerdicts.Skip);
+        var agreed = Row(Two, verdict: RowVerdicts.Done);
 
         var merged = LedgerMerge.Into(
             new[] { disputed, agreed },
-            new[] { Row(One, verdict: RowVerdicts.Review), Row(Two, verdict: RowVerdicts.Skip) });
+            new[] { Row(One, verdict: RowVerdicts.Review), Row(Two, verdict: RowVerdicts.Done) });
 
         LedgerMerge.TakeScanVerdicts(merged.Disagreements);
 
         Assert.Equal(RowVerdict.Review, disputed.Verdict2());
-        Assert.Equal(RowVerdict.Skip, agreed.Verdict2());
+        Assert.Equal(RowVerdict.Done, agreed.Verdict2());
     }
 
     /// <summary>
@@ -195,14 +195,14 @@ public class LedgerMergeTests
     public void A_row_crm_now_calls_correct_is_raised_rather_than_quietly_changed()
     {
         var existing = Row(One, verdict: RowVerdicts.Fix);
-        var scanned = Row(One, verdict: RowVerdicts.Skip);
+        var scanned = Row(One, verdict: string.Empty);
         scanned.ReasonOfBug = "Path already correct";
 
         var merged = LedgerMerge.Into(new[] { existing }, new[] { scanned });
 
         Assert.Equal(RowVerdict.Fix, existing.Verdict2());          // untouched
         Assert.Equal("Path already correct", existing.ReasonOfBug); // but the row says why
-        Assert.Contains(merged.Disagreements, d => d.ScanSays == RowVerdicts.Skip);
+        Assert.Contains(merged.Disagreements, d => d.ScanSays == string.Empty);
     }
 
     [Fact]
@@ -302,7 +302,7 @@ public class LedgerMergeTests
     [Fact]
     public void A_row_nobody_excluded_is_not_offered_back()
     {
-        var merged = LedgerMerge.Into(new[] { Row(One, verdict: RowVerdicts.Skip) },
+        var merged = LedgerMerge.Into(new[] { Row(One, verdict: RowVerdicts.Review) },
             new[] { Row(One, verdict: RowVerdicts.Fix) });
 
         Assert.Empty(merged.Excluded);
@@ -404,7 +404,7 @@ public class LedgerMergeTests
     [Fact]
     public void A_disagreement_carries_the_scans_own_reason()
     {
-        var scanned = Row(One, verdict: RowVerdicts.Skip);
+        var scanned = Row(One, verdict: string.Empty);
         scanned.ReasonOfBug = "Path already correct — matches the document type's catalogue.";
 
         var merged = LedgerMerge.Into(new[] { Row(One, verdict: RowVerdicts.Fix) }, new[] { scanned });
@@ -468,7 +468,7 @@ public class LedgerMergeTests
     public void A_finished_row_crm_agrees_with_is_not_reported()
     {
         var merged = LedgerMerge.Into(new[] { Row(One, verdict: RowVerdicts.Done) },
-            new[] { Row(One, verdict: RowVerdicts.Skip) });
+            new[] { Row(One, verdict: string.Empty) });
 
         Assert.Empty(merged.StillWrong);
     }

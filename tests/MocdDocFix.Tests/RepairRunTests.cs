@@ -131,7 +131,7 @@ public class RepairRunTests : IDisposable
 
     [Theory]
     [InlineData(RowVerdicts.Review)]
-    [InlineData(RowVerdicts.Skip)]
+    [InlineData(RowVerdicts.Done)]
     [InlineData(RowVerdicts.Ignore)]
     [InlineData(RowVerdicts.Redo)]
     public async Task Only_fix_rows_are_touched(string verdict)

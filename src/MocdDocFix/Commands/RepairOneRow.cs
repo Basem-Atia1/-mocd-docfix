@@ -299,7 +299,8 @@ public sealed class RepairOneRow
 
         if (wasAlwaysRight)
         {
-            row.Verdict = RowVerdicts.Skip;
+            // Done, not skip: skip no longer exists, and nothing was ever outstanding here.
+            row.Verdict = RowVerdicts.Done;
             row.Notes = Note(row.Notes,
                 $"checked {Now()} — CRM already files this under the right catalogue and the " +
                 "path has not changed, so there is nothing to correct and nothing to delete");

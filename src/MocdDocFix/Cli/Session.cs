@@ -516,6 +516,19 @@ public sealed class Session : IDisposable
         _prompts.Blank();
     }
 
+    /// <summary>
+    /// What the scan makes of a row, in words.
+    ///
+    /// A blank verdict is the scan saying there is nothing wrong with the document. It is what
+    /// a correctly-filed row gets, and such rows are no longer written to the sheet at all —
+    /// but an existing row can still turn correct, when somebody fixes it in CRM. "CRM says ''"
+    /// is not a sentence, so this says the thing it means instead.
+    /// </summary>
+    private static string ScanSaid(string scanSays) =>
+        scanSays.Length == 0
+            ? "the scan no longer finds anything wrong with it"
+            : $"CRM says '{scanSays}'";
+
     /// <summary>The scan's own words for a verdict, trimmed to fit one line of the report.</summary>
     private static string Because(string reason)
     {
@@ -640,7 +653,7 @@ public sealed class Session : IDisposable
 
         foreach (var d in rows.Take(10))
             _prompts.Bullet($"{d.Row.Ref()}: the ledger says " +
-                            $"'{d.Row.Verdict}', CRM says '{d.ScanSays}'{Because(d.ScanReason)}",
+                            $"'{d.Row.Verdict}', {ScanSaid(d.ScanSays)}{Because(d.ScanReason)}",
                 Tone.Muted);
 
         if (rows.Count > 10) _prompts.Bullet($"… and {rows.Count - 10} more", Tone.Muted);

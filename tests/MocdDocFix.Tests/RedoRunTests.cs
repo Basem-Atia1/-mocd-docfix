@@ -177,7 +177,7 @@ public class RedoRunTests : IDisposable
     [Theory]
     [InlineData(RowVerdicts.Fix)]
     [InlineData(RowVerdicts.Review)]
-    [InlineData(RowVerdicts.Skip)]
+    [InlineData(RowVerdicts.Done)]
     [InlineData(RowVerdicts.Ignore)]
     public async Task Only_redo_rows_are_acted_on(string verdict)
     {
