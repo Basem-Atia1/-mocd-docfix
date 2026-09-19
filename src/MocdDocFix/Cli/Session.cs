@@ -94,6 +94,41 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// Holds until the ledger can be written, asking the operator to close Excel.
+    ///
+    /// **This must run before anything touches the file.** Excel opens a workbook with a lock
+    /// that denies everything, so reading it throws "the process cannot access the file" just as
+    /// surely as writing it does — and an exception is a far worse answer than a question
+    /// somebody can act on in ten seconds. Any new step that reads the ledger goes after this,
+    /// not before it.
+    ///
+    /// It waits rather than giving up: having the ledger open is the normal thing to be doing a
+    /// moment before a run, and making the operator start the whole mode again to fix a
+    /// ten-second problem is a punishment, not a safeguard.
+    /// </summary>
+    /// <returns>False when the operator would rather stop than close it.</returns>
+    private bool WaitUntilWritable()
+    {
+        while (!_ledger.CanWrite())
+        {
+            _prompts.Blank();
+            _prompts.Warn("The ledger is open in Excel, so this run could not record what it did.",
+                Tone.Warn);
+            _prompts.Field("file", _ledger.Path, Tone.Muted);
+            _prompts.Blank();
+
+            if (!_prompts.YesNo("  Close it in Excel, then answer yes to carry on. Try again?",
+                    defaultYes: true))
+            {
+                _prompts.Say("Stopped. Nothing has been changed.", Tone.Muted);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Asks the operator to close the ledger, and says what is at stake. Returns true to try
     /// the write again.
     /// </summary>
@@ -138,28 +173,7 @@ public sealed class Session : IDisposable
     /// </param>
     private async Task<IReadOnlyList<LedgerRow>> OpenLedgerAsync(bool mayRebuild, CancellationToken ct)
     {
-        // Excel holds an exclusive lock on an open workbook, and the ledger is rewritten after
-        // every completed row. Finding that out now is far kinder than finding out after the
-        // first document has already been uploaded and cannot be recorded.
-        //
-        // It waits rather than giving up: having the ledger open is the normal thing to be doing
-        // a moment before a run, and making the operator start the whole mode again to fix a
-        // ten-second problem is a punishment, not a safeguard.
-        while (!_ledger.CanWrite())
-        {
-            _prompts.Blank();
-            _prompts.Warn("The ledger is open in Excel, so this run could not record what it did.",
-                Tone.Warn);
-            _prompts.Field("file", _ledger.Path, Tone.Muted);
-            _prompts.Blank();
-
-            if (!_prompts.YesNo("  Close it in Excel, then answer yes to carry on. Try again?",
-                    defaultYes: true))
-            {
-                _prompts.Say("Stopped. Nothing has been changed.", Tone.Muted);
-                return Array.Empty<LedgerRow>();
-            }
-        }
+        if (!WaitUntilWritable()) return Array.Empty<LedgerRow>();
 
         var existing = _ledger.Exists ? Reconciled(_ledger.Read()) : Array.Empty<LedgerRow>();
 
@@ -1066,6 +1080,10 @@ public sealed class Session : IDisposable
     /// </summary>
     private IReadOnlyList<LedgerRow> RereadLedger()
     {
+        // The operator has just been editing in Excel, so this is the likeliest moment of all
+        // for the file still to be open.
+        if (!WaitUntilWritable()) return Array.Empty<LedgerRow>();
+
         var rows = Reconciled(_ledger.Read());
         if (rows.Count > 0 && AskAboutStranded(rows)) _ledger.Write(rows);
 
@@ -1088,7 +1106,21 @@ public sealed class Session : IDisposable
         if (!_ledger.Exists) return true;
 
         var when = File.GetLastWriteTime(_ledger.Path).ToString("yyyy-MM-dd HH:mm");
-        var rows = _ledger.Read().Count;
+
+        // Only to put a number on the choice. The caller has already waited for the file to be
+        // closed, so this should not fail — but a question that cannot be asked must not take
+        // the run down with it.
+        int rows;
+        try
+        {
+            rows = _ledger.Read().Count;
+        }
+        catch (Exception problem) when (problem is IOException or UnauthorizedAccessException)
+        {
+            _prompts.Say($"The ledger could not be read just now ({problem.Message}), so this " +
+                         "run will update it from CRM.", Tone.Warn);
+            return true;
+        }
 
         var answer = new Asker(_prompts).Ask("Where should this run get its rows?", new[]
         {
@@ -1155,6 +1187,10 @@ public sealed class Session : IDisposable
     public LedgerActions Actions(CancellationToken outer) => new(
         RepairAsync: async ct =>
         {
+            // Before the question, not after: the question reads the ledger to say how many
+            // rows it holds, and reading a workbook Excel has open throws rather than waiting.
+            if (!WaitUntilWritable()) return StepOutcome.Of("Stopped. Nothing has been changed.");
+
             var opened = await OpenLedgerAsync(mayRebuild: AskWhetherToRescan(), ct);
             if (opened.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
 

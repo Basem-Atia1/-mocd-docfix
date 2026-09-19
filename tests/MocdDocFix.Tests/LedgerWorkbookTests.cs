@@ -450,4 +450,40 @@ public class LedgerWorkbookTests : IDisposable
 
         Assert.All(book.Read(), r => Assert.Equal(1, r.Row));
     }
+
+    /// <summary>
+    /// Excel opens a workbook with a lock that denies everything, so **reading** one it holds
+    /// throws just as surely as writing does.
+    ///
+    /// This is pinned because it is not obvious and it caused a real regression: a question
+    /// added ahead of the "close it in Excel" prompt read the ledger to count its rows, and the
+    /// friendly prompt was replaced by an IOException. Anything that touches the ledger belongs
+    /// after that prompt, never before it.
+    /// </summary>
+    [Fact]
+    public void A_workbook_held_open_cannot_even_be_read()
+    {
+        var book = new LedgerWorkbook(LedgerPath);
+        book.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
+
+        using var held = File.Open(LedgerPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        Assert.False(book.CanWrite());
+        Assert.Throws<IOException>(() => book.Read());
+    }
+
+    /// <summary>
+    /// And the check that guards it says no for a lock that still permits reading — the state
+    /// Excel leaves a workbook in for part of its life.
+    /// </summary>
+    [Fact]
+    public void A_workbook_others_may_read_still_cannot_be_written()
+    {
+        var book = new LedgerWorkbook(LedgerPath);
+        book.Write(new[] { Row(RowVerdicts.Fix, "Board Decision") });
+
+        using var held = File.Open(LedgerPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        Assert.False(book.CanWrite());
+    }
 }
