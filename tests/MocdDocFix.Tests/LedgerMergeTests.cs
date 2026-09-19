@@ -472,4 +472,37 @@ public class LedgerMergeTests
 
         Assert.Empty(merged.StillWrong);
     }
+
+    /// <summary>
+    /// A document nothing is wrong with is not written. The sheet is the work, not the census —
+    /// 96 of the dev ledger's 410 rows were this, and every one of them was noise.
+    /// </summary>
+    [Fact]
+    public void A_new_document_that_is_already_correct_is_not_added()
+    {
+        var merged = LedgerMerge.Into(
+            Array.Empty<LedgerRow>(),
+            new[] { Row(One, verdict: string.Empty), Row(Two, verdict: RowVerdicts.Fix) });
+
+        Assert.Equal(Two, Assert.Single(merged.Rows).DocId);
+        Assert.Equal(1, merged.NotAdded);
+        Assert.Equal(1, merged.Added);
+    }
+
+    /// <summary>
+    /// The filter is on adding, never on matching. A row already in the sheet that has since
+    /// been corrected outside this tool still comes back from the scan, so it must not look as
+    /// though CRM had lost the document.
+    /// </summary>
+    [Fact]
+    public void A_row_that_has_become_correct_is_not_reported_as_gone()
+    {
+        var existing = Row(One, verdict: RowVerdicts.Fix);
+
+        var merged = LedgerMerge.Into(new[] { existing }, new[] { Row(One, verdict: string.Empty) });
+
+        Assert.Empty(merged.Gone);
+        Assert.Single(merged.Rows);
+        Assert.Equal(0, merged.NotAdded);
+    }
 }

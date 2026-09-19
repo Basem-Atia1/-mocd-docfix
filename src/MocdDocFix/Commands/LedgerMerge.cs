@@ -57,11 +57,17 @@ public sealed record PathMoved(LedgerRow Row, string NowAt, LedgerRow? Corrected
 /// Rows whose file has moved without this ledger moving it. Reported rather than absorbed,
 /// because the row is now describing a file somebody else has already corrected.
 /// </param>
+/// <param name="NotAdded">
+/// Documents the scan found nothing wrong with, which were therefore never written. Counted
+/// rather than listed: they are the majority of any environment, and there is nothing to say
+/// about any one of them.
+/// </param>
 public sealed record Merged(
     IReadOnlyList<LedgerRow> Rows, int Added, int Refreshed, int Protected, int Vanished,
     IReadOnlyList<string> Notes, IReadOnlyList<VerdictDisagreement> Disagreements,
     IReadOnlyList<VerdictDisagreement> Excluded, IReadOnlyList<PathMoved> Moved,
-    IReadOnlyList<VerdictDisagreement> StillWrong, IReadOnlyList<LedgerRow> Gone);
+    IReadOnlyList<VerdictDisagreement> StillWrong, IReadOnlyList<LedgerRow> Gone,
+    int NotAdded = 0);
 
 /// <summary>
 /// Brings one ledger up to date from a fresh read of CRM, instead of starting a second one.
@@ -96,7 +102,7 @@ public static class LedgerMerge
         var excluded = new List<VerdictDisagreement>();
         var moved = new List<PathMoved>();
         var stillWrong = new List<VerdictDisagreement>();
-        int added = 0, refreshed = 0, protectedRows = 0;
+        int added = 0, refreshed = 0, protectedRows = 0, notAdded = 0;
 
         foreach (var scanned in fresh)
         {
@@ -104,6 +110,19 @@ public static class LedgerMerge
 
             if (!byDocument.TryGetValue(scanned.DocId, out var row))
             {
+                // Nothing is wrong with it, so it gets no row. The sheet is the work, not a
+                // census of the environment.
+                //
+                // Note where this test is: on adding, never on matching. The scan still
+                // classified the document and still marked it seen above, which is what keeps a
+                // row already in the sheet — one somebody has since corrected in CRM — from
+                // looking as though the document had vanished.
+                if (scanned.Verdict.Length == 0)
+                {
+                    notAdded++;
+                    continue;
+                }
+
                 rows.Add(scanned);
                 added++;
                 continue;
@@ -164,7 +183,7 @@ public static class LedgerMerge
 
         return new Merged(rows, added, refreshed, protectedRows,
             existing.Count - seen.Count(id => byDocument.ContainsKey(id)), notes, disagreements,
-            excluded, moved, stillWrong, gone);
+            excluded, moved, stillWrong, gone, notAdded);
     }
 
     /// <summary>

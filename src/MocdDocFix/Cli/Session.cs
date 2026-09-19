@@ -163,16 +163,45 @@ public sealed class Session : IDisposable
 
         var scanned = await _builder.BuildAsync(ct);
 
+        // Once, on the first run after correct documents stopped entering the sheet. A scan that
+        // no longer produces them cannot un-write the ones already on disk, so they are cleared
+        // out here — and after that first run there is nothing left saying skip and this does
+        // nothing at all.
+        var tidied = LegacyCleanup.Apply(existing, scanned);
+        if (tidied.Removed > 0 || tidied.Kept > 0)
+        {
+            existing = tidied.Rows;
+
+            _prompts.Blank();
+
+            if (tidied.Removed > 0)
+                _prompts.Say($"{tidied.Removed} row(s) were correct and had never been worked " +
+                             "on. They have been taken out of the sheet.", Tone.Good);
+
+            if (tidied.Kept > 0)
+                _prompts.Say($"{tidied.Kept} row(s) said skip but had work recorded against " +
+                             "them. Their verdicts now say what actually happened.", Tone.Muted);
+        }
+
         // There is one ledger per environment for its whole life. A fresh scan updates it; it
         // never replaces it, because replacing it would throw away every verdict typed into it
         // and every final state the runs have recorded.
+        //
+        // Even a brand-new ledger goes through the merge, so that the rule keeping correct
+        // documents out of the sheet is applied in exactly one place rather than two.
+        var merged = LedgerMerge.Into(existing, scanned);
+
         if (existing.Count == 0)
         {
-            _ledger.Write(scanned);
-            _prompts.Say($"{scanned.Count} document(s) written to {_ledger.Path}", Tone.Good);
-            return scanned;
+            _ledger.Write(merged.Rows);
+
+            _prompts.Say($"{merged.Rows.Count} document(s) written to {_ledger.Path}", Tone.Good);
+            SayWhatWasLeftOut(merged);
+            SayHowManyHaveNoFile(merged.Rows);
+
+            return merged.Rows;
         }
-        var merged = LedgerMerge.Into(existing, scanned);
+
         ReportMoved(merged);
         AskAboutStillWrong(merged);
         AskAboutVerdicts(merged);
@@ -187,10 +216,46 @@ public sealed class Session : IDisposable
                      $"{merged.Refreshed} refreshed, {merged.Protected} left as they are because " +
                      "they have already been worked on or you closed them.");
 
+        SayWhatWasLeftOut(merged);
+        SayHowManyHaveNoFile(merged.Rows);
+
         SayHowManyFiles(merged.Rows);
         ReportGone(merged);
 
         return typeThemMyself ? ReadBackHandEdits(merged.Rows) : merged.Rows;
+    }
+
+    /// <summary>
+    /// How many documents the scan found nothing wrong with, and so did not write.
+    ///
+    /// Said rather than shown. It is the majority of any environment — 96 of the dev ledger's
+    /// 410 rows were this before the change — and there is nothing to say about any one of them.
+    /// But a sheet that is suddenly a quarter shorter wants explaining.
+    /// </summary>
+    private void SayWhatWasLeftOut(Merged merged)
+    {
+        if (merged.NotAdded == 0) return;
+
+        _prompts.Say($"{merged.NotAdded} document(s) are already filed correctly and are not in " +
+                     "the sheet.", Tone.Muted);
+    }
+
+    /// <summary>
+    /// How many rows are documents with no file at all.
+    ///
+    /// In the eight services this is 29 rows, worth reading one by one. Across every catalogue
+    /// in pre-prod it is roughly thirty-seven thousand, because two thirds of that environment
+    /// is documents naming no file — and thirty-seven thousand rows do not read as a list, they
+    /// read as wallpaper. So the number is said out loud and the rows are left to sit.
+    /// </summary>
+    private void SayHowManyHaveNoFile(IReadOnlyList<LedgerRow> rows)
+    {
+        var none = rows.Count(r => r.Group == 8);
+        if (none == 0) return;
+
+        _prompts.Say($"{none} document(s) have no file path at all. They are in the sheet as " +
+                     "review. There is nothing this tool can do with them — no path to " +
+                     "diagnose and no file to move.", Tone.Warn);
     }
 
     /// <summary>
