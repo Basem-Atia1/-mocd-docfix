@@ -852,46 +852,112 @@ public sealed class Session : IDisposable
     /// a list of one — so there is no second code path that could behave differently from the
     /// one the operator has watched four hundred times.
     /// </summary>
-    private IReadOnlyList<LedgerRow> NarrowToOneDocument(IReadOnlyList<LedgerRow> rows)
+    /// <param name="rows">Everything in the ledger. Replaced when the operator reloads.</param>
+    /// <returns>The rows to work on, and the whole ledger they came from.</returns>
+    private (IReadOnlyList<LedgerRow> Working, IReadOnlyList<LedgerRow> Whole)
+        NarrowToOneDocument(IReadOnlyList<LedgerRow> rows)
     {
-        var fixable = rows.Count(r => r.Verdict2() == RowVerdict.Fix);
-
-        var how = new Asker(_prompts).Ask("What do you want to work on?", new[]
+        while (true)
         {
-            new Choice("From the file", $"every row marked fix — {fixable} of {rows.Count}",
-                "Works down the ledger in order, acting on every row whose verdict says fix and " +
-                "walking past the rest."),
-            new Choice("One document", "type its GUID",
-                "The same six steps, for the single row whose doc id you give. Useful for " +
-                "re-trying one document without opening the whole run.")
+            var fixable = rows.Count(r => r.Verdict2() == RowVerdict.Fix);
+
+            var how = new Asker(_prompts).Ask("What do you want to work on?", new[]
+            {
+                new Choice("From the file", $"every row marked fix — {fixable} of {rows.Count}",
+                    "Works down the ledger in order, acting on every row whose verdict says fix " +
+                    "and walking past the rest."),
+
+                new Choice("One document", "type its GUID",
+                    "The same six steps, for the single row whose doc id you give. Useful for " +
+                    "re-trying one document without opening the whole run."),
+
+                new Choice("Read the sheet again", "pick up edits you just made",
+                    "Reads the workbook from disk again and comes back to this question with " +
+                    "the counts refreshed. A reload only reads — it never writes the sheet back.")
+            }, defaultIndex: 0);
+
+            if (how.Kind != AnswerKind.Chosen) return (Array.Empty<LedgerRow>(), rows);
+
+            if (how.Index == 2)
+            {
+                var fresh = RereadLedger();
+                if (fresh.Count > 0) rows = fresh;
+                continue;
+            }
+
+            if (how.Index == 0) return (rows, rows);
+
+            _prompts.Blank();
+            var typed = _prompts.ReadLine("  Document GUID").Trim();
+
+            if (!Guid.TryParse(typed, out var wanted))
+            {
+                _prompts.Say($"'{typed}' is not a GUID.", Tone.Warn);
+                return (Array.Empty<LedgerRow>(), rows);
+            }
+
+            var found = rows.Where(r => r.DocId == wanted).ToList();
+
+            if (found.Count == 0)
+            {
+                // Not in the ledger means the ledger is older than the document, or the document
+                // is outside the services in scope. Guessing is worse than saying so.
+                _prompts.Say($"No row in the ledger has doc id {wanted}. If the document is " +
+                             "new, update the ledger from CRM first; if it belongs to a service " +
+                             "this run is not scoped to, it will never appear.", Tone.Warn);
+                return (Array.Empty<LedgerRow>(), rows);
+            }
+
+            _prompts.Say($"Row {found[0].Row} — {found[0].DocName}", Tone.Muted);
+            return (found, rows);
+        }
+    }
+
+    /// <summary>
+    /// The ledger from disk again, put through everything a freshly-opened one goes through: the
+    /// journal replay, and the guard on a verdict typed over a finished row. A reload that
+    /// skipped those would quietly behave differently from leaving the mode and coming back.
+    /// </summary>
+    private IReadOnlyList<LedgerRow> RereadLedger()
+    {
+        var rows = Reconciled(_ledger.Read());
+        if (rows.Count > 0 && AskAboutStranded(rows)) _ledger.Write(rows);
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Whether this entry into the repair run should ask CRM at all.
+    ///
+    /// The rescan reads every document in scope — 4,510 in dev, and far more across every
+    /// catalogue — plus a catalogue-name lookup per row. When the sheet is already in front of
+    /// you and you only want to carry on working through it, all of that is spent for nothing.
+    ///
+    /// Skipping it is safe. Before a single byte is uploaded the run still asks CRM, row by row,
+    /// whether that document is now filed correctly, so a stale sheet cannot cause a second copy
+    /// of a file — only a row settled at the start of the run instead of by the scan.
+    /// </summary>
+    private bool AskWhetherToRescan()
+    {
+        if (!_ledger.Exists) return true;
+
+        var when = File.GetLastWriteTime(_ledger.Path).ToString("yyyy-MM-dd HH:mm");
+        var rows = _ledger.Read().Count;
+
+        var answer = new Asker(_prompts).Ask("Where should this run get its rows?", new[]
+        {
+            new Choice("Use the ledger as it is", $"{rows} row(s), last written {when}",
+                "Goes straight to the work, with the sheet exactly as it is on disk. Nothing is " +
+                "asked of CRM until the run reaches a document — and every row is still checked " +
+                "against CRM before anything is uploaded."),
+
+            new Choice("Update it from CRM first", "reads every document in scope",
+                "Reads every document under the services this run is scoped to, classifies " +
+                "them, and merges the answers into the sheet without discarding anything you " +
+                "have typed. This is the slow one.")
         }, defaultIndex: 0);
 
-        if (how.Kind != AnswerKind.Chosen) return Array.Empty<LedgerRow>();
-        if (how.Index == 0) return rows;
-
-        _prompts.Blank();
-        var typed = _prompts.ReadLine("  Document GUID").Trim();
-
-        if (!Guid.TryParse(typed, out var wanted))
-        {
-            _prompts.Say($"'{typed}' is not a GUID.", Tone.Warn);
-            return Array.Empty<LedgerRow>();
-        }
-
-        var found = rows.Where(r => r.DocId == wanted).ToList();
-
-        if (found.Count == 0)
-        {
-            // Not in the ledger means the ledger is older than the document, or the document is
-            // outside the seven services. Either way, guessing is worse than saying so.
-            _prompts.Say($"No row in the ledger has doc id {wanted}. If the document is new, " +
-                         "start a fresh ledger; if it belongs to a service this tool is not " +
-                         "scoped to, it will never appear.", Tone.Warn);
-            return Array.Empty<LedgerRow>();
-        }
-
-        _prompts.Say($"Row {found[0].Row} — {found[0].DocName}", Tone.Muted);
-        return found;
+        return answer.Kind == AnswerKind.Chosen && answer.Index == 1;
     }
 
     /// <summary>
@@ -943,12 +1009,15 @@ public sealed class Session : IDisposable
     public LedgerActions Actions(CancellationToken outer) => new(
         RepairAsync: async ct =>
         {
-            var all = await OpenLedgerAsync(mayRebuild: true, ct);
-            if (all.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
+            var opened = await OpenLedgerAsync(mayRebuild: AskWhetherToRescan(), ct);
+            if (opened.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
+
+            // The whole ledger comes back too, because a reload inside the question replaces it.
+            var (working, all) = NarrowToOneDocument(opened);
 
             // Documents CRM stopped returning. The scan says nothing will act on them, and
             // this is what makes that true — the loop reads the verdict and nothing else.
-            var rows = NarrowToOneDocument(all).Where(r => !_gone.Contains(r.DocId)).ToList();
+            var rows = working.Where(r => !_gone.Contains(r.DocId)).ToList();
             if (rows.Count == 0) return StepOutcome.Of("Nothing to work on.");
 
             if (_dryRun)
@@ -988,10 +1057,17 @@ public sealed class Session : IDisposable
 
         DeleteAsync: async ct =>
         {
-            var rows = await OpenLedgerAsync(mayRebuild: false, ct);
-            if (rows.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
+            var opened = await OpenLedgerAsync(mayRebuild: false, ct);
+            if (opened.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
 
             if (_dryRun) return StepOutcome.Of("Dry run: delete is irreversible, so nothing was done.");
+
+            // The irreversible one, so the reload matters most here: this is the moment somebody
+            // remembers a row they meant to close before the files went.
+            var (gate, rows) = LedgerGate.Ask(_prompts,
+                "Delete the old files of every corrected row?", opened, RereadLedger);
+
+            if (gate == GateAnswer.Cancel) return StepOutcome.Of("Nothing was deleted.");
 
             var summary = await new DeleteOldFiles(_files, _read, _journal, _ledger, _prompts, _errors)
                 .RunAsync(rows, _env.IsProduction, ct);
@@ -1012,10 +1088,15 @@ public sealed class Session : IDisposable
 
         RedoAsync: async ct =>
         {
-            var rows = await OpenLedgerAsync(mayRebuild: false, ct);
-            if (rows.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
+            var opened = await OpenLedgerAsync(mayRebuild: false, ct);
+            if (opened.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
 
             if (_dryRun) return StepOutcome.Of("Dry run: redo writes to CRM, so nothing was done.");
+
+            var (gate, rows) = LedgerGate.Ask(_prompts,
+                "Put those records back the way they were?", opened, RereadLedger);
+
+            if (gate == GateAnswer.Cancel) return StepOutcome.Of("Nothing was reverted.");
 
             var summary = await new RedoRun(_files, _write, _backups, _journal, _ledger, _prompts)
                 .RunAsync(rows, ct);
@@ -1027,8 +1108,13 @@ public sealed class Session : IDisposable
 
         CheckAsync: async ct =>
         {
-            var rows = await OpenLedgerAsync(mayRebuild: false, ct);
-            if (rows.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
+            var opened = await OpenLedgerAsync(mayRebuild: false, ct);
+            if (opened.Count == 0) return StepOutcome.Of("Nothing in the ledger.");
+
+            var (gate, rows) = LedgerGate.Ask(_prompts,
+                "Check every row against both systems?", opened, RereadLedger);
+
+            if (gate == GateAnswer.Cancel) return StepOutcome.Of("Nothing was checked.");
 
             var summary = await new CheckItAll(_files, _read, _env.CrmUrl).RunAsync(rows, ct);
 
