@@ -28,13 +28,13 @@ public sealed record RepairSummary(
 /// </summary>
 public sealed class RepairRun
 {
-    private readonly LedgerStore _ledger;
+    private readonly ILedger _ledger;
     private readonly RepairOneRow _one;
     private readonly RunProgress _progress;
     private readonly IPrompts _prompts;
     private readonly ErrorLog _errors;
 
-    public RepairRun(LedgerStore ledger, RepairOneRow one, RunProgress progress,
+    public RepairRun(ILedger ledger, RepairOneRow one, RunProgress progress,
         IPrompts prompts, ErrorLog errors)
     {
         _ledger = ledger;

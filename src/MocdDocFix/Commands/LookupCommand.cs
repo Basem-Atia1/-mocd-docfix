@@ -60,7 +60,7 @@ public sealed class LookupCommand
     private readonly ICrmReadClient _read;
     private readonly BackupStore _backups;
     private readonly IPrompts _prompts;
-    private readonly LedgerStore? _ledger;
+    private readonly ILedger? _ledger;
 
     /// <param name="ledger">
     /// Optional. Asking about the file a document uses NOW is as reasonable as asking about the
@@ -69,7 +69,7 @@ public sealed class LookupCommand
     /// against both systems; it just cannot be attributed to a document.
     /// </param>
     public LookupCommand(IFileServiceClient files, ICrmReadClient read, BackupStore backups,
-        IPrompts prompts, LedgerStore? ledger = null)
+        IPrompts prompts, ILedger? ledger = null)
     {
         _files = files;
         _read = read;

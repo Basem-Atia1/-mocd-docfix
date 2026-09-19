@@ -69,6 +69,15 @@ public interface ICrmReadClient
         Task.FromResult<IReadOnlyList<Guid>>(Array.Empty<Guid>());
 
     /// <summary>
+    /// Every mocd_servicecatalogue, id and display name.
+    ///
+    /// Asked live when the operator chooses to work across everything, rather than read from a
+    /// stored list — the whole point of that choice is to find out what is actually there.
+    /// </summary>
+    Task<IReadOnlyList<(Guid Id, string Name)>> GetServiceCataloguesAsync(CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<(Guid, string)>>(Array.Empty<(Guid, string)>());
+
+    /// <summary>
     /// Metadata of every annotation (note) attached to the document. Null means the query
     /// failed — an empty list is returned as an empty JSON array, so a gap is distinguishable
     /// from "there are none".
@@ -135,6 +144,44 @@ public sealed class CrmReadClient : ICrmReadClient
         }
 
         return rows;
+    }
+
+    public async Task<IReadOnlyList<(Guid Id, string Name)>> GetServiceCataloguesAsync(
+        CancellationToken ct)
+    {
+        var found = new List<(Guid, string)>();
+        string? next = "mocd_servicecatalogues?$select=mocd_servicecatalogueid,mocd_name";
+
+        while (next is not null)
+        {
+            using var response = await _http.GetAsync(next, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    $"Could not list service catalogues against {_env.CrmUrl}: " +
+                    $"HTTP {(int)response.StatusCode}. {body}");
+
+            using var json = JsonDocument.Parse(body);
+
+            if (json.RootElement.TryGetProperty("value", out var value))
+                foreach (var element in value.EnumerateArray())
+                {
+                    if (GuidOrNull(element, "mocd_servicecatalogueid") is not { } id) continue;
+
+                    var name = element.TryGetProperty("mocd_name", out var n)
+                        ? n.GetString() ?? string.Empty
+                        : string.Empty;
+
+                    found.Add((id, name));
+                }
+
+            next = json.RootElement.TryGetProperty("@odata.nextLink", out var link)
+                ? link.GetString()
+                : null;
+        }
+
+        return found;
     }
 
     /// <summary>Document types belonging to the in-scope catalogues, filtered on their own column.</summary>

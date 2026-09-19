@@ -64,7 +64,7 @@ credentials, and they will be asked for their own on first run. Do not send
 D:\mocd-docfix-data\               (change DataRoot in config.json if you have no D: drive)
     reports\<env>\
         repair-<env>.xlsx          THE LEDGER — you edit this one
-        repair-<env>.csv           a plain-text copy the tool maintains; editing it does nothing
+        repair-<env>-other-services.xlsx   only if you choose every service catalogue
         changes-<env>.jsonl        every change made to CRM, appended, never rewritten
         errors-<env>.txt           what failed, in full
         previous\                  the last three copies of the ledger
@@ -85,25 +85,38 @@ reads the ledger; the journal is what repairs the ledger if a run is cut short.
   3  Redo                        put records back the way they were
   4  Check it all                confirm the old files really are gone
   5  Is this file still there?   one path or documentfile id
-  6  Change environment
-  7  Quit
+  6  Change services
+  7  Change environment
+  8  Quit
 ```
 
-Start with **Repair run**. It reads every document in the configured services and writes the
-ledger, then asks whether to work through the whole file or one document you name, and how
-closely you want to watch.
+Before the menu it asks **which services**: the eight this tool was built for, or every service
+catalogue in CRM. The answer governs every mode, is shown in the banner, and is remembered for
+that environment. Choosing everything asks CRM what there is and tells you the size of it before
+reading a single document — in pre-prod that is over fifty thousand. The other services are kept
+in a file of their own, so the one you usually work in stays quick to save.
+
+Start with **Repair run**. It asks whether to use the ledger as it is or update it from CRM
+first — updating reads every document in scope, so skip it when you are only carrying on with a
+sheet you already have. Then it asks whether to work through the whole file or one document you
+name, and how closely you want to watch.
 
 Open `repair-<env>.xlsx`, set the **verdict** column where you disagree with it, save, **close
-it**, and run again. The two columns you own:
+it**, and run again. The workbook has three tabs — `ledger` is the work still to do, `corrected`
+is files waiting to be deleted, `finished` is over. Rows move between them on their own. The two
+columns you own:
 
 | verdict | |
 |---|---|
 | `fix` | work on it |
 | `review` | the tool cannot tell; you decide |
-| `skip` | already correct, or no file |
 | `ignore` | never touch this row |
 | `redo` | put this row's record back the way it was |
-| `done` | written by the tool when a row is corrected |
+| `done` | written by the tool when a row is finished |
+
+A document nothing is wrong with never gets a row at all, which is why the sheet is far shorter
+than the number of documents. (`skip` used to mean that and is gone; ledgers written before the
+change still open, and their `skip` cells read as `done`.)
 
 | final state | |
 |---|---|
@@ -131,10 +144,11 @@ column is different: that closes the row, and nothing looks at it again.
 
 A row the tool finds already correct in CRM — corrected by hand, or by a run whose ledger was
 lost — is never uploaded a second time. Every row marked `fix` is checked against CRM once,
-before the run starts, and you are shown the list and asked. They settle as `skip` if the path
-never changed, and `done` otherwise, with the final state saying whether the old file is still
-on the server and still owed to the delete step. A row whose path is right but whose file is
-missing from the server is **not** settled: it keeps `fix` so the run can put the file back.
+before the run starts, and you are shown the list and asked. They settle as `done`, with the
+final state saying whether the old file is still on the server and still owed to the delete
+step — or left blank when the path never changed and there was nothing to delete. A row whose
+path is right but whose file is missing from the server is **not** settled: it keeps `fix` so
+the run can put the file back.
 
 A row the ledger calls finished that CRM still files wrongly is reported at the end of the
 scan, with the choice of putting it back to `fix`, to `review`, or leaving it alone. Nothing
@@ -145,7 +159,7 @@ One row is one document, but one *file* can belong to several. A correction writ
 correcting one row moves the file under every row that shares it. Those rows keep the old path
 they recorded, and the scan names them: "row 99 · doc 2d8b172a (a.png): the same document file
 record was corrected by row 408 · doc 07d2e3c9". That is why a row you never worked on can turn
-up already right, with the ledger saying `fix` and CRM saying `skip`. Such a row settles as
+up already right, with the ledger saying `fix` and the scan finding nothing wrong. Such a row settles as
 `done` with **no** final state: the old file belongs to the row that corrected it, and two rows
 must never queue the same deletion. The scan also says how many distinct files the sheet holds
 when it is fewer than the number of rows.

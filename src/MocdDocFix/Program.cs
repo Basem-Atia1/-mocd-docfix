@@ -1,5 +1,6 @@
 using MocdDocFix.Cli;
 using MocdDocFix.Config;
+using MocdDocFix.Storage;
 using MocdDocFix.Ui;
 
 // Arabic file names and the dashes in the reports both need this; without it the console
@@ -92,12 +93,17 @@ while (true)
 
     var appConfig = configStore.Load();
 
-    // Asked for once, then read from the encrypted store. Declining, or having no VPN, leaves
-    // the scan doing exactly what it did before: the backlog is a third opinion, not a
-    // dependency, and nothing downstream fails without it.
+    // What this environment was last worked on. Remembered per environment rather than globally,
+    // because dev may be surveying every catalogue while pre-prod — fifty thousand documents —
+    // stays on the eight.
+    var remembered = appConfig.Environments.TryGetValue(envName, out var stored) &&
+                     stored.Scope.Equals("all", StringComparison.OrdinalIgnoreCase)
+        ? LedgerScope.All
+        : LedgerScope.Ours;
 
+    var scope = remembered;
 
-    using var session = new Session(appConfig, env, envName, prompts, options.DryRun);
+    using var probe = new Session(appConfig, env, envName, prompts, options.DryRun, remembered);
 
     if (options.Command != "guided")
     {
@@ -107,15 +113,51 @@ while (true)
         Console.WriteLine($"File server: {env.FileServiceBaseUrl}");
         Console.WriteLine();
 
-        return await session.RunDirectAsync(options, CancellationToken.None);
+        // Scripted, so it must not stop for a question. It takes whatever was remembered.
+        return await probe.RunDirectAsync(options, CancellationToken.None);
     }
 
+    // Asked once, before the menu, because every mode needs the answer — the delete step and
+    // Check it all have to know which ledger file to open, not just the repair run.
+    scope = await probe.AskAboutScopeAsync(remembered, CancellationToken.None);
+
+    if (scope != remembered)
+    {
+        var toSave = configStore.Load();
+        if (toSave.Environments.TryGetValue(envName, out var was))
+        {
+            toSave.Environments[envName] = was with
+            {
+                Scope = scope == LedgerScope.All ? "all" : "ours"
+            };
+            configStore.Save(toSave);
+        }
+    }
+
+    // The scope decides which files the session holds, so a different answer wants a new one.
+    // Built beside the first rather than instead of it, so exactly one of them is disposed.
+    using var rebuilt = scope == remembered
+        ? null
+        : new Session(appConfig, env, envName, prompts, options.DryRun, scope);
+
+    var session = rebuilt ?? probe;
+
+    var scopeLabel = scope == LedgerScope.All
+        ? "every service catalogue in CRM"
+        : $"the {appConfig.ServiceCatalogues.Count} we work on";
+
     var wizard = new Wizard(prompts, envName, env.IsProduction, env.CrmUrl, env.FileServiceBaseUrl,
-        session.Actions(CancellationToken.None));
+        session.Actions(CancellationToken.None), scopeLabel, () => Task.CompletedTask);
 
     try
     {
-        if (await wizard.RunAsync(CancellationToken.None) == WizardExit.Finished) return 0;
+        var exit = await wizard.RunAsync(CancellationToken.None);
+
+        if (exit == WizardExit.Finished) return 0;
+
+        // Straight back round without re-asking the environment: the scope question comes first
+        // in the loop, which is the whole point of having chosen it.
+        if (exit == WizardExit.ChangeScope) fromArgs = envName;
     }
     catch (OperationCanceledException stopped)
     {

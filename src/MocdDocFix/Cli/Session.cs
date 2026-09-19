@@ -31,7 +31,7 @@ public sealed class Session : IDisposable
     private readonly BackupStore _backups;
     private readonly ShellFileOpener _opener = new();
 
-    private readonly LedgerStore _ledger;
+    private readonly LedgerSet _ledger;
     private readonly ChangeJournal _journal;
     private readonly ErrorLog _errors;
     private readonly LedgerBuilder _builder;
@@ -43,8 +43,19 @@ public sealed class Session : IDisposable
     /// </summary>
     private HashSet<Guid> _gone = new();
 
+    /// <summary>
+    /// Every service catalogue in CRM, once asked for. Only the all-services scope needs it, and
+    /// it does not change during a sitting.
+    /// </summary>
+    private IReadOnlyList<Guid>? _everyCatalogue;
+
+    /// <param name="scope">
+    /// Which services this whole sitting is about. It decides which ledger file or files are
+    /// opened, so it is fixed when the session is built rather than asked per mode — the delete
+    /// step and Check it all need the answer just as much as the repair run does.
+    /// </param>
     public Session(AppConfig appConfig, ResolvedEnvironment env, string envName,
-        IPrompts prompts, bool dryRun)
+        IPrompts prompts, bool dryRun, LedgerScope scope = LedgerScope.Ours)
     {
         _appConfig = appConfig;
         _env = env;
@@ -59,7 +70,8 @@ public sealed class Session : IDisposable
         // One folder per environment, so dev and production can never be read for each other.
         var reports = Path.Combine(appConfig.DataRoot, "reports", envName);
 
-        _ledger = new LedgerStore(Path.Combine(reports, $"repair-{envName}.xlsx"));
+        _ledger = new LedgerSet(Path.Combine(reports, $"repair-{envName}.xlsx"),
+            scope, appConfig.ServiceCatalogues);
         _journal = new ChangeJournal(Path.Combine(reports, $"changes-{envName}.jsonl"));
         _errors = new ErrorLog(Path.Combine(reports, $"errors-{envName}.txt"));
 
@@ -70,6 +82,8 @@ public sealed class Session : IDisposable
         _fileHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         _files = new FileServiceClient(_fileHttp, env);
 
+        // Built here only for the services we work on. Across every catalogue the list comes from
+        // CRM, which cannot be asked from a constructor — see BuilderAsync.
         _builder = new LedgerBuilder(_read, appConfig.ServiceCatalogues, env.CrmUrl);
 
         // A locked ledger mid-run is recoverable and must never end a run: by the time a row is
@@ -161,7 +175,7 @@ public sealed class Session : IDisposable
         _prompts.Blank();
         _prompts.Say("Reading CRM. This writes nothing.", Tone.Muted);
 
-        var scanned = await _builder.BuildAsync(ct);
+        var scanned = await (await BuilderAsync(ct)).BuildAsync(ct);
 
         // Once, on the first run after correct documents stopped entering the sheet. A scan that
         // no longer produces them cannot un-write the ones already on disk, so they are cleared
@@ -213,6 +227,8 @@ public sealed class Session : IDisposable
 
         _prompts.Section("The ledger is up to date with CRM");
         _prompts.Field("file", _ledger.Path, Tone.Muted);
+        if (_ledger.OtherPath is { } other) _prompts.Field("other services", other, Tone.Muted);
+
         _prompts.Say($"{merged.Rows.Count} row(s): {merged.Added} new since last time, " +
                      $"{merged.Refreshed} refreshed, {merged.Protected} left as they are because " +
                      "they have already been worked on or you closed them.");
@@ -220,11 +236,125 @@ public sealed class Session : IDisposable
         SayWhatWasLeftOut(merged);
         SayHowManyHaveNoFile(merged.Rows);
 
+        // A document type moved to another service in CRM moves its row between the two files.
+        // Silently that reads as a row vanishing from one and appearing in the other.
+        if (_ledger.LastMoved > 0)
+            _prompts.Say($"{_ledger.LastMoved} row(s) changed file — their document type was " +
+                         "moved to a different service in CRM.", Tone.Muted);
+
         SayHowManyFiles(merged.Rows);
         ReportGone(merged);
 
         return typeThemMyself ? ReadBackHandEdits(merged.Rows) : merged.Rows;
     }
+
+    /// <summary>
+    /// Which services this whole sitting is about.
+    ///
+    /// Asked once, after the environment and before the menu, because every mode needs the
+    /// answer — the delete step and Check it all have to know which file to open, not just the
+    /// repair run.
+    /// </summary>
+    /// <param name="remembered">What this environment was last worked on, as its default.</param>
+    public async Task<LedgerScope> AskAboutScopeAsync(LedgerScope remembered, CancellationToken ct)
+    {
+        var answer = new Asker(_prompts).Ask("Which services are you working on?", new[]
+        {
+            new Choice("The services we work on", $"{_appConfig.ServiceCatalogues.Count} services",
+                "Employee Appointment Request · General Assembly Meeting Request · GAM " +
+                "Nomination List · GAM Attendance · GAM Update · GAM Minutes of Meeting · " +
+                "By-Laws Amendment Requests · Membership Managment"),
+
+            new Choice("Every service catalogue in CRM", "asks CRM what there is first",
+                "Reads the full list of service catalogues from CRM, tells you what it found, " +
+                "and asks again before it reads a single document. The other services are kept " +
+                "in a file of their own, so the one you usually work in stays quick to save.")
+        }, defaultIndex: remembered == LedgerScope.All ? 1 : 0);
+
+        if (answer.Kind != AnswerKind.Chosen || answer.Index == 0) return LedgerScope.Ours;
+
+        return await ConfirmTheWholeLotAsync(ct);
+    }
+
+    /// <summary>
+    /// Shows what "everything" actually means before anything is read. In pre-prod it is over
+    /// fifty thousand documents and hours of CRM reads, which is not a thing to find out
+    /// afterwards.
+    /// </summary>
+    private async Task<LedgerScope> ConfirmTheWholeLotAsync(CancellationToken ct)
+    {
+        _prompts.Blank();
+        _prompts.Say("Asking CRM what service catalogues there are. This writes nothing.",
+            Tone.Muted);
+
+        IReadOnlyList<(Guid Id, string Name)> catalogues;
+        try
+        {
+            catalogues = await _read.GetServiceCataloguesAsync(ct);
+        }
+        catch (Exception problem)
+        {
+            _prompts.Blank();
+            _prompts.Warn($"CRM could not be asked: {problem.Message}", Tone.Warn);
+            _prompts.Say("Staying on the services we work on.", Tone.Muted);
+            return LedgerScope.Ours;
+        }
+
+        if (catalogues.Count == 0)
+        {
+            _prompts.Say("CRM returned no service catalogues, so there is nothing to widen to. " +
+                         "Staying on the services we work on.", Tone.Warn);
+            return LedgerScope.Ours;
+        }
+
+        _everyCatalogue = catalogues.Select(c => c.Id).ToList();
+
+        var ours = _appConfig.ServiceCatalogues.ToHashSet();
+        var others = catalogues.Count(c => !ours.Contains(c.Id));
+
+        _prompts.Section("Every service catalogue");
+        _prompts.Say($"{catalogues.Count} service catalogues, {others} of them outside the " +
+                     $"{ours.Count} this tool was built for.");
+        _prompts.Blank();
+        _prompts.Bullet("Every document under all of them is read and classified. In pre-prod " +
+                        "that is over fifty thousand documents.", Tone.Warn);
+        _prompts.Bullet("Documents whose document type carries no service catalogue cannot be " +
+                        "reached this way, and will not appear however wide the scope.",
+            Tone.Muted);
+        _prompts.Bullet("The other services go in a file of their own, so the one you usually " +
+                        "work in stays small and quick to save.", Tone.Muted);
+        _prompts.Blank();
+
+        if (_prompts.YesNo("  Work across all of them?", defaultYes: false)) return LedgerScope.All;
+
+        _prompts.Say("Staying on the services we work on.", Tone.Muted);
+        return LedgerScope.Ours;
+    }
+
+    /// <summary>
+    /// The scan, scoped to whichever services this sitting is about.
+    ///
+    /// Across every catalogue the list is read from CRM rather than from config — the whole
+    /// point of that choice is to work on what is actually there — which is why this cannot be
+    /// settled in the constructor.
+    /// </summary>
+    private async Task<LedgerBuilder> BuilderAsync(CancellationToken ct)
+    {
+        if (_ledger.Scope == LedgerScope.Ours) return _builder;
+
+        _everyCatalogue ??= (await _read.GetServiceCataloguesAsync(ct)).Select(c => c.Id).ToList();
+
+        return new LedgerBuilder(_read, _everyCatalogue, _env.CrmUrl);
+    }
+
+    /// <summary>
+    /// The services this sitting counts as in scope — the eight, or everything CRM has.
+    /// Used to tell a row that has left the scope from a document that has been deleted.
+    /// </summary>
+    private IReadOnlyList<Guid> InScope =>
+        _ledger.Scope == LedgerScope.All && _everyCatalogue is { } all
+            ? all
+            : _appConfig.ServiceCatalogues;
 
     /// <summary>
     /// How many documents the scan found nothing wrong with, and so did not write.
@@ -292,26 +422,31 @@ public sealed class Session : IDisposable
     {
         if (merged.Gone.Count == 0) return;
 
-        var configured = _appConfig.ServiceCatalogues
-            .Select(c => c.ToString())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var inScope = InScope.Select(c => c.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var outOfScope = merged.Gone
+            .Where(r => r.ServiceCatalogueId.Length > 0 && !inScope.Contains(r.ServiceCatalogueId))
+            .ToList();
+
+        var absent = merged.Gone.Except(outOfScope).ToList();
 
         _prompts.Blank();
 
-        foreach (var row in merged.Gone.Take(10))
-        {
-            var outOfScope = row.ServiceCatalogueId.Length > 0 &&
-                             !configured.Contains(row.ServiceCatalogueId);
+        // Counted, not listed. Narrowing from every catalogue back to the eight puts tens of
+        // thousands of rows in here at once, and a bullet each says nothing a single number does
+        // not — it only buries the rows below that are worth reading.
+        if (outOfScope.Count > 0)
+            _prompts.Say($"{outOfScope.Count} row(s) belong to services you did not scan this " +
+                         "run — nothing will act on them.", Tone.Muted);
 
-            _prompts.Bullet(outOfScope
-                ? $"{row.Ref()}: its service is not one this tool is set up for any more — out " +
-                  "of scope, not missing. Kept, and nothing will act on it."
-                : $"{row.Ref()}: CRM did not return this document. Kept in the ledger, but " +
-                  "nothing will act on it.", Tone.Warn);
-        }
+        // These are a different thing: still in scope, and CRM did not return them. That is a
+        // document that has been deleted, and it is worth naming.
+        foreach (var row in absent.Take(10))
+            _prompts.Bullet($"{row.Ref()}: CRM did not return this document. Kept in the " +
+                            "ledger, but nothing will act on it.", Tone.Warn);
 
-        if (merged.Gone.Count > 10)
-            _prompts.Bullet($"… and {merged.Gone.Count - 10} more", Tone.Muted);
+        if (absent.Count > 10)
+            _prompts.Bullet($"… and {absent.Count - 10} more", Tone.Muted);
     }
 
     /// <summary>

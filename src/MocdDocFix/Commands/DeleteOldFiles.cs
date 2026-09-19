@@ -42,7 +42,7 @@ public sealed class DeleteOldFiles
     private readonly IFileServiceClient _files;
     private readonly ICrmReadClient _read;
     private readonly ChangeJournal _journal;
-    private readonly LedgerStore _ledger;
+    private readonly ILedger _ledger;
     private readonly IPrompts _prompts;
 
     private readonly ErrorLog? _errors;
@@ -53,7 +53,7 @@ public sealed class DeleteOldFiles
     /// what somebody needs an hour later.
     /// </param>
     public DeleteOldFiles(IFileServiceClient files, ICrmReadClient read, ChangeJournal journal,
-        LedgerStore ledger, IPrompts prompts, ErrorLog? errors = null)
+        ILedger ledger, IPrompts prompts, ErrorLog? errors = null)
     {
         _files = files;
         _read = read;

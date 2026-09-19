@@ -21,7 +21,11 @@ public sealed record LedgerActions(
     Func<CancellationToken, Task<StepOutcome>> CheckAsync,
     Func<IReadOnlyList<string>, Task<StepOutcome>>? LookAsync = null);
 
-public enum WizardExit { Finished, ChangeEnvironment }
+/// <param name="ChangeScope">
+/// Switch between the services we work on and every catalogue. It returns rather than looping,
+/// because the scope decides which ledger files the session holds — so the session is rebuilt.
+/// </param>
+public enum WizardExit { Finished, ChangeEnvironment, ChangeScope }
 
 /// <summary>
 /// The front end: seven entries, one ledger behind all of them.
@@ -41,8 +45,17 @@ public sealed class Wizard
     private readonly string _fileServerUrl;
     private readonly LedgerActions _actions;
 
+    private readonly string _scopeLabel;
+    private readonly Func<Task>? _changeScope;
+
+    /// <param name="scopeLabel">Which services this sitting is about, for the banner.</param>
+    /// <param name="changeScope">
+    /// Switches between the services we work on and every catalogue in CRM. Left null in a build
+    /// with no way to do it, and the menu entry is then shown but disabled.
+    /// </param>
     public Wizard(IPrompts prompts, string envName, bool isProduction,
-        string crmUrl, string fileServerUrl, LedgerActions actions)
+        string crmUrl, string fileServerUrl, LedgerActions actions,
+        string scopeLabel = "the services we work on", Func<Task>? changeScope = null)
     {
         _prompts = prompts;
         _asker = new Asker(prompts);
@@ -51,6 +64,8 @@ public sealed class Wizard
         _crmUrl = crmUrl;
         _fileServerUrl = fileServerUrl;
         _actions = actions;
+        _scopeLabel = scopeLabel;
+        _changeScope = changeScope;
     }
 
     public async Task<WizardExit> RunAsync(CancellationToken ct)
@@ -95,19 +110,29 @@ public sealed class Wizard
                     Enabled: _actions.LookAsync is not null,
                     DisabledNote: "this build was not given a look-up action."),
 
+                new Choice("Change services", $"currently {_scopeLabel}",
+                    "Switches between the services this tool was built for and every service " +
+                    "catalogue in CRM. Each keeps its own ledger file, so nothing is lost " +
+                    "either way — the rows are still there when you come back.",
+                    Enabled: _changeScope is not null,
+                    DisabledNote: "this build was not given a way to change the scope."),
+
                 new Choice("Change environment", $"currently {_envName}"),
 
                 new Choice("Quit", "stop here")
             }, defaultIndex: 0, allowBack: false, confirm: true);
 
-            switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 6)
+            switch (mode.Kind == AnswerKind.Chosen ? mode.Index : 7)
             {
                 case 0: Report("Repair run", await _actions.RepairAsync(ct)); break;
                 case 1: Report("Delete old files", await _actions.DeleteAsync(ct)); break;
                 case 2: Report("Redo", await _actions.RedoAsync(ct)); break;
                 case 3: Report("Check it all", await _actions.CheckAsync(ct)); break;
                 case 4: await LookUpAsync(); break;
-                case 5: return WizardExit.ChangeEnvironment;
+                case 5:
+                    if (_changeScope is not null) await _changeScope();
+                    return WizardExit.ChangeScope;
+                case 6: return WizardExit.ChangeEnvironment;
                 default:
                     _prompts.Blank();
                     _prompts.Say("Nothing further was done. Bye.");
@@ -124,6 +149,7 @@ public sealed class Wizard
         _prompts.Blank();
         _prompts.Field("Environment", _envName + (_isProduction ? "   *** PRODUCTION ***" : ""),
             _isProduction ? Tone.Danger : Tone.Normal);
+        _prompts.Field("Services", _scopeLabel);
         _prompts.Field("CRM", _crmUrl, Tone.Muted);
         _prompts.Field("File server", _fileServerUrl, Tone.Muted);
         _prompts.Blank();

@@ -28,11 +28,11 @@ public sealed class RedoRun
     private readonly ICrmWriteClient _write;
     private readonly BackupStore _backups;
     private readonly ChangeJournal _journal;
-    private readonly LedgerStore _ledger;
+    private readonly ILedger _ledger;
     private readonly IPrompts _prompts;
 
     public RedoRun(IFileServiceClient files, ICrmWriteClient write, BackupStore backups,
-        ChangeJournal journal, LedgerStore ledger, IPrompts prompts)
+        ChangeJournal journal, ILedger ledger, IPrompts prompts)
     {
         _files = files;
         _write = write;

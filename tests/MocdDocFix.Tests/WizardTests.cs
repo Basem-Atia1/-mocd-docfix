@@ -34,7 +34,7 @@ public class WizardTests
     [InlineData("4", "check")]
     public async Task Each_entry_runs_its_own_mode(string typed, string expected)
     {
-        await Subject(Choosing(typed, "7")).RunAsync(CancellationToken.None);
+        await Subject(Choosing(typed, "8")).RunAsync(CancellationToken.None);
 
         Assert.Contains(expected, _ran);
     }
@@ -43,7 +43,7 @@ public class WizardTests
     [Fact]
     public async Task The_look_up_entry_asks_what_to_look_up()
     {
-        await Subject(Choosing("5", "somepath.jpg", "7")).RunAsync(CancellationToken.None);
+        await Subject(Choosing("5", "somepath.jpg", "8")).RunAsync(CancellationToken.None);
 
         Assert.Contains("look", _ran);
     }
@@ -51,7 +51,7 @@ public class WizardTests
     [Fact]
     public async Task Changing_environment_leaves_the_wizard_saying_so()
     {
-        var exit = await Subject(Choosing("6")).RunAsync(CancellationToken.None);
+        var exit = await Subject(Choosing("7")).RunAsync(CancellationToken.None);
 
         Assert.Equal(WizardExit.ChangeEnvironment, exit);
         Assert.Empty(_ran);
@@ -60,20 +60,20 @@ public class WizardTests
     [Fact]
     public async Task Quitting_runs_nothing()
     {
-        var exit = await Subject(Choosing("7")).RunAsync(CancellationToken.None);
+        var exit = await Subject(Choosing("8")).RunAsync(CancellationToken.None);
 
         Assert.Equal(WizardExit.Finished, exit);
         Assert.Empty(_ran);
     }
 
     /// <summary>
-    /// The menu is seven entries and no more. A stray eighth would shift every number the
+    /// The menu is eight entries and no more. A stray ninth would shift every number the
     /// operator has learned.
     /// </summary>
     [Fact]
-    public async Task The_menu_offers_exactly_seven_choices()
+    public async Task The_menu_offers_exactly_eight_choices()
     {
-        var prompts = Choosing("7");
+        var prompts = Choosing("8");
 
         await Subject(prompts).RunAsync(CancellationToken.None);
 
@@ -84,11 +84,44 @@ public class WizardTests
         Assert.Contains("3  Redo", said);
         Assert.Contains("4  Check it all", said);
         Assert.Contains("5  Is this file still there?", said);
-        Assert.Contains("6  Change environment", said);
-        Assert.Contains("7  Quit", said);
+        Assert.Contains("6  Change services", said);
+        Assert.Contains("7  Change environment", said);
+        Assert.Contains("8  Quit", said);
 
-        // An eighth would shift every number the operator has learned.
-        Assert.DoesNotContain("8  ", said);
+        // A ninth would shift every number the operator has learned.
+        Assert.DoesNotContain("9  ", said);
+    }
+
+    /// <summary>
+    /// The scope governs every mode, so it belongs in the banner beside the environment rather
+    /// than being something the operator has to remember choosing.
+    /// </summary>
+    [Fact]
+    public async Task The_banner_names_the_services_in_scope()
+    {
+        var prompts = Choosing("8");
+
+        await new Wizard(prompts, "dev", isProduction: false, "https://crm", "https://files",
+                Actions(), "every service catalogue in CRM")
+            .RunAsync(CancellationToken.None);
+
+        Assert.Contains("every service catalogue in CRM", string.Join("\n", prompts.Messages));
+    }
+
+    [Fact]
+    public async Task Changing_the_scope_leaves_the_wizard_saying_so()
+    {
+        var prompts = Choosing("6");
+        var switched = false;
+
+        var exit = await new Wizard(prompts, "dev", isProduction: false, "https://crm",
+                "https://files", Actions(), "the 8 we work on",
+                () => { switched = true; return Task.CompletedTask; })
+            .RunAsync(CancellationToken.None);
+
+        Assert.Equal(WizardExit.ChangeScope, exit);
+        Assert.True(switched);
+        Assert.Empty(_ran);
     }
 
     [Fact]

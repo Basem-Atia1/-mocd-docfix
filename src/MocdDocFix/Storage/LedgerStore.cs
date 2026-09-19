@@ -13,7 +13,7 @@ namespace MocdDocFix.Storage;
 /// deliberate: the operator opens it between runs, so it must be complete at every instant, and
 /// a crash then loses at most the row in flight.
 /// </summary>
-public sealed class LedgerStore
+public sealed class LedgerStore : ILedger
 {
     private readonly LedgerWorkbook _workbook;
 

@@ -335,4 +335,55 @@ public class CrmReadClientTests
 
         Assert.Null(await client.GetDocumentAnnotationsAsync(Guid.NewGuid(), CancellationToken.None));
     }
+
+    /// <summary>
+    /// The list behind "every service catalogue". Read live rather than from a stored list —
+    /// the point of that choice is to find out what is actually in CRM.
+    /// </summary>
+    [Fact]
+    public async Task Every_service_catalogue_comes_back_with_its_name()
+    {
+        var (client, handler) = Build();
+
+        handler.Enqueue(HttpStatusCode.OK, """
+            {"value":[
+              {"mocd_servicecatalogueid":"3ff27d73-653e-f111-b119-005056010908","mocd_name":"GAM Request"},
+              {"mocd_servicecatalogueid":"9ee8941a-8870-f111-b119-005056010908","mocd_name":"Violation Report"}
+            ]}
+            """);
+
+        var catalogues = await client.GetServiceCataloguesAsync(CancellationToken.None);
+
+        Assert.Equal(2, catalogues.Count);
+        Assert.Equal("GAM Request", catalogues[0].Name);
+        Assert.Contains("mocd_servicecatalogues", handler.Requests[0].RequestUri!.ToString());
+    }
+
+    /// <summary>Fifty-odd catalogues fit one page, but nothing here may assume that.</summary>
+    [Fact]
+    public async Task Service_catalogues_are_followed_across_pages()
+    {
+        var (client, handler) = Build();
+
+        handler.Enqueue(HttpStatusCode.OK, """
+            {"value":[{"mocd_servicecatalogueid":"3ff27d73-653e-f111-b119-005056010908","mocd_name":"One"}],
+             "@odata.nextLink":"https://crm/MoCD/api/data/v9.1/mocd_servicecatalogues?$skiptoken=x"}
+            """);
+
+        handler.Enqueue(HttpStatusCode.OK, """
+            {"value":[{"mocd_servicecatalogueid":"9ee8941a-8870-f111-b119-005056010908","mocd_name":"Two"}]}
+            """);
+
+        Assert.Equal(2, (await client.GetServiceCataloguesAsync(CancellationToken.None)).Count);
+    }
+
+    [Fact]
+    public async Task A_refused_service_catalogue_query_says_so_rather_than_returning_none()
+    {
+        var (client, handler) = Build();
+        handler.Enqueue(HttpStatusCode.Forbidden, """{"error":{"message":"no"}}""");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.GetServiceCataloguesAsync(CancellationToken.None));
+    }
 }
