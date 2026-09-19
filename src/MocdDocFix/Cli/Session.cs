@@ -204,6 +204,7 @@ public sealed class Session : IDisposable
 
         ReportMoved(merged);
         AskAboutStillWrong(merged);
+        AskAboutStranded(merged.Rows);
         AskAboutVerdicts(merged);
         var typeThemMyself = AskAboutExcluded(merged);
         _ledger.Write(merged.Rows);
@@ -667,6 +668,89 @@ public sealed class Session : IDisposable
         _prompts.Say($"{merged.StillWrong.Count} row(s) set to {verdict}.", Tone.Muted);
         _prompts.Blank();
     }
+
+    /// <summary>
+    /// Puts a hand-edited verdict on a finished row to the operator, once for the lot.
+    ///
+    /// The thing worth saying out loud is the thing nobody expects: the delete step reads the
+    /// final state column, so the verdict they have just typed will not stop it. Everything else
+    /// here follows from that one sentence.
+    /// </summary>
+    /// <returns>True when something was changed, so the caller knows to write the ledger.</returns>
+    private bool AskAboutStranded(IReadOnlyList<LedgerRow> rows)
+    {
+        var stranded = VerdictGuard.Find(rows);
+        if (stranded.Count == 0) return false;
+
+        var pending = stranded.Count(s => s.DeleteStillPending);
+        var reRuns = stranded.Count(s => s.WouldReRun);
+
+        _prompts.Section($"{stranded.Count} finished row(s) have a verdict typed over them",
+            Tone.Warn);
+        _prompts.Say("These rows record work that was carried out, and their verdict now says " +
+                     "something else.");
+        _prompts.Blank();
+
+        foreach (var one in stranded.Take(10))
+            _prompts.Bullet($"{one.Row.Ref()}: {one.Row.FinalState} — verdict says " +
+                            $"'{one.Row.Verdict}'", Tone.Muted);
+
+        if (stranded.Count > 10)
+            _prompts.Bullet($"… and {stranded.Count - 10} more", Tone.Muted);
+
+        if (pending > 0)
+        {
+            _prompts.Blank();
+            _prompts.Warn("Delete old files reads the final state column, not the verdict. " +
+                          $"{pending} of these still say \"{RowStates.Corrected}\", so their old " +
+                          "files WILL be deleted whatever the verdict says.", Tone.Danger);
+        }
+
+        if (reRuns > 0)
+        {
+            _prompts.Blank();
+            _prompts.Warn($"{reRuns} of them say fix on a document that has already been " +
+                          "corrected. Working those again uploads a second copy and leaves the " +
+                          "first with nothing pointing at it.", Tone.Danger);
+        }
+
+        _prompts.Blank();
+
+        var answer = new Asker(_prompts).Ask("What do you want done with them?", new[]
+        {
+            new Choice("Put them back to done", "the final state is the record",
+                "The work was carried out. The final state column says so, and it is written by " +
+                "the run rather than by hand. This makes the verdict agree with it."),
+
+            new Choice("Keep ignore, and stop the delete", $"{pending} row(s) have a delete to stop",
+                "Writes ignore into the final state as well, so Delete old files walks past " +
+                "them and the old files stay on the server. This is the only answer that " +
+                "actually stops the delete.",
+                Enabled: pending > 0,
+                DisabledNote: "none of these still have an old file waiting to be deleted."),
+
+            new Choice("Leave them exactly as typed", "and let the old files go",
+                "Nothing is changed. The old file of any row still awaiting deletion will be " +
+                "deleted the next time you run Delete old files.")
+        }, defaultIndex: 0);
+
+        if (answer.Kind != AnswerKind.Chosen) return false;
+
+        var choice = answer.Index switch
+        {
+            1 => GuardChoice.StopTheDelete,
+            2 => GuardChoice.LeaveAsTyped,
+            _ => GuardChoice.BackToDone
+        };
+
+        if (!Confirm(stranded.Count)) return false;
+
+        VerdictGuard.Apply(stranded, choice);
+        _prompts.Blank();
+
+        return true;
+    }
+
     /// <summary>
     /// Where the ledger's verdicts and a fresh scan disagree, asks which to believe.
     ///
