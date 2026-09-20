@@ -182,6 +182,7 @@ public sealed class RepairOneRow
             // putting words in their mouth.
             if (looksRight == ConfirmChoice.Quit)
             {
+                Abandon(row, newFile.FilePath);
                 row.Notes = Note(row.Notes,
                     $"stopped {DateTimeOffset.Now:yyyy-MM-dd HH:mm} before this document was " +
                     $"corrected — nothing in CRM was changed; the uploaded copy is at " +
@@ -191,6 +192,7 @@ public sealed class RepairOneRow
 
             if (looksRight != ConfirmChoice.Yes)
             {
+                Abandon(row, newFile.FilePath);
                 row.Notes = Note(row.Notes,
                     $"not corrected {DateTimeOffset.Now:yyyy-MM-dd HH:mm} — you said the copies " +
                     $"did not match; the uploaded copy is at {newFile.FilePath}");
@@ -332,6 +334,20 @@ public sealed class RepairOneRow
     }
 
     private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm");
+
+    /// <summary>
+    /// Records a copy that was uploaded and then left behind, in the column a machine can read.
+    ///
+    /// The upload happens before the two files are shown, so stopping or rejecting at that
+    /// question leaves a complete file on the server with nothing in CRM pointing at it. The
+    /// note said so in prose, which is no use to the next run: the row still says fix, so it
+    /// uploads a second copy and abandons that one too. Written here as well, the count is
+    /// visible and the run can say what is accumulating.
+    /// </summary>
+    private static void Abandon(LedgerRow row, string path) =>
+        row.SupersededPaths = row.SupersededPaths.Length == 0
+            ? path
+            : $"{row.SupersededPaths};{path}";
 
     /// <summary>Appends to the notes cell without discarding what is already in it.</summary>
     private static string Note(string existing, string addition) =>

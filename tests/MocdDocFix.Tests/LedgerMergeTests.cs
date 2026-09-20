@@ -505,4 +505,32 @@ public class LedgerMergeTests
         Assert.Single(merged.Rows);
         Assert.Equal(0, merged.NotAdded);
     }
+
+    /// <summary>
+    /// The scan never writes "ignore", so an excluded row disagrees with it by definition. It
+    /// was being put to the operator twice — once as a disagreement, once as an exclusion — and
+    /// the second answer quietly overwrote the first. One row, one question.
+    /// </summary>
+    [Fact]
+    public void An_excluded_row_is_asked_about_once_not_twice()
+    {
+        var merged = LedgerMerge.Into(
+            new[] { Row(One, verdict: RowVerdicts.Ignore) },
+            new[] { Row(One, verdict: RowVerdicts.Fix) });
+
+        Assert.Single(merged.Excluded);
+        Assert.Empty(merged.Disagreements);
+    }
+
+    /// <summary>A row nobody excluded still disagrees in the ordinary way.</summary>
+    [Fact]
+    public void A_row_that_is_not_excluded_still_reports_its_disagreement()
+    {
+        var merged = LedgerMerge.Into(
+            new[] { Row(One, verdict: RowVerdicts.Review) },
+            new[] { Row(One, verdict: RowVerdicts.Fix) });
+
+        Assert.Empty(merged.Excluded);
+        Assert.Single(merged.Disagreements);
+    }
 }

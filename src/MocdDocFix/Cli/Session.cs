@@ -1182,6 +1182,42 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
+    /// Rows carrying a copy that was uploaded and then left behind.
+    ///
+    /// The upload happens before the two files are shown, so answering "quit" or "they do not
+    /// match" leaves a complete file on the server with nothing pointing at it — and the row
+    /// still says fix, so the next run uploads another one. Nobody would notice that from a
+    /// note buried in a cell, and the files pile up one per attempt.
+    /// </summary>
+    private void ReportAbandonedUploads(IReadOnlyList<LedgerRow> rows)
+    {
+        var abandoned = rows.Where(r => r.SupersededPaths.Length > 0).ToList();
+        if (abandoned.Count == 0) return;
+
+        var copies = abandoned.Sum(r => r.SupersededPaths.Split(';',
+            StringSplitOptions.RemoveEmptyEntries).Length);
+
+        _prompts.Section($"{abandoned.Count} row(s) already have a copy on the server that " +
+                         "nothing points at", Tone.Warn);
+        _prompts.Say($"{copies} file(s) were uploaded by an earlier run and then left — you " +
+                     "stopped, or said the two copies did not match. They are recorded in the " +
+                     "\"superseded paths\" column.");
+        _prompts.Blank();
+
+        foreach (var row in abandoned.Take(10))
+            _prompts.Bullet($"{row.Ref()}: {row.SupersededPaths}", Tone.Muted);
+
+        if (abandoned.Count > 10)
+            _prompts.Bullet($"… and {abandoned.Count - 10} more", Tone.Muted);
+
+        _prompts.Blank();
+        _prompts.Bullet("Working these rows again uploads a further copy. The earlier ones are " +
+                        "not deleted by anything — this tool only ever removes a file it has a " +
+                        "record of superseding.", Tone.Warn);
+        _prompts.Blank();
+    }
+
+    /// <summary>
     /// Said once, on entering the repair run — not per document, which would train the operator
     /// to skip past it.
     /// </summary>
@@ -1226,6 +1262,8 @@ public sealed class Session : IDisposable
                     $"ledger → {_ledger.Path}");
 
             await SettleAlreadyCorrectAsync(rows, all, ct);
+
+            ReportAbandonedUploads(rows);
 
             WarnAboutInPlace();
 

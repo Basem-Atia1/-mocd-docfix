@@ -405,4 +405,49 @@ public class RepairOneRowTests : IDisposable
         Assert.True(outcome.Corrected);
         Assert.Single(_files.Uploads);
     }
+
+    /// <summary>
+    /// The upload happens before the two files are shown, so quitting at that question leaves a
+    /// complete file on the server with nothing pointing at it. The row still says fix, so the
+    /// next run uploads another one — and without this the only record was prose in a note,
+    /// which nothing reads.
+    /// </summary>
+    [Fact]
+    public async Task Quitting_records_the_copy_it_left_behind_where_a_machine_can_read_it()
+    {
+        _prompts.Answer(ConfirmChoice.Quit);
+        var row = Row();
+
+        await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.NotEmpty(row.SupersededPaths);
+
+        // The same path the note gives in prose — one of them is for reading, one for counting.
+        Assert.Contains(row.SupersededPaths, row.Notes);
+    }
+
+    [Fact]
+    public async Task Saying_the_copies_differ_records_the_one_it_left_behind_too()
+    {
+        _prompts.Answer(ConfirmChoice.No);
+        var row = Row();
+
+        await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.NotEmpty(row.SupersededPaths);
+    }
+
+    /// <summary>Abandoned copies accumulate one per attempt rather than replacing each other.</summary>
+    [Fact]
+    public async Task A_second_abandoned_copy_is_added_to_the_first()
+    {
+        var row = Row();
+        row.SupersededPaths = @"DigitalServices\old\20260101\earlier.pdf";
+
+        _prompts.Answer(ConfirmChoice.Quit);
+        await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.Contains(';', row.SupersededPaths);
+        Assert.StartsWith(@"DigitalServices\old\20260101\earlier.pdf", row.SupersededPaths);
+    }
 }

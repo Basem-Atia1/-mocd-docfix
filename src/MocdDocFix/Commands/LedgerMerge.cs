@@ -131,8 +131,10 @@ public static class LedgerMerge
             // A row excluded by hand and never worked on. Kept out of the refresh like any other
             // protected row, but recorded — a whole column set to "ignore" by one careless fill
             // in Excel is otherwise impossible to undo from inside the tool.
-            if (row.Verdict2() == RowVerdict.Ignore && row.State() == RowState.NotStarted)
-                excluded.Add(Disagreement(row, scanned));
+            var excludedByHand = row.Verdict2() == RowVerdict.Ignore &&
+                                 row.State() == RowState.NotStarted;
+
+            if (excludedByHand) excluded.Add(Disagreement(row, scanned));
 
             if (HasBeenActedOn(row))
             {
@@ -171,7 +173,12 @@ public static class LedgerMerge
                       "same document file record; the old path here is kept as it was");
             }
 
-            if (!string.Equals(row.Verdict.Trim(), scanned.Verdict,
+            // Not for a row already in the excluded list. The scan never writes "ignore", so
+            // every excluded row disagrees with it by definition — and it was being put to the
+            // operator twice, once as a disagreement and again as an exclusion, with the second
+            // answer quietly overwriting the first. One row, one question.
+            if (!excludedByHand &&
+                !string.Equals(row.Verdict.Trim(), scanned.Verdict,
                     StringComparison.OrdinalIgnoreCase))
                 disagreements.Add(Disagreement(row, scanned));
 
