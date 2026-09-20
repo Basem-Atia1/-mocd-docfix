@@ -268,4 +268,40 @@ public class RedoRunTests : IDisposable
 
         Assert.Equal(RowVerdict.Fix, _ledger.Read()[0].Verdict2());
     }
+
+    /// <summary>
+    /// Redo used to walk the sheet silently and print only what it happened to act on, so the
+    /// operator could not tell whether it had found one row or four hundred.
+    /// </summary>
+    [Fact]
+    public async Task How_many_rows_say_redo_is_said_before_any_of_them_is_touched()
+    {
+        Snapshot();
+
+        var wanted = Row();
+        wanted.Verdict = RowVerdicts.Redo;
+
+        var ignored = Row();
+        ignored.DocId = Guid.NewGuid();
+        ignored.Verdict = RowVerdicts.Fix;
+
+        await Subject().RunAsync(new[] { wanted, ignored }, CancellationToken.None);
+
+        var said = string.Join("\n", _prompts.Messages);
+
+        Assert.Contains("1 row(s) say redo", said);
+        Assert.Contains("[ 1/1 ]", said);
+    }
+
+    [Fact]
+    public async Task A_ledger_with_nothing_to_redo_says_so_rather_than_saying_nothing()
+    {
+        var nothingToDo = Row();
+        nothingToDo.Verdict = RowVerdicts.Fix;
+
+        var summary = await Subject().RunAsync(new[] { nothingToDo }, CancellationToken.None);
+
+        Assert.Equal(0, summary.Reverted);
+        Assert.Contains(summary.Reasons, r => r.Contains("nothing to put back"));
+    }
 }

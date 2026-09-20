@@ -44,27 +44,39 @@ public sealed class RedoRun
 
     public async Task<RedoSummary> RunAsync(IReadOnlyList<LedgerRow> rows, CancellationToken ct)
     {
-        int reverted = 0, refused = 0;
+        int reverted = 0, refused = 0, at = 0;
         var reasons = new List<string>();
 
-        foreach (var row in rows)
+        // Chosen before the loop rather than filtered inside it, so the count can be said out
+        // loud. Walking the sheet silently and printing only what it happened to act on left the
+        // operator with no idea whether it had found one row or four hundred.
+        var eligible = rows.Where(r => r.Verdict2() == RowVerdict.Redo).ToList();
+
+        if (eligible.Count == 0)
+            return new RedoSummary(0, 0,
+                new[] { "No row says redo, so there was nothing to put back." });
+
+        _prompts.Say($"{eligible.Count} row(s) say redo.", Tone.Muted);
+
+        foreach (var row in eligible)
         {
             ct.ThrowIfCancellationRequested();
 
-            if (row.Verdict2() != RowVerdict.Redo) continue;
+            // Over the rows being reverted, not over the ledger.
+            var where = $"{++at}/{eligible.Count}";
 
             var problem = await RevertAsync(row, reasons, ct);
 
             if (problem is null)
             {
                 reverted++;
-                _prompts.Info($"  [ row {row.Row} ]  {row.DocFileName}  RESTORED", Tone.Good);
+                _prompts.Info($"  [ {where} ]  {row.Ref()}  RESTORED", Tone.Good);
             }
             else
             {
                 refused++;
-                reasons.Add($"row {row.Row}: {problem}");
-                _prompts.Info($"  [ row {row.Row} ]  {row.DocFileName}  REFUSED — {problem}", Tone.Warn);
+                reasons.Add($"{row.Ref()}: {problem}");
+                _prompts.Info($"  [ {where} ]  {row.Ref()}  REFUSED — {problem}", Tone.Warn);
             }
 
             _ledger.Write(rows);

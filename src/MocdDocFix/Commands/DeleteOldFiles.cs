@@ -80,12 +80,16 @@ public sealed class DeleteOldFiles
         if (!Agreed(eligible.Count, isProduction))
             return new DeleteSummary(0, 0, true, reasons);
 
-        int deleted = 0, refused = 0, alreadyGone = 0;
+        int deleted = 0, refused = 0, alreadyGone = 0, at = 0;
         var done = new List<LedgerRow>();
 
         foreach (var row in eligible)
         {
             ct.ThrowIfCancellationRequested();
+
+            // Over the files this step will delete, not over the ledger. The sheet can hold
+            // tens of thousands of rows that have nothing to do with deleting anything.
+            var where = $"{++at}/{eligible.Count}";
 
             var outcome = await DeleteOneAsync(row, ct);
 
@@ -97,11 +101,12 @@ public sealed class DeleteOldFiles
                 if (outcome.AlreadyGone)
                 {
                     alreadyGone++;
-                    _prompts.Info($"  [ {row.Ref()} ]  the old file was already gone", Tone.Muted);
+                    _prompts.Info($"  [ {where} ]  {row.Ref()}  the old file was already gone",
+                        Tone.Muted);
                 }
                 else
                 {
-                    _prompts.Info($"  [ {row.Ref()} ]  old file deleted", Tone.Good);
+                    _prompts.Info($"  [ {where} ]  {row.Ref()}  old file deleted", Tone.Good);
                 }
             }
             else
@@ -110,7 +115,8 @@ public sealed class DeleteOldFiles
                 reasons.Add($"{row.Ref()}: {Short(outcome.Problem)}");
 
                 _errors?.Append(row.Row, eligible.Count, row, "delete the old file", outcome.Problem);
-                _prompts.Info($"  [ {row.Ref()} ]  REFUSED — {Short(outcome.Problem)}", Tone.Warn);
+                _prompts.Info($"  [ {where} ]  {row.Ref()}  REFUSED — {Short(outcome.Problem)}",
+                    Tone.Warn);
             }
 
             _ledger.Write(rows);

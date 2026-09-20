@@ -1355,6 +1355,21 @@ public sealed class Session : IDisposable
 
             if (gate == GateAnswer.Cancel) return StepOutcome.Of("Nothing was checked.");
 
+            // Said before it starts, because this asks the file server and CRM about every row
+            // it takes and prints nothing until it has finished. On a ledger of thousands that
+            // is a long silence, and knowing whether it is forty rows or four thousand is the
+            // difference between waiting and giving up.
+            var willCheck = rows.Count(r =>
+                r.State() is RowState.Deleted or RowState.Corrected && r.OldFilePath.Length > 0);
+
+            if (willCheck == 0)
+                return StepOutcome.Of("No row has an old file to check — nothing has been " +
+                                      "corrected or deleted yet.");
+
+            _prompts.Blank();
+            _prompts.Say($"Checking {willCheck} row(s) against the file server and CRM. This " +
+                         "writes nothing, and says nothing until it is done.", Tone.Muted);
+
             var summary = await new CheckItAll(_files, _read, _env.CrmUrl).RunAsync(rows, ct);
 
             return new StepOutcome(
