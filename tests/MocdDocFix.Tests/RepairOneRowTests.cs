@@ -545,4 +545,62 @@ public class RepairOneRowTests : IDisposable
 
         Assert.Single(_files.Uploads);
     }
+
+    /// <summary>
+    /// A CRM 503 arrives after the file is already on the server, so the upload is an orphan and
+    /// the row is certainly going to be tried again — the error is transient. Without recording
+    /// the copy, that retry uploads a second one and the failure after it a third.
+    /// </summary>
+    [Fact]
+    public async Task A_record_update_that_fails_records_the_copy_already_uploaded()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+        _write.OnUpdated = (_, _) => throw new InvalidOperationException("HTTP 503");
+
+        var row = Row();
+
+        var outcome = await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.True(outcome.Failed);
+        Assert.Equal(NewPath, row.SupersededPaths);
+    }
+
+    /// <summary>
+    /// CRM took the PATCH and is not holding it, so nothing points at the new file either.
+    /// </summary>
+    [Fact]
+    public async Task A_record_that_reads_back_wrong_records_the_copy_already_uploaded()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+        _write.OnUpdated = (id, _) =>
+            _read.RawRecords[$"mocd_documentfiles:{id}"] =
+                Escaped($$"""{"mocd_documentfileid":"{{id}}","mocd_filepath":"@@"}""",
+                    @"DigitalServices\somewhere\else\other.jpg");
+
+        var row = Row();
+
+        var outcome = await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.True(outcome.Failed);
+        Assert.Equal(NewPath, row.SupersededPaths);
+    }
+
+    /// <summary>
+    /// Reusing and then failing must not add the path a second time — it is already in the list,
+    /// and counting one file as two orphans is its own kind of wrong.
+    /// </summary>
+    [Fact]
+    public async Task Failing_on_a_reused_copy_does_not_record_it_twice()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+        _write.OnUpdated = (_, _) => throw new InvalidOperationException("HTTP 503");
+
+        var row = Row();
+        row.SupersededPaths = NewPath;
+
+        await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.Equal(NewPath, row.SupersededPaths);
+        Assert.DoesNotContain(';', row.SupersededPaths);
+    }
 }

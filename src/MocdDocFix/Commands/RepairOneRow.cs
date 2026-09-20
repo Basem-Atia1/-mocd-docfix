@@ -177,8 +177,12 @@ public sealed class RepairOneRow
 
         var report = new VerificationReport(checks);
         if (!report.AllPassed)
+        {
+            if (reused is null) Abandon(row, newFile.FilePath);
+
             return RowOutcome.Broke("verify",
                 string.Join(" | ", report.Failures.Select(f => $"{f.Name}: {f.Detail}")));
+        }
 
         _progress.Step("checked", string.Join(", ", checks.Select(c => c.Name)));
 
@@ -248,6 +252,11 @@ public sealed class RepairOneRow
         }
         catch (Exception problem)
         {
+            // The file is on the server and CRM still points at the old one. Recording it is
+            // what lets the next attempt use this copy instead of uploading a third — a CRM 503
+            // is transient and the row will certainly be tried again.
+            if (reused is null) Abandon(row, newFile.FilePath);
+
             return RowOutcome.Broke("record update", problem.Message);
         }
 
@@ -259,8 +268,13 @@ public sealed class RepairOneRow
         var stored = ReadString(after, "mocd_filepath");
 
         if (!FilePaths.Same(stored, newFile.FilePath))
+        {
+            // CRM took the PATCH and is not holding it, so nothing points at the new file.
+            if (reused is null) Abandon(row, newFile.FilePath);
+
             return RowOutcome.Broke("read the record back",
                 $"mocd_filepath on {row.DocFileId} is '{stored ?? "null"}', not {newFile.FilePath}");
+        }
 
         _progress.Step("reading it back");
 

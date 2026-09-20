@@ -119,7 +119,7 @@ public sealed class RepairRun
                 row.FinalState = RowStates.Text(RowState.Failed);
                 row.Error = Short(outcome.Failure!);
 
-                _errors.Append(i + 1, working.Count, row, outcome.FailedStep!, outcome.Failure!);
+                _errors.Append(started, toDo, row, outcome.FailedStep!, outcome.Failure!);
                 _progress.Failed(row, row.Error);
             }
             else if (outcome.WasAlreadyRight)
