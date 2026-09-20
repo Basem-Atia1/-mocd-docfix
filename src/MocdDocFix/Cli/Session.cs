@@ -79,7 +79,12 @@ public sealed class Session : IDisposable
         _read = new CrmReadClient(_crmHttp, env);
         _write = new CrmWriteClient(_crmHttp);
 
-        _fileHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        // Downloads and deletes are retried for the same reason CRM's are. The upload is a POST
+        // and is not: sending it twice would put two copies of the file on the server.
+        _fileHttp = new HttpClient(new RetryTransient(new HttpClientHandler()))
+        {
+            Timeout = TimeSpan.FromMinutes(10)
+        };
         _files = new FileServiceClient(_fileHttp, env);
 
         // Built here only for the services we work on. Across every catalogue the list comes from

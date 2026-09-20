@@ -17,7 +17,10 @@ public static class CrmHttp
             PreAuthenticate = true
         };
 
-        var http = new HttpClient(handler)
+        // A 503 from the gateway means come back shortly, and one of those must not end a run of
+        // four hundred documents — least of all at the PATCH, which happens after the file is
+        // already on the server. Reads and PATCHes are tried again; a POST never is.
+        var http = new HttpClient(new RetryTransient(handler))
         {
             BaseAddress = new Uri($"{env.CrmUrl}/api/data/v9.1/"),
             Timeout = TimeSpan.FromMinutes(5)
