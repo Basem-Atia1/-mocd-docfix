@@ -450,4 +450,99 @@ public class RepairOneRowTests : IDisposable
         Assert.Contains(';', row.SupersededPaths);
         Assert.StartsWith(@"DigitalServices\old\20260101\earlier.pdf", row.SupersededPaths);
     }
+
+    /// <summary>
+    /// The one that stops copies piling up. An earlier run uploaded and was stopped at the eye
+    /// check, so the file is already on the server, verified, with nothing pointing at it.
+    /// Working the row again must use it rather than putting a second one beside it.
+    /// </summary>
+    [Fact]
+    public async Task A_copy_an_earlier_run_left_behind_is_used_instead_of_uploading_again()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+
+        var row = Row();
+        row.SupersededPaths = NewPath;
+
+        var outcome = await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.True(outcome.Corrected);
+        Assert.Empty(_files.Uploads);
+        Assert.Equal(NewPath, row.NewFilePath);
+
+        // Not abandoned any more: CRM points at it, so it must stop being reported as an orphan.
+        Assert.Empty(row.SupersededPaths);
+        Assert.Contains("already uploaded", row.Notes);
+    }
+
+    /// <summary>
+    /// Still shown to the operator. Reusing changes where the bytes come from, not whether
+    /// anybody gets to look at them before CRM is touched.
+    /// </summary>
+    [Fact]
+    public async Task Reusing_still_shows_both_files_and_waits_for_an_answer()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+
+        var row = Row();
+        row.SupersededPaths = NewPath;
+
+        await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.Equal(2, _opener.Opened.Count);
+    }
+
+    /// <summary>
+    /// A document type moved in CRM since, so the copy is filed under yesterday's answer. It is
+    /// no more use than the original and must not be reused.
+    /// </summary>
+    [Fact]
+    public async Task A_copy_filed_under_the_wrong_catalogue_is_not_reused()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+
+        var elsewhere = $@"DigitalServices\{Guid.NewGuid()}\20260915\{NewFileId}.jpg";
+        _files.Files[elsewhere] = (Base64, "9f86d081");
+
+        var row = Row();
+        row.SupersededPaths = elsewhere;
+
+        await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.Single(_files.Uploads);
+    }
+
+    /// <summary>Somebody removed it from the server. Upload a fresh one rather than failing.</summary>
+    [Fact]
+    public async Task A_copy_that_is_no_longer_on_the_server_is_not_reused()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+
+        var row = Row();
+        row.SupersededPaths = $@"DigitalServices\{Correct}\20260101\{Guid.NewGuid()}.jpg";
+
+        await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.Single(_files.Uploads);
+    }
+
+    /// <summary>
+    /// The bytes on the server are not the bytes we just backed up. Pointing CRM at that would
+    /// be pointing it at a file nobody has compared against anything.
+    /// </summary>
+    [Fact]
+    public async Task A_copy_whose_bytes_differ_is_not_reused()
+    {
+        _prompts.Answer(ConfirmChoice.Yes);
+
+        var wrong = $@"DigitalServices\{Correct}\20260101\{Guid.NewGuid()}.jpg";
+        _files.Files[wrong] = (Convert.ToBase64String(new byte[] { 9, 9, 9 }), "different");
+
+        var row = Row();
+        row.SupersededPaths = wrong;
+
+        await Subject().RunAsync(row, CancellationToken.None);
+
+        Assert.Single(_files.Uploads);
+    }
 }

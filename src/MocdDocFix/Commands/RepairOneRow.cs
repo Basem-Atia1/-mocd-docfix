@@ -112,23 +112,38 @@ public sealed class RepairOneRow
         row.BackupPath = _backups.Folder(row.DocId, row.DocFileName).Root;
         _progress.Step("backing up", row.BackupPath);
 
-        // ---- 2. upload, in the shape the old record was created in ----
+        // ---- 2. upload — unless an earlier run already put this very file there ----
+        //
+        // Stopping at the eye check leaves a complete, verified file on the server with nothing
+        // pointing at it. Uploading a second one and abandoning that too is how a row ends up
+        // with three copies of itself on disk, so the one already there is used instead.
 
-        var style = FileRecordCopier.StyleOf(oldRecordJson);
+        var reused = await ReusableCopyAsync(row, correct, bytes, ct);
+        FileData newFile;
 
-        var upload = await _files.UploadAsync(new UploadRequest(
-            Category: correct.ToString(),
-            FileName: row.DocFileName.Length > 0 ? row.DocFileName : $"{row.DocFileId}{extension}",
-            File: Convert.ToBase64String(bytes),
-            MediaType: ReadString(oldRecordJson, "mocd_mediatype") ?? "application/octet-stream",
-            Extension: FileRecordCopier.ExtensionFor(oldRecordJson, extension),
-            ApplicationId: FileRecordCopier.ApplicationIdFor(style, row.DocId)), ct);
+        if (reused is not null)
+        {
+            newFile = reused;
+            _progress.Step("reusing the copy an earlier run left", newFile.FilePath);
+        }
+        else
+        {
+            var style = FileRecordCopier.StyleOf(oldRecordJson);
 
-        if (!upload.Success || upload.Data is null)
-            return RowOutcome.Broke("upload", upload.Message ?? "the file server gave no reason");
+            var upload = await _files.UploadAsync(new UploadRequest(
+                Category: correct.ToString(),
+                FileName: row.DocFileName.Length > 0 ? row.DocFileName : $"{row.DocFileId}{extension}",
+                File: Convert.ToBase64String(bytes),
+                MediaType: ReadString(oldRecordJson, "mocd_mediatype") ?? "application/octet-stream",
+                Extension: FileRecordCopier.ExtensionFor(oldRecordJson, extension),
+                ApplicationId: FileRecordCopier.ApplicationIdFor(style, row.DocId)), ct);
 
-        var newFile = upload.Data;
-        _progress.Step("uploading", newFile.FilePath);
+            if (!upload.Success || upload.Data is null)
+                return RowOutcome.Broke("upload", upload.Message ?? "the file server gave no reason");
+
+            newFile = upload.Data;
+            _progress.Step("uploading", newFile.FilePath);
+        }
 
         // ---- 3. the four checks ----
 
@@ -139,7 +154,14 @@ public sealed class RepairOneRow
 
         var checks = new List<CheckResult>
         {
-            Verifier.UploadHashMatches(row.OldHash, newFile.Hash),
+            // A reused copy has already been compared byte for byte against the backup, which is
+            // a stronger statement than two hashes agreeing — and the vendor does not always
+            // return a hash on a download, so asking for one here would fail a good file.
+            reused is null
+                ? Verifier.UploadHashMatches(row.OldHash, newFile.Hash)
+                : new CheckResult("bytes", true,
+                    "the copy an earlier run left is byte for byte the file just backed up", false),
+
             Verifier.IsGenuinelyNew(row.OldFilePath, newFile.FilePath, oldVendorId, newFile.FileId),
             Verifier.PathIsFixed(FilePathParser.Parse(newFile.FilePath), correct, newFile.FileId)
         };
@@ -242,6 +264,16 @@ public sealed class RepairOneRow
 
         _progress.Step("reading it back");
 
+        // CRM points at it now, so it is the live file rather than an orphan. Left in the
+        // abandoned list it would be reported as one on every future run.
+        if (reused is not null)
+        {
+            NoLongerAbandoned(row, reused.FilePath);
+            row.Notes = Note(row.Notes,
+                $"corrected {Now()} using the copy an earlier run had already uploaded to " +
+                $"{reused.FilePath}; nothing new was uploaded");
+        }
+
         // ---- done ----
 
         _journal.Append(new ChangeEntry(
@@ -334,6 +366,65 @@ public sealed class RepairOneRow
     }
 
     private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm");
+
+    /// <summary>
+    /// A copy an earlier run uploaded and then left behind, if one can safely be used again.
+    ///
+    /// The upload happens before the two files are shown, so stopping at that question leaves a
+    /// complete file on the server that nothing points at. Working the row again would upload a
+    /// second one and abandon that too — a copy per attempt, none of them deleted by anything.
+    ///
+    /// Three things have to hold before one is used, and all three are checked against the
+    /// server rather than against the ledger: it must be filed under the catalogue this row is
+    /// being corrected to, it must still be there, and it must be byte for byte the file just
+    /// backed up. Anything less and CRM would be pointed at a file nobody has looked at.
+    /// </summary>
+    /// <returns>The file as the server describes it, or null to upload a fresh one.</returns>
+    private async Task<FileData?> ReusableCopyAsync(
+        LedgerRow row, Guid correct, byte[] bytes, CancellationToken ct)
+    {
+        var abandoned = row.SupersededPaths
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Reverse()                           // the most recent attempt first
+            .ToList();
+
+        foreach (var path in abandoned)
+        {
+            // The correct catalogue can change between runs — a document type moved in CRM —
+            // and a copy filed under yesterday's answer is no better than the original.
+            var filed = FilePathParser.Parse(path).CategorySegment;
+            if (!Guid.TryParse(filed, out var under) || under != correct) continue;
+
+            var back = await _files.DownloadAsync(path, ct);
+            if (!back.Success || back.Data?.File is null) continue;
+
+            if (!Verifier.RoundTrip(bytes, Convert.FromBase64String(back.Data.File)).Passed)
+                continue;
+
+            // Built here rather than taken from the response: the vendor does not reliably echo
+            // the path or the id on a download, and those two are what CRM is about to be given.
+            var stem = FilePathParser.Parse(path).FileStem;
+
+            return new FileData(
+                FileId: Guid.TryParse(stem, out var id) ? id : Guid.Empty,
+                FilePath: path,
+                Hash: back.Data.Hash,
+                FileName: back.Data.FileName,
+                MediaType: back.Data.MediaType,
+                File: back.Data.File);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Takes a path out of the abandoned list, because it is not abandoned any more — CRM now
+    /// points at it. Leaving it there would report a live file as an orphan for ever.
+    /// </summary>
+    private static void NoLongerAbandoned(LedgerRow row, string path) =>
+        row.SupersededPaths = string.Join(';', row.SupersededPaths
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(p => !FilePaths.Same(p, path)));
 
     /// <summary>
     /// Records a copy that was uploaded and then left behind, in the column a machine can read.
