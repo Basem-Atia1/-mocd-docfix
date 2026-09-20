@@ -1122,20 +1122,39 @@ public sealed class Session : IDisposable
             return true;
         }
 
+        // Widening to every catalogue for the first time leaves the other services with no sheet
+        // at all. Offering the rows we do have would present one file as the whole scope that
+        // was asked for, and the run would work through eight services without ever saying the
+        // other forty-six were not in it.
+        var built = _ledger.EveryFileBuilt;
+
+        if (!built)
+        {
+            _prompts.Blank();
+            _prompts.Warn("The other services have never been scanned, so the ledger does not " +
+                          "yet cover the scope you chose. This run has to read CRM.", Tone.Warn);
+            _prompts.Say("Nothing already in the sheet is lost by that: a scan refreshes the " +
+                         "facts and adds what is new, and your verdicts, final states and notes " +
+                         "are kept exactly as they are.", Tone.Muted);
+        }
+
         var answer = new Asker(_prompts).Ask("Where should this run get its rows?", new[]
         {
             new Choice("Use the ledger as it is", $"{rows} row(s), last written {when}",
                 "Goes straight to the work, with the sheet exactly as it is on disk. Nothing is " +
                 "asked of CRM until the run reaches a document — and every row is still checked " +
-                "against CRM before anything is uploaded."),
+                "against CRM before anything is uploaded.",
+                Enabled: built,
+                DisabledNote: "the other services have no sheet yet, so this would cover only " +
+                              "part of the scope you chose."),
 
             new Choice("Update it from CRM first", "reads every document in scope",
                 "Reads every document under the services this run is scoped to, classifies " +
                 "them, and merges the answers into the sheet without discarding anything you " +
                 "have typed. This is the slow one.")
-        }, defaultIndex: 0);
+        }, defaultIndex: built ? 0 : 1);
 
-        return answer.Kind == AnswerKind.Chosen && answer.Index == 1;
+        return answer.Kind != AnswerKind.Chosen || answer.Index == 1;
     }
 
     /// <summary>

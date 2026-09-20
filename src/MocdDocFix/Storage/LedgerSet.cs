@@ -74,6 +74,16 @@ public sealed class LedgerSet : ILedger
 
     public bool Exists => _ours.Exists || (_others?.Exists ?? false);
 
+    /// <summary>
+    /// Whether every file this scope covers has actually been built.
+    ///
+    /// False on the first run after widening to every catalogue: the services we work on have a
+    /// sheet going back weeks, and the other forty-six have never been looked at. Offering to
+    /// "use the ledger as it is" then would present one file's rows as though they were the
+    /// whole scope that was asked for.
+    /// </summary>
+    public bool EveryFileBuilt => _ours.Exists && (_others?.Exists ?? true);
+
     public bool CanWrite() => _ours.CanWrite() && (_others?.CanWrite() ?? true);
 
     /// <summary>Set on both stores, so either file being open in Excel asks the same question.</summary>

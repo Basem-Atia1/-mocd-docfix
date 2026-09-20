@@ -118,4 +118,34 @@ public class LedgerSetTests : IDisposable
         Assert.Single(new LedgerStore(OursPath).Read());
         Assert.Empty(new LedgerStore(OtherPath).Read());
     }
+
+    /// <summary>
+    /// Widening to every catalogue for the first time leaves the other services with no sheet.
+    /// Saying the ledger is complete then would present one file as the whole scope.
+    /// </summary>
+    [Fact]
+    public void A_scope_whose_second_file_has_never_been_built_is_not_complete()
+    {
+        Set(LedgerScope.Ours).Write(new[] { Row(Ours) });
+
+        Assert.False(Set(LedgerScope.All).EveryFileBuilt);
+    }
+
+    [Fact]
+    public void A_scope_with_both_files_on_disk_is_complete()
+    {
+        Set(LedgerScope.All).Write(new[] { Row(Ours), Row(Theirs) });
+
+        Assert.True(Set(LedgerScope.All).EveryFileBuilt);
+    }
+
+    [Fact]
+    public void Our_services_alone_need_only_their_own_file()
+    {
+        Assert.False(Set(LedgerScope.Ours).EveryFileBuilt);
+
+        Set(LedgerScope.Ours).Write(new[] { Row(Ours) });
+
+        Assert.True(Set(LedgerScope.Ours).EveryFileBuilt);
+    }
 }
