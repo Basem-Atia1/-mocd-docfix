@@ -67,6 +67,17 @@ public sealed class RepairRun
             _progress.Skipped(row, why);
         }
 
+        // Only the rows this run will actually act on.
+        //
+        // The counter used to run over every row in the ledger, so a run with 668 documents to
+        // correct out of 2,478 announced "[ 8/2478 ]" — a number that says nothing about how far
+        // through the work you are, and reads as several times more of it than there is.
+        var toDo = working.Count(r =>
+            r.Verdict2() == RowVerdict.Fix &&
+            r.State() is not (RowState.Corrected or RowState.Deleted));
+
+        var started = 0;
+
         for (var i = 0; i < working.Count && !stopped; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -92,7 +103,7 @@ public sealed class RepairRun
                 continue;
             }
 
-            _progress.StartRow(i + 1, working.Count, row);
+            _progress.StartRow(++started, toDo, row);
 
             var outcome = await _one.RunAsync(row, ct);
 

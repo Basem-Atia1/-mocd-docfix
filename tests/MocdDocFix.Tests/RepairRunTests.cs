@@ -407,4 +407,44 @@ public class RepairRunTests : IDisposable
         Assert.False(summary.Stopped);
         Assert.Empty(_prompts.Questions);
     }
+
+    /// <summary>
+    /// The counter is over the work, not over the sheet.
+    ///
+    /// It used to run over every row in the ledger, so a run with two documents to correct among
+    /// five rows announced "[ 1/5 ]" — a number that says nothing about how far through the work
+    /// you are, and reads as more of it than there is.
+    /// </summary>
+    [Fact]
+    public async Task The_counter_is_over_the_rows_that_will_be_worked_on()
+    {
+        UploadsSucceed();
+
+        LedgerRow PassedOver(int number, string verdict)
+        {
+            var row = Fixable(number);
+            row.Verdict = verdict;
+            return row;
+        }
+
+        var rows = new List<LedgerRow>
+        {
+            Fixable(1),
+            PassedOver(2, RowVerdicts.Review),
+            PassedOver(3, RowVerdicts.Ignore),
+            Fixable(4),
+            PassedOver(5, RowVerdicts.Done)
+        };
+
+        _prompts.YesNoResponse = true;
+        _prompts.Answer(ConfirmChoice.Yes, ConfirmChoice.Yes);
+
+        await Subject().RunAsync(rows, rows, CancellationToken.None);
+
+        var said = string.Join("\n", _prompts.Messages);
+
+        Assert.Contains("[ 1/2 ]", said);
+        Assert.Contains("[ 2/2 ]", said);
+        Assert.DoesNotContain("/5 ]", said);
+    }
 }
