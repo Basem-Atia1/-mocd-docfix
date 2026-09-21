@@ -587,17 +587,15 @@ public sealed class Session : IDisposable
         // Rows with no file at all, out of both files, every time the ledger is opened — not
         // only on a run that goes and reads CRM. Somebody who works from the sheet as it is and
         // never rescans was keeping them for ever.
+        //
+        // Silently. There is no decision to make and nothing to check: the scan does not produce
+        // these any more, so the only ones left are what an earlier build wrote, and after the
+        // first open there are none. A line saying so would be a line about housekeeping.
         var dropped = DropRowsWithNoFile.From(rows);
 
         if (dropped.Removed > 0)
         {
             rows = dropped.Rows;
-
-            _prompts.Blank();
-            _prompts.Say($"{dropped.Removed} row(s) had no file path at all and have been taken " +
-                         "out of the sheet. Nothing can be done with a record naming no file, " +
-                         "and the scan no longer writes them.", Tone.Muted);
-
             _ledger.Write(rows);
         }
 
