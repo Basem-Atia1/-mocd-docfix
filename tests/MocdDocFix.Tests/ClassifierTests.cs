@@ -146,15 +146,16 @@ public class ClassifierTests
     }
 
     /// <summary>
-    /// Group 8. A record naming no file is not a document that is fine — it is a document with
-    /// nothing behind it.
+    /// Group 8. A record naming no file is not a document that is fine — but there is no path
+    /// to diagnose and no file to move either, so it stays out of the sheet. The group number
+    /// survives so the scan can count them and say how many there were.
     /// </summary>
     [Fact]
-    public void A_record_with_no_file_path_is_group_eight_and_wants_a_human()
+    public void A_record_with_no_file_path_is_group_eight_and_stays_out_of_the_sheet()
     {
         var r = Classify("", EmployeeAppointment);
 
-        Assert.Equal(Verdict.Review, r.Verdict);
+        Assert.Equal(Verdict.Skip, r.Verdict);
         Assert.Equal(8, r.Group);
         Assert.Contains("no file path", r.Reason, StringComparison.OrdinalIgnoreCase);
     }

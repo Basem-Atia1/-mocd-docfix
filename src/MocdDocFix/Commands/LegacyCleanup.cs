@@ -4,7 +4,13 @@ namespace MocdDocFix.Commands;
 
 /// <param name="Removed">Rows taken out of the sheet because there was never anything to do.</param>
 /// <param name="Kept">Rows that said skip but carried a record of work, and were rewritten.</param>
-public sealed record CleanupResult(IReadOnlyList<LedgerRow> Rows, int Removed, int Kept);
+/// <param name="NoFile">
+/// Rows taken out because the record names no file at all. Counted apart from
+/// <paramref name="Removed"/>: those were documents that are fine, these are documents nothing
+/// can be done about, and the two want different sentences on screen.
+/// </param>
+public sealed record CleanupResult(
+    IReadOnlyList<LedgerRow> Rows, int Removed, int Kept, int NoFile = 0);
 
 /// <summary>
 /// Puts a sheet written by an earlier build in order, once.
@@ -41,10 +47,24 @@ public static class LegacyCleanup
             .ToHashSet();
 
         var kept = new List<LedgerRow>(existing.Count);
-        int removed = 0, rewritten = 0;
+        int removed = 0, rewritten = 0, noFile = 0;
 
         foreach (var row in existing)
         {
+            // A record naming no file. These no longer enter the sheet at all, and an earlier
+            // build wrote them in as review — thirty-three of them in the dev ledger. Same rule
+            // as everything else here: untouched, unremarked-upon, and no longer wanted by the
+            // scan, or it stays. Somebody may have attached a file since, and then it is work.
+            if (row.Group == 8 &&
+                row.OldFilePath.Length == 0 &&
+                row.State() == RowState.NotStarted &&
+                row.Notes.Length == 0 &&
+                !stillBroken.Contains(row.DocId))
+            {
+                noFile++;
+                continue;
+            }
+
             if (!row.Verdict.Trim().Equals(LegacySkip, StringComparison.OrdinalIgnoreCase))
             {
                 kept.Add(row);
@@ -67,7 +87,7 @@ public static class LegacyCleanup
             kept.Add(row);
         }
 
-        return new CleanupResult(kept, removed, rewritten);
+        return new CleanupResult(kept, removed, rewritten, noFile);
     }
 
     /// <summary>

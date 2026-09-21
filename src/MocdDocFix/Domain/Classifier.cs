@@ -12,16 +12,14 @@ public static class Classifier
         Guid? crossCheckCatalogue,
         Func<string, bool> isKnownCatalogue)
     {
-        // ---- groups 8 and 9: nothing this tool can do, but not nothing wrong ----
-        //
-        // Both of these were group 7, alongside documents that are simply filed correctly. They
-        // are not the same thing at all, and once correct documents stop being written to the
-        // sheet, leaving these as Skip would take them out of view without anyone deciding to.
+        // ---- groups 8 and 9: nothing this tool can do ----
 
-        // A record naming no file is not a document that is fine; it is a document with nothing
-        // behind it.
+        // A record naming no file. There is no path to diagnose and no file to move, and across
+        // every catalogue in pre-prod it is two thirds of the environment — thirty-seven
+        // thousand rows that read as wallpaper rather than as a list. So it is kept out of the
+        // sheet and counted out loud instead. The group number survives for the count.
         if (path.SegmentCount == 0)
-            return new Classification(Verdict.Review, 8,
+            return new Classification(Verdict.Skip, 8,
                 "No file path on the document file record.",
                 "Nothing this tool can do — there is no path to diagnose and no file to move. " +
                 "Someone has to decide what became of it.",

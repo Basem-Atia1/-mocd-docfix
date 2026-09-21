@@ -447,4 +447,30 @@ public class RepairRunTests : IDisposable
         Assert.Contains("[ 2/2 ]", said);
         Assert.DoesNotContain("/5 ]", said);
     }
+
+    /// <summary>
+    /// The rows the loop walks past get no line of their own, in any mode.
+    ///
+    /// A run over 2,478 rows with 668 to fix printed 1,810 of them before touching the first
+    /// document. The tally in the summary says the same thing in one line per reason.
+    /// </summary>
+    [Theory]
+    [InlineData(WatchMode.Quiet)]
+    [InlineData(WatchMode.Unattended)]
+    public async Task A_row_that_is_walked_past_is_counted_and_not_printed(WatchMode mode)
+    {
+        var ignored = Fixable(1);
+        ignored.Verdict = RowVerdicts.Ignore;
+
+        var reviewed = Fixable(2);
+        reviewed.Verdict = RowVerdicts.Review;
+
+        var rows = new[] { ignored, reviewed };
+
+        var summary = await Subject(mode).RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.Equal(2, summary.Skips.Sum(s => s.Count));
+        Assert.DoesNotContain(_prompts.Messages, m =>
+            m.Contains("skipped", StringComparison.OrdinalIgnoreCase));
+    }
 }

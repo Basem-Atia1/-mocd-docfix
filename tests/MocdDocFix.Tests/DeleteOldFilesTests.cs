@@ -283,4 +283,36 @@ public class DeleteOldFilesTests : IDisposable
         Assert.Contains(OldPath, _files.Deleted);
         Assert.DoesNotContain(DeleteOldFiles.Recheck, row.Notes);
     }
+
+    /// <summary>
+    /// The order that used to destroy the route back: correct a document, change its mind and
+    /// type "redo", then run the delete step. Deleting the old file is precisely what makes a
+    /// redo impossible, and Redo would afterwards refuse the row for ever.
+    /// </summary>
+    [Fact]
+    public async Task A_corrected_row_marked_redo_keeps_its_old_file()
+    {
+        var row = Row();
+        row.Verdict = RowVerdicts.Redo;
+
+        var summary = await Run(row);
+
+        Assert.Equal(0, summary.Deleted);
+        Assert.DoesNotContain(OldPath, _files.Deleted);
+
+        // Untouched, so Redo can still put the record back.
+        Assert.Equal(RowStates.Text(RowState.Corrected), row.FinalState);
+        Assert.Equal(RowVerdicts.Redo, row.Verdict);
+    }
+
+    [Fact]
+    public async Task Holding_a_row_back_for_redo_is_said_out_loud()
+    {
+        var row = Row();
+        row.Verdict = RowVerdicts.Redo;
+
+        await Run(row);
+
+        Assert.Contains(_prompts.Messages, l => l.Contains("redo", StringComparison.OrdinalIgnoreCase));
+    }
 }

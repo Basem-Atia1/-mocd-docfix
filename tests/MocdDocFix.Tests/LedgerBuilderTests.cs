@@ -120,15 +120,16 @@ public class LedgerBuilderTests
     }
 
     /// <summary>
-    /// Not a correct document — a document with nothing behind it. It gets a row, and a person
-    /// decides what became of it.
+    /// Not a correct document — a document with nothing behind it. But there is no path to
+    /// diagnose and no file to move, so the scan gives it a blank verdict and the merge reads
+    /// that as "do not add this row". The group survives so it can be counted and said out loud.
     /// </summary>
     [Fact]
-    public async Task A_document_with_no_file_path_is_group_eight_for_review()
+    public async Task A_document_with_no_file_path_is_group_eight_and_not_written()
     {
         var row = Assert.Single(await Builder(Crm(Document(null))).BuildAsync(CancellationToken.None));
 
-        Assert.Equal(RowVerdict.Review, row.Verdict2());
+        Assert.Equal(string.Empty, row.Verdict);
         Assert.Equal(8, row.Group);
         Assert.Equal(string.Empty, row.OldFilePath);
     }

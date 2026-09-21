@@ -61,11 +61,14 @@ public sealed class RepairRun
         var unrecognised = new List<string>();
         var skips = new Dictionary<string, int>(StringComparer.Ordinal);
 
-        void Skip(LedgerRow row, string why)
-        {
+        // Counted, not printed.
+        //
+        // A run over 2,478 rows with 668 to fix printed 1,810 lines saying a row was ignored or
+        // reviewed or already done — before the first document was touched. The operator is
+        // watching for what the run *does*, and the tally at the end says the same thing in one
+        // line per reason. Only rows the loop actually works on get a line of their own.
+        void Skip(LedgerRow row, string why) =>
             skips[why] = skips.TryGetValue(why, out var n) ? n + 1 : 1;
-            _progress.Skipped(row, why);
-        }
 
         // Only the rows this run will actually act on.
         //

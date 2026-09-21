@@ -134,4 +134,60 @@ public class LegacyCleanupTests
         Assert.Equal(0, result.Removed);
         Assert.Equal(0, result.Kept);
     }
+
+    // ---- rows whose record names no file at all ----
+    //
+    // These used to be written into the sheet as review. There is no path to diagnose and no
+    // file to move, so they are cleared out here for the same reason correct rows are.
+
+    /// <summary>What an earlier build wrote for a document with no file path.</summary>
+    private static LedgerRow NoFileRow(string finalState = "", string notes = "") => new()
+    {
+        Row = 1,
+        DocId = Doc,
+        DocFileName = "a.pdf",
+        Verdict = RowVerdicts.Review,
+        Group = 8,
+        OldFilePath = string.Empty,
+        FinalState = finalState,
+        Notes = notes
+    };
+
+    [Fact]
+    public void An_untouched_row_with_no_file_path_is_removed()
+    {
+        var result = LegacyCleanup.Apply(new[] { NoFileRow() }, new[] { Correct() });
+
+        Assert.Empty(result.Rows);
+        Assert.Equal(1, result.NoFile);
+
+        // Counted apart from the correct ones, because the sentence on screen is different.
+        Assert.Equal(0, result.Removed);
+    }
+
+    /// <summary>
+    /// Somebody has attached a file since the sheet was written, so the scan wants the document
+    /// fixed. Group 8 is what it was, not what it is.
+    /// </summary>
+    [Fact]
+    public void A_row_with_no_file_path_the_scan_now_wants_fixed_is_kept()
+    {
+        var scanned = new LedgerRow { DocId = Doc, Verdict = RowVerdicts.Fix };
+
+        var result = LegacyCleanup.Apply(new[] { NoFileRow() }, new[] { scanned });
+
+        Assert.Single(result.Rows);
+        Assert.Equal(0, result.NoFile);
+    }
+
+    /// <summary>A note is somebody's working, and it is not thrown away to tidy a sheet.</summary>
+    [Fact]
+    public void A_row_with_no_file_path_that_was_annotated_is_kept()
+    {
+        var result = LegacyCleanup.Apply(
+            new[] { NoFileRow(notes: "asked the business on 12 Sep") }, new[] { Correct() });
+
+        Assert.Single(result.Rows);
+        Assert.Equal(0, result.NoFile);
+    }
 }

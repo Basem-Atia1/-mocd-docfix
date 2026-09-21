@@ -201,7 +201,7 @@ public sealed class Session : IDisposable
         // out here — and after that first run there is nothing left saying skip and this does
         // nothing at all.
         var tidied = LegacyCleanup.Apply(existing, scanned);
-        if (tidied.Removed > 0 || tidied.Kept > 0)
+        if (tidied.Removed > 0 || tidied.Kept > 0 || tidied.NoFile > 0)
         {
             existing = tidied.Rows;
 
@@ -210,6 +210,10 @@ public sealed class Session : IDisposable
             if (tidied.Removed > 0)
                 _prompts.Say($"{tidied.Removed} row(s) were correct and had never been worked " +
                              "on. They have been taken out of the sheet.", Tone.Good);
+
+            if (tidied.NoFile > 0)
+                _prompts.Say($"{tidied.NoFile} row(s) had no file path at all. They have been " +
+                             "taken out of the sheet.", Tone.Good);
 
             if (tidied.Kept > 0)
                 _prompts.Say($"{tidied.Kept} row(s) said skip but had work recorded against " +
@@ -230,7 +234,7 @@ public sealed class Session : IDisposable
 
             _prompts.Say($"{merged.Rows.Count} document(s) written to {_ledger.Path}", Tone.Good);
             SayWhatWasLeftOut(merged);
-            SayHowManyHaveNoFile(merged.Rows);
+            SayHowManyHaveNoFile(merged);
 
             return merged.Rows;
         }
@@ -253,7 +257,7 @@ public sealed class Session : IDisposable
                      "they have already been worked on or you closed them.");
 
         SayWhatWasLeftOut(merged);
-        SayHowManyHaveNoFile(merged.Rows);
+        SayHowManyHaveNoFile(merged);
 
         // A document type moved to another service in CRM moves its row between the two files.
         // Silently that reads as a row vanishing from one and appearing in the other.
@@ -310,11 +314,15 @@ public sealed class Session : IDisposable
     /// Shows what "everything" actually means before anything is read. In pre-prod it is over
     /// fifty thousand documents and hours of CRM reads, which is not a thing to find out
     /// afterwards.
+    ///
+    /// The list comes from the environment chosen at the start of the sitting and from nowhere
+    /// else — <see cref="_read"/> is built against that environment's URL and credentials — so
+    /// the catalogues shown are the ones in the environment about to be worked on.
     /// </summary>
     private async Task<LedgerScope> ConfirmTheWholeLotAsync(CancellationToken ct)
     {
         _prompts.Blank();
-        _prompts.Say("Asking CRM what service catalogues there are. This writes nothing.",
+        _prompts.Say($"Asking {_envName} what service catalogues it has. This writes nothing.",
             Tone.Muted);
 
         IReadOnlyList<(Guid Id, string Name)> catalogues;
@@ -342,9 +350,9 @@ public sealed class Session : IDisposable
         var ours = _appConfig.ServiceCatalogues.ToHashSet();
         var others = catalogues.Count(c => !ours.Contains(c.Id));
 
-        _prompts.Section("Every service catalogue");
-        _prompts.Say($"{catalogues.Count} service catalogues, {others} of them outside the " +
-                     $"{ours.Count} this tool was built for.");
+        _prompts.Section($"Every service catalogue in {_envName}");
+        _prompts.Say($"{_envName} has {catalogues.Count} service catalogues, {others} of them " +
+                     $"outside the {ours.Count} this tool was built for.");
         _prompts.Blank();
         _prompts.Bullet("Every document under all of them is read and classified. In pre-prod " +
                         "that is over fifty thousand documents.", Tone.Warn);
@@ -402,21 +410,20 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>
-    /// How many rows are documents with no file at all.
+    /// How many documents name no file at all.
     ///
-    /// In the eight services this is 29 rows, worth reading one by one. Across every catalogue
-    /// in pre-prod it is roughly thirty-seven thousand, because two thirds of that environment
-    /// is documents naming no file — and thirty-seven thousand rows do not read as a list, they
-    /// read as wallpaper. So the number is said out loud and the rows are left to sit.
+    /// Said, not shown. Across every catalogue in pre-prod it is roughly thirty-seven thousand,
+    /// because two thirds of that environment is documents naming no file — and thirty-seven
+    /// thousand rows do not read as a list, they read as wallpaper. There is nothing this tool
+    /// can do with one either, so they no longer enter the sheet at all.
     /// </summary>
-    private void SayHowManyHaveNoFile(IReadOnlyList<LedgerRow> rows)
+    private void SayHowManyHaveNoFile(Merged merged)
     {
-        var none = rows.Count(r => r.Group == 8);
-        if (none == 0) return;
+        if (merged.NoFile == 0) return;
 
-        _prompts.Say($"{none} document(s) have no file path at all. They are in the sheet as " +
-                     "review. There is nothing this tool can do with them — no path to " +
-                     "diagnose and no file to move.", Tone.Warn);
+        _prompts.Say($"{merged.NoFile} document(s) have no file path at all and are not in the " +
+                     "sheet. There is nothing this tool can do with them — no path to diagnose " +
+                     "and no file to move.", Tone.Muted);
     }
 
     /// <summary>
@@ -1202,24 +1209,13 @@ public sealed class Session : IDisposable
         var copies = abandoned.Sum(r => r.SupersededPaths.Split(';',
             StringSplitOptions.RemoveEmptyEntries).Length);
 
-        _prompts.Section($"{abandoned.Count} row(s) already have a copy on the server that " +
-                         "nothing points at", Tone.Warn);
-        _prompts.Say($"{copies} file(s) were uploaded by an earlier run and then left — you " +
-                     "stopped, or said the two copies did not match. They are recorded in the " +
-                     "\"superseded paths\" column.");
-        _prompts.Blank();
-
-        foreach (var row in abandoned.Take(10))
-            _prompts.Bullet($"{row.Ref()}: {row.SupersededPaths}", Tone.Muted);
-
-        if (abandoned.Count > 10)
-            _prompts.Bullet($"… and {abandoned.Count - 10} more", Tone.Muted);
-
-        _prompts.Blank();
-        _prompts.Bullet("Working these rows again uploads a further copy. The earlier ones are " +
-                        "not deleted by anything — this tool only ever removes a file it has a " +
-                        "record of superseding.", Tone.Warn);
-        _prompts.Blank();
+        // One line. The paths are in the "superseded paths" column of the sheet, which is where
+        // somebody would go to act on them anyway, and the run reuses them by itself — so a
+        // heading, a list of ten and three paragraphs of explanation was telling the operator
+        // at length about something already handled.
+        _prompts.Say($"{copies} copy/copies from an earlier run are on the server unpointed-at, " +
+                     $"across {abandoned.Count} row(s). They will be reused, not uploaded again.",
+            Tone.Muted);
     }
 
     /// <summary>

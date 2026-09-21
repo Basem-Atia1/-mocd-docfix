@@ -66,7 +66,24 @@ public sealed class DeleteOldFiles
     public async Task<DeleteSummary> RunAsync(
         IReadOnlyList<LedgerRow> rows, bool isProduction, CancellationToken ct)
     {
-        var eligible = rows.Where(r => r.State() == RowState.Corrected).ToList();
+        // Corrected, and not marked to be put back.
+        //
+        // This step used to read the final state alone. A row corrected and then given the
+        // verdict "redo" by hand was therefore deleted like any other — and deleting the old
+        // file is exactly what makes a redo impossible, so the two steps in that order destroy
+        // the route back and Redo then refuses the row for ever. The verdict is the operator
+        // saying what they want to happen next, and it wins over the sheet's history here.
+        var eligible = rows
+            .Where(r => r.State() == RowState.Corrected && r.Verdict2() != RowVerdict.Redo)
+            .ToList();
+
+        var heldForRedo = rows.Count(r =>
+            r.State() == RowState.Corrected && r.Verdict2() == RowVerdict.Redo);
+
+        if (heldForRedo > 0)
+            _prompts.Say($"{heldForRedo} corrected row(s) say redo, so their old files are left " +
+                         "alone — deleting one is what makes a redo impossible.", Tone.Warn);
+
         var reasons = new List<string>();
 
         // Rows a previous check found still holding their old file. They say deleted, so nothing

@@ -62,12 +62,17 @@ public sealed record PathMoved(LedgerRow Row, string NowAt, LedgerRow? Corrected
 /// rather than listed: they are the majority of any environment, and there is nothing to say
 /// about any one of them.
 /// </param>
+/// <param name="NoFile">
+/// Documents whose record names no file at all. Also never written, and counted apart from
+/// <paramref name="NotAdded"/> because they are the opposite of fine — there is nothing this
+/// tool can do with one, and calling them "already filed correctly" would be untrue.
+/// </param>
 public sealed record Merged(
     IReadOnlyList<LedgerRow> Rows, int Added, int Refreshed, int Protected, int Vanished,
     IReadOnlyList<string> Notes, IReadOnlyList<VerdictDisagreement> Disagreements,
     IReadOnlyList<VerdictDisagreement> Excluded, IReadOnlyList<PathMoved> Moved,
     IReadOnlyList<VerdictDisagreement> StillWrong, IReadOnlyList<LedgerRow> Gone,
-    int NotAdded = 0);
+    int NotAdded = 0, int NoFile = 0);
 
 /// <summary>
 /// Brings one ledger up to date from a fresh read of CRM, instead of starting a second one.
@@ -102,7 +107,7 @@ public static class LedgerMerge
         var excluded = new List<VerdictDisagreement>();
         var moved = new List<PathMoved>();
         var stillWrong = new List<VerdictDisagreement>();
-        int added = 0, refreshed = 0, protectedRows = 0, notAdded = 0;
+        int added = 0, refreshed = 0, protectedRows = 0, notAdded = 0, noFile = 0;
 
         foreach (var scanned in fresh)
         {
@@ -119,7 +124,9 @@ public static class LedgerMerge
                 // looking as though the document had vanished.
                 if (scanned.Verdict.Length == 0)
                 {
-                    notAdded++;
+                    // Two different reasons for a blank verdict, and they are told apart here
+                    // because one of them is good news and the other is not.
+                    if (scanned.Group == 8) noFile++; else notAdded++;
                     continue;
                 }
 
@@ -190,7 +197,7 @@ public static class LedgerMerge
 
         return new Merged(rows, added, refreshed, protectedRows,
             existing.Count - seen.Count(id => byDocument.ContainsKey(id)), notes, disagreements,
-            excluded, moved, stillWrong, gone, notAdded);
+            excluded, moved, stillWrong, gone, notAdded, noFile);
     }
 
     /// <summary>

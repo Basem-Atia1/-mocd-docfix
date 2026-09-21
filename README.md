@@ -118,6 +118,13 @@ A document nothing is wrong with never gets a row at all, which is why the sheet
 than the number of documents. (`skip` used to mean that and is gone; ledgers written before the
 change still open, and their `skip` cells read as `done`.)
 
+A document whose record names **no file at all** gets no row either. There is no path to
+diagnose and no file to move, so there is nothing the tool could do with one; across every
+catalogue in pre-prod they are two thirds of the environment. The scan says how many it found.
+Ones an earlier build wrote into the sheet as `review` are taken out the next time it updates
+from CRM — unless somebody has left a note on the row, recorded work against it, or attached a
+file since, in which case it stays.
+
 | final state | |
 |---|---|
 | *(blank)* | not started |
@@ -176,9 +183,12 @@ line in today's sheet, the id says which document it is.
 ### Deleting the old files
 
 The step acts on rows saying `corrected and pending the delete of old docs`, and re-checks each
-one against CRM immediately before its file goes. A file that is **not there** counts as done,
-not as a refusal — the outcome the step exists to reach is that the old file is gone, and it
-is. Only a server that genuinely refuses is a refusal.
+one against CRM immediately before its file goes. A corrected row whose **verdict** you have
+changed to `redo` is left alone and counted out loud: deleting the old file is exactly what
+makes a redo impossible, so the two steps in that order would destroy the only route back.
+
+A file that is **not there** counts as done, not as a refusal — the outcome the step exists to
+reach is that the old file is gone, and it is. Only a server that genuinely refuses is a refusal.
 
 Afterwards it offers to check that the files really went, and separately to check the ones
 earlier runs removed — that asks the server once per row, so it says how many first. A file

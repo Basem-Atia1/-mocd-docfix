@@ -533,4 +533,23 @@ public class LedgerMergeTests
         Assert.Empty(merged.Excluded);
         Assert.Single(merged.Disagreements);
     }
+
+    /// <summary>
+    /// A document whose record names no file is also not written — but it is not fine either,
+    /// and the two are counted apart so the sentence on screen can tell the truth about each.
+    /// </summary>
+    [Fact]
+    public void A_document_with_no_file_path_is_counted_apart_from_the_correct_ones()
+    {
+        var noFile = Row(One, verdict: string.Empty);
+        noFile.Group = 8;
+
+        var merged = LedgerMerge.Into(
+            Array.Empty<LedgerRow>(),
+            new[] { noFile, Row(Two, verdict: string.Empty) });
+
+        Assert.Empty(merged.Rows);
+        Assert.Equal(1, merged.NoFile);
+        Assert.Equal(1, merged.NotAdded);
+    }
 }
