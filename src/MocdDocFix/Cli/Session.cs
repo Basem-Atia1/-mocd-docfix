@@ -354,14 +354,6 @@ public sealed class Session : IDisposable
         _prompts.Say($"{_envName} has {catalogues.Count} service catalogues, {others} of them " +
                      $"outside the {ours.Count} this tool was built for.");
         _prompts.Blank();
-        _prompts.Bullet("Every document under all of them is read and classified. In pre-prod " +
-                        "that is over fifty thousand documents.", Tone.Warn);
-        _prompts.Bullet("Documents whose document type carries no service catalogue cannot be " +
-                        "reached this way, and will not appear however wide the scope.",
-            Tone.Muted);
-        _prompts.Bullet("The other services go in a file of their own, so the one you usually " +
-                        "work in stays small and quick to save.", Tone.Muted);
-        _prompts.Blank();
 
         if (_prompts.YesNo("  Work across all of them?", defaultYes: false)) return LedgerScope.All;
 
