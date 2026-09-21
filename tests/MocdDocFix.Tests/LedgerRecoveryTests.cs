@@ -75,7 +75,7 @@ public class LedgerRecoveryTests
 
         var recovered = LedgerRecovery.Apply(new[] { row }, new[] { Entry(ChangeActions.Reverted) });
 
-        Assert.Contains("fix", Assert.Single(recovered.Changed).NowIs);
+        Assert.Equal(RowVerdicts.Fix, Assert.Single(recovered.Changed).NowIs);
         Assert.Equal(RowVerdict.Fix, row.Verdict2());
     }
 
@@ -96,7 +96,7 @@ public class LedgerRecoveryTests
         });
 
         Assert.Equal(1, recovered.Rows);
-        Assert.Contains("fix", Assert.Single(recovered.Changed).NowIs);
+        Assert.Equal(RowVerdicts.Fix, Assert.Single(recovered.Changed).NowIs);
     }
 
     /// <summary>

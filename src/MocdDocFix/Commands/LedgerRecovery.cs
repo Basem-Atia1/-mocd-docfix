@@ -4,11 +4,16 @@ using MocdDocFix.Storage;
 namespace MocdDocFix.Commands;
 
 /// <param name="NowIs">
-/// What the row says now, in the words of the final state column — or "back to fix" for a
-/// revert, which clears it. The one thing worth reading about a row that has just been changed
-/// underneath the operator is what it has been changed to.
+/// The cell the row now holds, and nothing else — the final state's own words, or the verdict
+/// where a revert has cleared the final state. Anything more in here reads badly the moment it
+/// is quoted: "back to fix — its record was put back" inside quotation marks, inside a sentence
+/// with its own dash, is three clauses deep and says two things at once.
 /// </param>
-public sealed record RecoveredRow(LedgerRow Row, string NowIs);
+/// <param name="Did">
+/// What the earlier run did, as the verb of a sentence: "corrected it", "deleted its old file".
+/// Kept apart from <paramref name="NowIs"/> so each lands in its own half of the line.
+/// </param>
+public sealed record RecoveredRow(LedgerRow Row, string NowIs, string Did);
 
 /// <param name="Changed">Every row put right, and what each one now says.</param>
 /// <param name="MissingFromJournal">
@@ -53,7 +58,7 @@ public static class LedgerRecovery
         {
             if (!byDocument.TryGetValue(entry.Doc, out var row)) continue;
 
-            var nowIs = entry.Action switch
+            var what = entry.Action switch
             {
                 ChangeActions.Corrected => Correct(row, entry),
                 ChangeActions.Deleted => Delete(row),
@@ -61,9 +66,9 @@ public static class LedgerRecovery
                 _ => null
             };
 
-            if (nowIs is null) continue;
+            if (what is null) continue;
 
-            changed[row.DocId] = new RecoveredRow(row, nowIs);
+            changed[row.DocId] = new RecoveredRow(row, what.Value.NowIs, what.Value.Did);
         }
 
         // The other direction. The journal is written before the ledger and only ever appended
@@ -78,8 +83,8 @@ public static class LedgerRecovery
         return new Recovered(changed.Count, changed.Values.ToList(), missing);
     }
 
-    /// <returns>What the row says now, or null when there was nothing to put right.</returns>
-    private static string? Correct(LedgerRow row, ChangeEntry entry)
+    /// <returns>What the row holds now and what was done to it, or null when nothing was.</returns>
+    private static (string NowIs, string Did)? Correct(LedgerRow row, ChangeEntry entry)
     {
         // Already recorded, by this run or an earlier one. Nothing to put right.
         if (row.State() is RowState.Corrected or RowState.Deleted) return null;
@@ -92,10 +97,10 @@ public static class LedgerRecovery
             $"recovered from the change journal {Now()} — it was corrected at " +
             $"{entry.At.LocalDateTime:yyyy-MM-dd HH:mm} and the ledger never recorded it");
 
-        return RowStates.Corrected;
+        return (RowStates.Corrected, "corrected it");
     }
 
-    private static string? Delete(LedgerRow row)
+    private static (string NowIs, string Did)? Delete(LedgerRow row)
     {
         if (row.State() == RowState.Deleted) return null;
 
@@ -105,10 +110,10 @@ public static class LedgerRecovery
             $"recovered from the change journal {Now()} — its old file was deleted and the " +
             "ledger never recorded it");
 
-        return RowStates.Text(RowState.Deleted);
+        return (RowStates.Text(RowState.Deleted), "deleted its old file");
     }
 
-    private static string? Revert(LedgerRow row)
+    private static (string NowIs, string Did)? Revert(LedgerRow row)
     {
         if (row.State() != RowState.Corrected) return null;
 
@@ -124,8 +129,9 @@ public static class LedgerRecovery
             $"recovered from the change journal {Now()} — it was put back and the ledger never " +
             "recorded it");
 
-        // No final state to name. What matters is that it is work again.
-        return "back to fix — its record was put back";
+        // A revert clears the final state, so the verdict is the cell that now says what the row
+        // is. It is work again, which is the whole point of putting a record back.
+        return (RowVerdicts.Fix, "put its record back");
     }
 
     private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm");

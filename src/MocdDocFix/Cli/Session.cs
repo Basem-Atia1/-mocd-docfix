@@ -614,8 +614,8 @@ public sealed class Session : IDisposable
 
         if (recovered.Changed.Count <= 3)
             foreach (var one in recovered.Changed)
-                _prompts.Say($"{one.Row.Ref()} is now \"{one.NowIs}\" — an earlier run did the " +
-                             "work and was cut short before recording it.", Tone.Muted);
+                _prompts.Say($"{one.Row.Ref()} is now \"{one.NowIs}\" — an earlier run " +
+                             $"{one.Did} and was cut short before recording it.", Tone.Muted);
         else
             _prompts.Say($"{recovered.Rows} row(s) put right from the change journal: " +
                          string.Join(", ", recovered.Changed
