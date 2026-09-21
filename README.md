@@ -163,13 +163,18 @@ else would ever mention it.
 
 One row is one document, but one *file* can belong to several. A correction writes to the
 `mocd_documentfile` record, and more than one `mocd_document` can point at the same one — so
-correcting one row moves the file under every row that shares it. Those rows keep the old path
-they recorded, and the scan names them: "row 99 · doc 2d8b172a (a.png): the same document file
-record was corrected by row 408 · doc 07d2e3c9". That is why a row you never worked on can turn
-up already right, with the ledger saying `fix` and the scan finding nothing wrong. Such a row settles as
-`done` with **no** final state: the old file belongs to the row that corrected it, and two rows
-must never queue the same deletion. The scan also says how many distinct files the sheet holds
-when it is fewer than the number of rows.
+correcting one row moves the file under every row that shares it.
+
+**Those rows are settled the moment the correction lands**, in the same run, and the run says so
+in one line: `3 other row(s) share this file — settled, nothing uploaded for them`. The `[ n/N ]`
+total drops by three at the same time, because there are three fewer documents to work on. Each
+settled row says in its notes which row settled it. They settle as `done` with **no** final
+state: the old file belongs to the row that corrected it, and two rows must never queue the same
+deletion.
+
+Rows whose sibling was corrected by an *earlier* run are found by the check before the run
+starts, and settled the same way. The scan also says how many distinct files the sheet holds when
+it is fewer than the number of rows.
 
 Documents CRM no longer returns are kept — deleting the row would throw away the record of what
 was done — and no run acts on them. The message says which kind of gone they are: out of scope

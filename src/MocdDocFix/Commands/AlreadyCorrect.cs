@@ -165,6 +165,54 @@ public sealed class AlreadyCorrect
     }
 
     /// <summary>
+    /// Settles the rows that share a corrected row's document file record, the moment it is
+    /// corrected.
+    ///
+    /// One mocd_documentfile can be the file of several mocd_document records, so correcting one
+    /// row moves the file under every row that shares it. Those rows are not work any more, and
+    /// the answer is known without asking anybody — the run has just done it.
+    ///
+    /// Until now they were found by asking CRM again: either the pre-run scan of the *next* run,
+    /// or the check at the top of each row, which is one HTTP call to learn something already in
+    /// memory. Worse, that check has no idea a sibling is involved, so it wrote "corrected and
+    /// pending the delete of old docs" and queued the same old file for deletion twice.
+    ///
+    /// **No final state, deliberately.** The old file is the corrected row's to delete, and it
+    /// owns that deletion alone.
+    /// </summary>
+    /// <param name="all">The whole ledger, not the working set — a sibling can be any row.</param>
+    /// <returns>The rows that were settled, so the caller can say how many.</returns>
+    public static IReadOnlyList<LedgerRow> SettleSiblingsOf(
+        LedgerRow corrected, IReadOnlyList<LedgerRow> all)
+    {
+        if (corrected.DocFileId == Guid.Empty || corrected.NewFilePath.Length == 0)
+            return Array.Empty<LedgerRow>();
+
+        // Only rows nothing has happened to yet, and only ones that say fix. A row somebody
+        // marked ignore, review or redo is an instruction, and this is not the place to overrule
+        // one — the file having moved does not tell us what they meant by it.
+        var siblings = all
+            .Where(other => other.DocId != corrected.DocId &&
+                            other.DocFileId == corrected.DocFileId &&
+                            other.State() == RowState.NotStarted &&
+                            other.Verdict2() == RowVerdict.Fix)
+            .ToList();
+
+        foreach (var row in siblings)
+        {
+            row.NewFilePath = corrected.NewFilePath;
+            row.Verdict = RowVerdicts.Done;
+            row.FinalState = string.Empty;
+            row.Error = string.Empty;
+            row.Notes = Note(row.Notes,
+                $"settled {Now()} — its file was corrected by {corrected.Ref()}, which shares " +
+                "this document file record and owns the delete of the old file");
+        }
+
+        return siblings;
+    }
+
+    /// <summary>
     /// A row that corrected the same mocd_documentfile record. One record can be the file of
     /// several documents, so correcting one row moves the file under all of them.
     /// </summary>

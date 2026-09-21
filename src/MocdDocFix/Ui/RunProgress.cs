@@ -62,6 +62,18 @@ public sealed class RunProgress
             ? $"              FINISHED — {RowStates.Corrected}"
             : $"              {row.DocFileName}  FINISHED", Tone.Good);
 
+    /// <summary>
+    /// Said in every mode, straight after a correction, when the file that just moved belongs to
+    /// other documents too.
+    ///
+    /// One line and no list. What matters is that the count has dropped by more than one and
+    /// that nothing was uploaded for those rows; which rows they are is in the sheet, and each
+    /// of them says in its notes who settled it.
+    /// </summary>
+    public void SettledSiblings(int count) =>
+        _prompts.Info($"              {count} other row(s) share this file — settled, nothing " +
+                      "uploaded for them", Tone.Good);
+
     public void Skipped(LedgerRow row, string why) =>
         _prompts.Info($"              {row.DocFileName}  skipped — {why}", Tone.Muted);
 

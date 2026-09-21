@@ -473,4 +473,146 @@ public class RepairRunTests : IDisposable
         Assert.DoesNotContain(_prompts.Messages, m =>
             m.Contains("skipped", StringComparison.OrdinalIgnoreCase));
     }
+
+    // ---- rows that share a document file record ----
+    //
+    // One mocd_documentfile can be the file of several mocd_document records, so correcting one
+    // row moves the file under every row that shares it. Those rows stop being work the moment
+    // the correction lands, and the run says so rather than letting them go green in silence.
+
+    /// <summary>A second document pointing at the same record as <paramref name="of"/>.</summary>
+    private static LedgerRow Sibling(LedgerRow of, int number)
+    {
+        var row = new LedgerRow
+        {
+            Row = number,
+            DocId = Guid.Parse($"c4d5e6f7-0000-0000-0000-{number:D12}"),
+            DocName = "Document " + number,
+            DocFileId = of.DocFileId,
+            DocFileName = of.DocFileName,
+            CorrectServiceCatalogueId = of.CorrectServiceCatalogueId,
+            OldFilePath = of.OldFilePath,
+            OldHash = of.OldHash,
+            OldCategory = of.OldCategory,
+            Verdict = RowVerdicts.Fix,
+            WayOfUpload = of.WayOfUpload
+        };
+
+        return row;
+    }
+
+    [Fact]
+    public async Task Correcting_a_row_settles_every_row_that_shares_its_file()
+    {
+        UploadsSucceed();
+
+        var first = Fixable(1);
+        var shares = Sibling(first, 2);
+        var rows = new[] { first, shares };
+
+        var summary = await Subject().RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.Equal(1, summary.Corrected);
+        Assert.Equal(1, summary.SettledBySibling);
+
+        Assert.Equal(RowVerdict.Done, shares.Verdict2());
+        Assert.Equal(first.NewFilePath, shares.NewFilePath);
+    }
+
+    /// <summary>
+    /// The old file belongs to the row that corrected it, and that row owns its deletion. A
+    /// second row saying "pending the delete of old docs" would queue the same file twice.
+    /// </summary>
+    [Fact]
+    public async Task A_row_settled_by_a_sibling_queues_no_delete_of_its_own()
+    {
+        UploadsSucceed();
+
+        var first = Fixable(1);
+        var shares = Sibling(first, 2);
+        var rows = new[] { first, shares };
+
+        await Subject().RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.Equal(RowState.Corrected, first.State());
+        Assert.Equal(string.Empty, shares.FinalState);
+        Assert.Equal(RowState.NotStarted, shares.State());
+    }
+
+    /// <summary>Nothing is uploaded for it — that is the whole point of settling it here.</summary>
+    [Fact]
+    public async Task Nothing_is_uploaded_for_a_row_settled_by_a_sibling()
+    {
+        UploadsSucceed();
+
+        var first = Fixable(1);
+        var rows = new[] { first, Sibling(first, 2) };
+
+        await Subject().RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.Single(_files.Uploads);
+    }
+
+    /// <summary>
+    /// A verdict somebody typed is an instruction. The file having moved does not tell us what
+    /// they meant by "ignore", so it is left exactly as it is.
+    /// </summary>
+    [Fact]
+    public async Task A_sibling_the_operator_excluded_is_left_alone()
+    {
+        UploadsSucceed();
+
+        var first = Fixable(1);
+        var shares = Sibling(first, 2);
+        shares.Verdict = RowVerdicts.Ignore;
+
+        var rows = new[] { first, shares };
+
+        var summary = await Subject().RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.Equal(0, summary.SettledBySibling);
+        Assert.Equal(RowVerdicts.Ignore, shares.Verdict);
+    }
+
+    /// <summary>
+    /// The counter is the work, and settling three rows means three fewer to do. Announcing
+    /// "[ 2/4 ]" on a run that will only ever start two documents is the same lie the counter
+    /// over the whole sheet used to tell.
+    /// </summary>
+    [Fact]
+    public async Task The_total_drops_when_siblings_are_settled()
+    {
+        UploadsSucceed();
+
+        var first = Fixable(1);
+        var rows = new[] { first, Sibling(first, 2), Sibling(first, 3), Fixable(4) };
+
+        await Subject().RunAsync(rows, rows, CancellationToken.None);
+
+        // Four rows said fix; two of them were settled by the first, so two were ever started.
+        Assert.Contains(_prompts.Messages, m => m.Contains("[ 1/4 ]"));
+        Assert.Contains(_prompts.Messages, m => m.Contains("[ 2/2 ]"));
+    }
+
+    /// <summary>
+    /// Said out loud, in every mode. A row going green that the run never appeared to touch
+    /// reads as a bug, and the count dropping by three wants explaining as it happens.
+    /// </summary>
+    [Theory]
+    [InlineData(WatchMode.Quiet)]
+    [InlineData(WatchMode.Unattended)]
+    public async Task Settling_siblings_is_said_as_one_line(WatchMode mode)
+    {
+        UploadsSucceed();
+
+        var first = Fixable(1);
+        var rows = new[] { first, Sibling(first, 2), Sibling(first, 3) };
+
+        // Quiet still shows the two copies and asks; Unattended never does.
+        _prompts.Answer(ConfirmChoice.Yes);
+
+        await Subject(mode).RunAsync(rows, rows, CancellationToken.None);
+
+        Assert.Single(_prompts.Messages, m => m.Contains("2 other row(s) share this file"));
+    }
 }

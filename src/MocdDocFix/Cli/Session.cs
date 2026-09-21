@@ -1219,6 +1219,10 @@ public sealed class Session : IDisposable
 
             foreach (var skip in summary.Skips) details.Add($"skipped: {skip.Count} — {skip.Why}");
 
+            if (summary.SettledBySibling > 0)
+                details.Add($"{summary.SettledBySibling} row(s) settled because another row " +
+                            "corrected the file they share — nothing uploaded for them");
+
             if (summary.Declined > 0)
                 details.Add($"{summary.Declined} left alone because you said the copies did not match");
 

@@ -15,9 +15,14 @@ public sealed record SkipTally(string Why, int Count);
 /// Verdict cells nobody recognises, with their row numbers. Named at the end so a typo is
 /// found before the operator assumes the row was done.
 /// </param>
+/// <param name="SettledBySibling">
+/// Rows settled because another row corrected the file they share. Counted apart from
+/// <paramref name="Corrected"/>: nothing was uploaded and nothing in CRM was written for them.
+/// </param>
 public sealed record RepairSummary(
     int Corrected, int Declined, int Failed, bool Stopped, int AlreadyRight,
-    IReadOnlyList<SkipTally> Skips, IReadOnlyList<string> Unrecognised);
+    IReadOnlyList<SkipTally> Skips, IReadOnlyList<string> Unrecognised,
+    int SettledBySibling = 0);
 
 /// <summary>
 /// The loop. It decides which rows are worked on, keeps the ledger on disk current, and stops
@@ -79,7 +84,15 @@ public sealed class RepairRun
             r.Verdict2() == RowVerdict.Fix &&
             r.State() is not (RowState.Corrected or RowState.Deleted));
 
+        // So that settling a sibling can take it back out of the total. Reference identity is
+        // what is wanted here — LedgerRow is a mutable class, and the rows in the working set
+        // are the same objects as the ones in the whole ledger.
+        var inTheTotal = new HashSet<LedgerRow>(working.Where(r =>
+            r.Verdict2() == RowVerdict.Fix &&
+            r.State() is not (RowState.Corrected or RowState.Deleted)));
+
         var started = 0;
+        var settledBySibling = 0;
 
         for (var i = 0; i < working.Count && !stopped; i++)
         {
@@ -114,6 +127,20 @@ public sealed class RepairRun
             {
                 corrected++;
                 _progress.Finished(row);
+
+                // The file this row just moved belongs to other documents too, and they are
+                // settled here rather than by asking CRM about each of them later. Said out
+                // loud: rows going green that the run never appeared to touch reads as a bug,
+                // and the operator watching the count drop by three deserves to know why.
+                var siblings = AlreadyCorrect.SettleSiblingsOf(row, wholeLedger);
+
+                if (siblings.Count > 0)
+                {
+                    settledBySibling += siblings.Count;
+                    toDo -= siblings.Count(inTheTotal.Remove);
+
+                    _progress.SettledSiblings(siblings.Count);
+                }
             }
             else if (outcome.Failed)
             {
@@ -155,7 +182,8 @@ public sealed class RepairRun
         }
 
         return new RepairSummary(corrected, declined, failed, stopped, alreadyRight,
-            skips.Select(s => new SkipTally(s.Key, s.Value)).ToList(), unrecognised);
+            skips.Select(s => new SkipTally(s.Key, s.Value)).ToList(), unrecognised,
+            settledBySibling);
     }
 
     /// <summary>
