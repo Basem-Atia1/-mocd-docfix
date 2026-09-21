@@ -1201,11 +1201,19 @@ public sealed class Session : IDisposable
 
             ReportAbandonedUploads(rows);
 
+            // Before the watch question, because the answers decide what the run will show. A
+            // row the operator skipped is offered back with the one fact that settles it — do
+            // the two files actually differ — rather than walking up to the same question again.
+            var revisited = new RevisitEyeChecks(_backups, _prompts).Ask(rows);
+            if (revisited.Reviewed > 0 || revisited.Again > 0 ||
+                revisited.FinishWithoutAsking.Count > 0)
+                _ledger.Write(all);
+
             var progress = new RunProgress(_prompts, AskHowCloselyToWatch());
 
             var summary = await new RepairRun(_ledger,
                     new RepairOneRow(_files, _read, _write, _backups, _journal, _prompts,
-                        _opener, progress, _envName),
+                        _opener, progress, _envName, revisited.FinishWithoutAsking),
                     progress, _prompts, _errors)
                 .RunAsync(rows, all, ct);
 

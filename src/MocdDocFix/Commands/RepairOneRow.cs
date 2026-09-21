@@ -55,6 +55,16 @@ public sealed record RowOutcome(bool Corrected, string? FailedStep, string? Fail
 /// </summary>
 public sealed class RepairOneRow
 {
+    /// <summary>
+    /// Left in the notes of a row the operator skipped at the compare question, and of one they
+    /// said did not match. Prose is no use to the next run — it has to be able to find these
+    /// rows and offer them back, which is what <see cref="RevisitEyeChecks"/> does.
+    /// </summary>
+    public const string Skipped = "[skipped]";
+
+    /// <inheritdoc cref="Skipped"/>
+    public const string NotMatched = "[not-matched]";
+
     private readonly IFileServiceClient _files;
     private readonly ICrmReadClient _read;
     private readonly ICrmWriteClient _write;
@@ -64,10 +74,16 @@ public sealed class RepairOneRow
     private readonly IFileOpener _opener;
     private readonly RunProgress _progress;
     private readonly string _env;
+    private readonly IReadOnlySet<Guid> _finishWithoutAsking;
 
+    /// <param name="finishWithoutAsking">
+    /// Documents the operator has already decided about, before the run began. A row they
+    /// skipped at the compare question and have now said to finish must not be shown the same
+    /// two files and asked the same question again — they have just answered it.
+    /// </param>
     public RepairOneRow(IFileServiceClient files, ICrmReadClient read, ICrmWriteClient write,
         BackupStore backups, ChangeJournal journal, IPrompts prompts, IFileOpener opener,
-        RunProgress progress, string env)
+        RunProgress progress, string env, IReadOnlySet<Guid>? finishWithoutAsking = null)
     {
         _files = files;
         _read = read;
@@ -78,6 +94,7 @@ public sealed class RepairOneRow
         _opener = opener;
         _progress = progress;
         _env = env;
+        _finishWithoutAsking = finishWithoutAsking ?? new HashSet<Guid>();
     }
 
     public async Task<RowOutcome> RunAsync(LedgerRow row, CancellationToken ct)
@@ -190,7 +207,7 @@ public sealed class RepairOneRow
 
         var staged = _backups.SaveNew(row.DocId, newFile.FileId, extension, bytes);
 
-        if (_progress.AsksTheEyeCheck)
+        if (_progress.AsksTheEyeCheck && !_finishWithoutAsking.Contains(row.DocId))
         {
             _opener.Open(saved.LocalPath);
             _opener.Open(staged.LocalPath);
@@ -216,12 +233,24 @@ public sealed class RepairOneRow
                 return RowOutcome.Stopped();
             }
 
+            // Skip is not no. The prompt offers four answers and this branch used to take two of
+            // them, writing "you said the copies did not match" over somebody who had said "not
+            // now" — the same putting-words-in-their-mouth the quit branch above avoids.
+            if (looksRight == ConfirmChoice.Skip)
+            {
+                Abandon(row, newFile.FilePath);
+                row.Notes = Note(row.Notes,
+                    $"skipped {Now()} at the compare question — not looked at; the uploaded copy " +
+                    $"is at {newFile.FilePath} {Skipped}");
+                return RowOutcome.Declined();
+            }
+
             if (looksRight != ConfirmChoice.Yes)
             {
                 Abandon(row, newFile.FilePath);
                 row.Notes = Note(row.Notes,
-                    $"not corrected {DateTimeOffset.Now:yyyy-MM-dd HH:mm} — you said the copies " +
-                    $"did not match; the uploaded copy is at {newFile.FilePath}");
+                    $"not corrected {Now()} — you said the copies did not match; the uploaded " +
+                    $"copy is at {newFile.FilePath} {NotMatched}");
                 return RowOutcome.Declined();
             }
         }
@@ -306,8 +335,22 @@ public sealed class RepairOneRow
         row.Verdict = RowVerdicts.Done;
         row.Error = string.Empty;
 
+        // The row has been through the compare question and come out the other side. Left there,
+        // the marks would offer it back on every future run.
+        row.Notes = WithoutMarks(row.Notes);
+
         return RowOutcome.Ok();
     }
+
+    /// <summary>
+    /// Drops the eye-check marks, leaving the sentences that carried them. They are instructions
+    /// to the next run, not history: what the operator answered is still worth reading.
+    /// </summary>
+    public static string WithoutMarks(string notes) =>
+        notes.Replace($" {Skipped}", string.Empty, StringComparison.Ordinal)
+             .Replace(Skipped, string.Empty, StringComparison.Ordinal)
+             .Replace($" {NotMatched}", string.Empty, StringComparison.Ordinal)
+             .Replace(NotMatched, string.Empty, StringComparison.Ordinal);
 
     /// <summary>
     /// Whether CRM already has this document filed correctly, and settles the row if so.
