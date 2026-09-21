@@ -231,8 +231,7 @@ public sealed class Session : IDisposable
             _ledger.Write(merged.Rows);
 
             _prompts.Say($"{merged.Rows.Count} document(s) written to {_ledger.Path}", Tone.Good);
-            SayWhatWasLeftOut(merged);
-            SayHowManyHaveNoFile(merged);
+            SayWhatTheScanFound(merged);
 
             return merged.Rows;
         }
@@ -250,12 +249,7 @@ public sealed class Session : IDisposable
         _prompts.Field("file", _ledger.Path, Tone.Muted);
         if (_ledger.OtherPath is { } other) _prompts.Field("other services", other, Tone.Muted);
 
-        _prompts.Say($"{merged.Rows.Count} row(s): {merged.Added} new since last time, " +
-                     $"{merged.Refreshed} refreshed, {merged.Protected} left as they are because " +
-                     "they have already been worked on or you closed them.");
-
-        SayWhatWasLeftOut(merged);
-        SayHowManyHaveNoFile(merged);
+        SayWhatTheScanFound(merged);
 
         // A document type moved to another service in CRM moves its row between the two files.
         // Silently that reads as a row vanishing from one and appearing in the other.
@@ -263,7 +257,6 @@ public sealed class Session : IDisposable
             _prompts.Say($"{_ledger.LastMoved} row(s) changed file — their document type was " +
                          "moved to a different service in CRM.", Tone.Muted);
 
-        SayHowManyFiles(merged.Rows);
         ReportGone(merged);
 
         return typeThemMyself ? ReadBackHandEdits(merged.Rows) : merged.Rows;
@@ -385,56 +378,40 @@ public sealed class Session : IDisposable
             : _appConfig.ServiceCatalogues;
 
     /// <summary>
-    /// How many documents the scan found nothing wrong with, and so did not write.
+    /// What the scan found, in two lines.
     ///
-    /// Said rather than shown. It is the majority of any environment — 96 of the dev ledger's
-    /// 410 rows were this before the change — and there is nothing to say about any one of them.
-    /// But a sheet that is suddenly a quarter shorter wants explaining.
-    /// </summary>
-    private void SayWhatWasLeftOut(Merged merged)
-    {
-        if (merged.NotAdded == 0) return;
-
-        _prompts.Say($"{merged.NotAdded} document(s) are already filed correctly and are not in " +
-                     "the sheet.", Tone.Muted);
-    }
-
-    /// <summary>
-    /// How many documents name no file at all.
+    /// It was five paragraphs saying six numbers, each with its reasoning attached — why correct
+    /// documents are not written, why documents with no file are not written, what it means for
+    /// two rows to share a file. All of it true, none of it new after the first time, and the
+    /// numbers themselves buried in the middle of sentences where they cannot be compared with
+    /// last run's.
     ///
-    /// Said, not shown. Across every catalogue in pre-prod it is roughly thirty-seven thousand,
-    /// because two thirds of that environment is documents naming no file — and thirty-seven
-    /// thousand rows do not read as a list, they read as wallpaper. There is nothing this tool
-    /// can do with one either, so they no longer enter the sheet at all.
+    /// The numbers are the report. The reasoning is in the README.
     /// </summary>
-    private void SayHowManyHaveNoFile(Merged merged)
+    private void SayWhatTheScanFound(Merged merged)
     {
-        if (merged.NoFile == 0) return;
+        var rows = merged.Rows;
 
-        _prompts.Say($"{merged.NoFile} document(s) have no file path at all and are not in the " +
-                     "sheet. There is nothing this tool can do with them — no path to diagnose " +
-                     "and no file to move.", Tone.Muted);
-    }
-
-    /// <summary>
-    /// How many distinct files those rows are, when it is not the same as how many rows.
-    ///
-    /// One mocd_documentfile can be the file of several mocd_document records, so correcting one
-    /// row can settle another. Without this the sheet reads as more work than there is, and a
-    /// row going green on its own looks like a bug.
-    /// </summary>
-    private void SayHowManyFiles(IReadOnlyList<LedgerRow> rows)
-    {
         var files = rows.Where(r => r.DocFileId != Guid.Empty)
             .Select(r => r.DocFileId)
             .Distinct()
             .Count();
 
+        // One mocd_documentfile can be the file of several documents, so the sheet reads as more
+        // work than it is — and a row going green on its own looks like a bug until you know.
         var shared = rows.Count(r => r.DocFileId != Guid.Empty) - files;
-        if (shared <= 0) return;
 
-        _prompts.Say($"{rows.Count} rows · {files} distinct files — {shared} row(s) share a file " +
-                     "with another row, so correcting one settles the other.", Tone.Muted);
+        _prompts.Say($"{rows.Count} rows · {files} files{(shared > 0 ? $", {shared} shared" : "")}" +
+                     $" · {merged.Added} new, {merged.Refreshed} refreshed, " +
+                     $"{merged.Protected} kept as they are.");
+
+        if (merged.NotAdded == 0 && merged.NoFile == 0) return;
+
+        var left = new List<string>();
+        if (merged.NotAdded > 0) left.Add($"{merged.NotAdded} already correct");
+        if (merged.NoFile > 0) left.Add($"{merged.NoFile} with no file path");
+
+        _prompts.Say($"Not in the sheet: {string.Join(", ", left)}.", Tone.Muted);
     }
 
     /// <summary>
