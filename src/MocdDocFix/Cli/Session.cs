@@ -114,12 +114,14 @@ public sealed class Session : IDisposable
     /// <returns>False when the operator would rather stop than close it.</returns>
     private bool WaitUntilWritable()
     {
-        while (!_ledger.CanWrite())
+        // Named, not assumed. Across every catalogue there are two files, and asking somebody to
+        // close the one they do not have open is a dead end.
+        while (_ledger.Locked() is { } locked)
         {
             _prompts.Blank();
             _prompts.Warn("The ledger is open in Excel, so this run could not record what it did.",
                 Tone.Warn);
-            _prompts.Field("file", _ledger.Path, Tone.Muted);
+            _prompts.Field("file", locked, Tone.Muted);
             _prompts.Blank();
 
             if (!_prompts.YesNo("  Close it in Excel, then answer yes to carry on. Try again?",
@@ -141,7 +143,7 @@ public sealed class Session : IDisposable
     {
         _prompts.Blank();
         _prompts.Warn("The ledger could not be written — it is open in Excel.", Tone.Warn);
-        _prompts.Field("file", _ledger.Path, Tone.Muted);
+        _prompts.Field("file", _ledger.Locked() ?? _ledger.Path, Tone.Muted);
         _prompts.Blank();
         _prompts.Say("The work itself is not lost: whatever this run has already done to CRM " +
                      "and to the file server stands. What is waiting is the record of it.",
@@ -485,7 +487,10 @@ public sealed class Session : IDisposable
         _prompts.Blank();
         _prompts.Say("Open the ledger, set the verdict on those rows to fix, skip or whatever " +
                      "you mean, then save and close it.", Tone.Warn);
-        _prompts.Field("file", _ledger.Path, Tone.Muted);
+
+        // Both, when the scope has two. The rows waiting to be typed can be in either, and
+        // naming one of them sends somebody to a sheet that does not hold the row they want.
+        foreach (var path in _ledger.Paths) _prompts.Field("file", path, Tone.Muted);
 
         if (!_prompts.YesNo("  Saved and closed? Answer yes and I will read it back.",
                 defaultYes: true))
@@ -1190,7 +1195,7 @@ public sealed class Session : IDisposable
 
             if (_dryRun)
                 return StepOutcome.Of($"Dry run — {rows.Count} row(s) would be worked on.",
-                    $"ledger → {_ledger.Path}");
+                    _ledger.Paths.Select(p => $"ledger → {p}").ToArray());
 
             await SettleAlreadyCorrectAsync(rows, all, ct);
 
@@ -1204,7 +1209,7 @@ public sealed class Session : IDisposable
                     progress, _prompts, _errors)
                 .RunAsync(rows, all, ct);
 
-            var details = new List<string> { $"ledger → {_ledger.Path}" };
+            var details = _ledger.Paths.Select(p => $"ledger → {p}").ToList();
 
             foreach (var skip in summary.Skips) details.Add($"skipped: {skip.Count} — {skip.Why}");
 

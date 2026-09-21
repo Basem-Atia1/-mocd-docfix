@@ -148,4 +148,68 @@ public class LedgerSetTests : IDisposable
 
         Assert.True(Set(LedgerScope.Ours).EveryFileBuilt);
     }
+
+    // ---- which file is open in Excel ----
+    //
+    // Across every catalogue there are two, and the question asks the operator to close one by
+    // name. Naming the wrong one is a dead end: they close nothing, answer yes, and are asked
+    // again for ever.
+
+    /// <summary>Excel's lock denies everything, which is what this stands in for.</summary>
+    private FileStream Hold(string path)
+    {
+        File.WriteAllBytes(path, Array.Empty<byte>());
+
+        return new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    }
+
+    [Fact]
+    public void Nothing_is_locked_when_both_files_are_free()
+    {
+        var set = Set(LedgerScope.All);
+        set.Write(new[] { Row(Ours), Row(Theirs) });
+
+        Assert.Null(set.Locked());
+        Assert.True(set.CanWrite());
+    }
+
+    [Fact]
+    public void The_file_we_work_in_is_named_when_it_is_the_one_held()
+    {
+        var set = Set(LedgerScope.All);
+        using var held = Hold(OursPath);
+
+        Assert.Equal(OursPath, set.Locked());
+        Assert.False(set.CanWrite());
+    }
+
+    /// <summary>
+    /// The one that was wrong. With the other services' sheet open, the question named the file
+    /// we work in — so the operator was asked to close something they did not have open.
+    /// </summary>
+    [Fact]
+    public void The_other_services_file_is_named_when_it_is_the_one_held()
+    {
+        var set = Set(LedgerScope.All);
+        using var held = Hold(OtherPath);
+
+        Assert.Equal(OtherPath, set.Locked());
+        Assert.False(set.CanWrite());
+    }
+
+    [Fact]
+    public void Working_on_our_services_never_reports_the_other_file_as_locked()
+    {
+        var set = Set(LedgerScope.Ours);
+        using var held = Hold(OtherPath);
+
+        Assert.Null(set.Locked());
+    }
+
+    [Fact]
+    public void Every_file_of_the_scope_is_listed_in_reading_order()
+    {
+        Assert.Equal(new[] { OursPath }, Set(LedgerScope.Ours).Paths);
+        Assert.Equal(new[] { OursPath, OtherPath }, Set(LedgerScope.All).Paths);
+    }
 }

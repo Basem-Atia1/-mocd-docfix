@@ -84,7 +84,26 @@ public sealed class LedgerSet : ILedger
     /// </summary>
     public bool EveryFileBuilt => _ours.Exists && (_others?.Exists ?? true);
 
-    public bool CanWrite() => _ours.CanWrite() && (_others?.CanWrite() ?? true);
+    public bool CanWrite() => Locked() is null;
+
+    /// <summary>Every file this scope covers, in the order they are read.</summary>
+    public IReadOnlyList<string> Paths =>
+        _others is null ? new[] { _ours.Path } : new[] { _ours.Path, _others.Path };
+
+    /// <summary>
+    /// The file that cannot be written just now, or null when they all can.
+    ///
+    /// Which one matters. Across every catalogue there are two, and the question used to name
+    /// the first whichever was locked — so somebody with the other services' sheet open in Excel
+    /// was asked to close a file they did not have open, and had no way past it.
+    /// </summary>
+    public string? Locked()
+    {
+        if (!_ours.CanWrite()) return _ours.Path;
+        if (_others is not null && !_others.CanWrite()) return _others.Path;
+
+        return null;
+    }
 
     /// <summary>Set on both stores, so either file being open in Excel asks the same question.</summary>
     public Func<string, bool>? AskToRetry
