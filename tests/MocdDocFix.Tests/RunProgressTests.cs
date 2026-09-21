@@ -207,4 +207,43 @@ public class RunProgressTests
 
         Assert.Contains("verdict is review", All(prompts));
     }
+
+    // ---- one question per document, even after a failure ----
+
+    /// <summary>
+    /// A failure asks "carry on with the next document?" with the reason above it. Watch then
+    /// asked "carry on to the next document?" two lines later — the same question twice, which
+    /// teaches the operator to answer both without reading either.
+    /// </summary>
+    [Fact]
+    public void Watch_does_not_ask_again_when_the_caller_already_has()
+    {
+        var prompts = new FakePrompts { YesNoResponse = true };
+
+        Assert.True(new RunProgress(prompts, WatchMode.Watch).CarryOn(alreadyAsked: true));
+        Assert.Empty(prompts.Questions);
+    }
+
+    [Fact]
+    public void Watch_still_pauses_after_a_document_that_did_not_fail()
+    {
+        var prompts = new FakePrompts { YesNoResponse = true };
+
+        Assert.True(new RunProgress(prompts, WatchMode.Watch).CarryOn());
+        Assert.Single(prompts.Questions);
+    }
+
+    /// <summary>
+    /// Quiet and Unattended never asked in the first place, so there is nothing to suppress —
+    /// and a q pressed while the document was being worked on is an answer already given.
+    /// </summary>
+    [Theory]
+    [InlineData(WatchMode.Quiet)]
+    [InlineData(WatchMode.Unattended)]
+    public void A_stop_asked_for_during_a_failed_document_is_still_noticed(WatchMode mode)
+    {
+        var prompts = new FakePrompts { StopRequests = new Queue<bool>(new[] { true }) };
+
+        Assert.False(new RunProgress(prompts, mode).CarryOn(alreadyAsked: true));
+    }
 }

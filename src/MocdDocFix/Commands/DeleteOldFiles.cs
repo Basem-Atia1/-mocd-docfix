@@ -297,13 +297,6 @@ public sealed class DeleteOldFiles
         _prompts.Blank();
         _prompts.Warn("This cannot be undone.", Tone.Danger);
         _prompts.Blank();
-        _prompts.Bullet("No CRM record is deleted. The correction updated the record the document " +
-                        "already pointed at, so there is no orphan to remove.", Tone.Muted);
-        _prompts.Bullet("Each row is re-checked against CRM immediately before its file goes.",
-            Tone.Muted);
-        _prompts.Bullet("Your local backup keeps the bytes, but a restored file gets a new id and " +
-                        "today's date folder — it cannot go back to its old path.", Tone.Muted);
-        _prompts.Blank();
 
         if (!_prompts.YesNo("  Delete the old files now?", defaultYes: false, Tone.Danger))
             return false;

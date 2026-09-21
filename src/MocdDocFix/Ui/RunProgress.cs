@@ -113,11 +113,21 @@ public sealed class RunProgress
         return _stopAsked;
     }
 
+    /// <param name="alreadyAsked">
+    /// True when the caller has just put the same question in its own words. A failure asks
+    /// whether to carry on, in stronger terms and with the reason above it; Watch then asked
+    /// "Carry on to the next document?" two lines later, which is the same question twice and
+    /// teaches the operator to answer both without reading either.
+    ///
+    /// It suppresses only Watch's pause. Quiet and Unattended still notice a q pressed while the
+    /// document was being worked on — that is not a question, it is an answer already given.
+    /// </param>
     /// <returns>False to stop the run.</returns>
-    public bool CarryOn()
+    public bool CarryOn(bool alreadyAsked = false)
     {
         if (Mode == WatchMode.Watch)
-            return _prompts.YesNo("  Carry on to the next document?", defaultYes: true);
+            return alreadyAsked ||
+                   _prompts.YesNo("  Carry on to the next document?", defaultYes: true);
 
         // Quiet and Unattended never interrupt to ask, so the operator says stop whenever they
         // like and it takes effect here — after the document in progress has been finished and

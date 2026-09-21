@@ -170,8 +170,10 @@ public sealed class RepairRun
             if (outcome.Failed && !KeepGoing()) { stopped = true; break; }
 
             // Watch asks after every document, not only after a failure — the operator is
-            // watching precisely so they can stop when they see something they do not like.
-            if (!_progress.CarryOn()) { stopped = true; break; }
+            // watching precisely so they can stop when they see something they do not like. But
+            // after a failure the question above has just been asked, and asking it again in
+            // gentler words is how two prompts become one reflex.
+            if (!_progress.CarryOn(alreadyAsked: outcome.Failed)) { stopped = true; break; }
         }
 
         return new RepairSummary(corrected, declined, failed, stopped, alreadyRight,
