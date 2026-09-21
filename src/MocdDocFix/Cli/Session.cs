@@ -201,7 +201,7 @@ public sealed class Session : IDisposable
         // out here — and after that first run there is nothing left saying skip and this does
         // nothing at all.
         var tidied = LegacyCleanup.Apply(existing, scanned);
-        if (tidied.Removed > 0 || tidied.Kept > 0 || tidied.NoFile > 0)
+        if (tidied.Removed > 0 || tidied.Kept > 0)
         {
             existing = tidied.Rows;
 
@@ -210,10 +210,6 @@ public sealed class Session : IDisposable
             if (tidied.Removed > 0)
                 _prompts.Say($"{tidied.Removed} row(s) were correct and had never been worked " +
                              "on. They have been taken out of the sheet.", Tone.Good);
-
-            if (tidied.NoFile > 0)
-                _prompts.Say($"{tidied.NoFile} row(s) had no file path at all. They have been " +
-                             "taken out of the sheet.", Tone.Good);
 
             if (tidied.Kept > 0)
                 _prompts.Say($"{tidied.Kept} row(s) said skip but had work recorded against " +
@@ -588,6 +584,23 @@ public sealed class Session : IDisposable
     /// </summary>
     private IReadOnlyList<LedgerRow> Reconciled(IReadOnlyList<LedgerRow> rows)
     {
+        // Rows with no file at all, out of both files, every time the ledger is opened — not
+        // only on a run that goes and reads CRM. Somebody who works from the sheet as it is and
+        // never rescans was keeping them for ever.
+        var dropped = DropRowsWithNoFile.From(rows);
+
+        if (dropped.Removed > 0)
+        {
+            rows = dropped.Rows;
+
+            _prompts.Blank();
+            _prompts.Say($"{dropped.Removed} row(s) had no file path at all and have been taken " +
+                         "out of the sheet. Nothing can be done with a record naming no file, " +
+                         "and the scan no longer writes them.", Tone.Muted);
+
+            _ledger.Write(rows);
+        }
+
         var recovered = LedgerRecovery.Apply(rows, _journal.Read());
 
         if (recovered.MissingFromJournal > 0)

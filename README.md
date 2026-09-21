@@ -121,9 +121,10 @@ change still open, and their `skip` cells read as `done`.)
 A document whose record names **no file at all** gets no row either. There is no path to
 diagnose and no file to move, so there is nothing the tool could do with one; across every
 catalogue in pre-prod they are two thirds of the environment. The scan says how many it found.
-Ones an earlier build wrote into the sheet as `review` are taken out the next time it updates
-from CRM — unless somebody has left a note on the row, recorded work against it, or attached a
-file since, in which case it stays.
+Ones an earlier build wrote into the sheet as `review` are taken out of **both** files the next
+time the ledger is opened — every time, not only on a run that reads CRM. The file path decides,
+not the verdict: a hand can change `review` to anything, and what makes the row impossible to act
+on is that there is no file. A row carrying a final state is never removed by any tidy-up.
 
 | final state | |
 |---|---|
