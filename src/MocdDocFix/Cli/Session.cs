@@ -605,12 +605,23 @@ public sealed class Session : IDisposable
 
         if (recovered.Rows == 0) return rows;
 
-        // One line. It is not a warning and there is nothing to decide: an earlier run did the
-        // work and was cut short before writing it down, the journal had it, and the ledger now
-        // agrees. Each row carries the detail in its notes.
+        // Which row, and what it says now.
+        //
+        // "1 row(s) were behind what an earlier run actually did" is true and useless: a row has
+        // just been changed underneath the operator and they cannot tell which, or into what.
+        // A handful get a line each; more than that and the shape is what matters.
         _prompts.Blank();
-        _prompts.Say($"{recovered.Rows} row(s) were behind what an earlier run actually did. " +
-                     "Put right from the change journal.", Tone.Muted);
+
+        if (recovered.Changed.Count <= 3)
+            foreach (var one in recovered.Changed)
+                _prompts.Say($"{one.Row.Ref()} is now \"{one.NowIs}\" — an earlier run did the " +
+                             "work and was cut short before recording it.", Tone.Muted);
+        else
+            _prompts.Say($"{recovered.Rows} row(s) put right from the change journal: " +
+                         string.Join(", ", recovered.Changed
+                             .GroupBy(c => c.NowIs)
+                             .OrderByDescending(g => g.Count())
+                             .Select(g => $"{g.Count()} → \"{g.Key}\"")) + ".", Tone.Muted);
 
         _ledger.Write(rows);
 

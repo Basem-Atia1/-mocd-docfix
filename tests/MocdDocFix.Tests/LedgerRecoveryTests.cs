@@ -45,7 +45,58 @@ public class LedgerRecoveryTests
         Assert.Equal(RowState.Corrected, row.State());
         Assert.Equal(NewPath, row.NewFilePath);
         Assert.Contains("journal", row.Notes);
-        Assert.Contains(recovered.Notes, n => n.Contains("never recorded"));
+        Assert.Contains("never recorded", row.Notes);
+
+        // What the operator is told: which row, and what it says now.
+        var changed = Assert.Single(recovered.Changed);
+        Assert.Same(row, changed.Row);
+        Assert.Equal(RowStates.Corrected, changed.NowIs);
+    }
+
+    [Fact]
+    public void A_deleted_row_says_the_state_it_now_holds()
+    {
+        var row = Row(finalState: RowStates.Corrected);
+
+        var recovered = LedgerRecovery.Apply(new[] { row }, new[] { Entry(ChangeActions.Deleted) });
+
+        Assert.Equal(RowStates.Text(RowState.Deleted), Assert.Single(recovered.Changed).NowIs);
+    }
+
+    /// <summary>
+    /// A revert clears the final state, so there is no state to name. What the operator needs to
+    /// know is that the row is work again.
+    /// </summary>
+    [Fact]
+    public void A_reverted_row_says_it_is_work_again()
+    {
+        var row = Row(finalState: RowStates.Corrected);
+        row.NewFilePath = NewPath;
+
+        var recovered = LedgerRecovery.Apply(new[] { row }, new[] { Entry(ChangeActions.Reverted) });
+
+        Assert.Contains("fix", Assert.Single(recovered.Changed).NowIs);
+        Assert.Equal(RowVerdict.Fix, row.Verdict2());
+    }
+
+    /// <summary>
+    /// Corrected, then put back. Saying the row is corrected when a later entry undid it would
+    /// be worse than saying nothing — so the last word wins, and the row is named once.
+    /// </summary>
+    [Fact]
+    public void A_row_the_journal_touched_twice_is_reported_once_and_as_it_ended()
+    {
+        var row = Row();
+        var first = DateTimeOffset.UtcNow;
+
+        var recovered = LedgerRecovery.Apply(new[] { row }, new[]
+        {
+            Entry(ChangeActions.Corrected, first),
+            Entry(ChangeActions.Reverted, first.AddMinutes(1))
+        });
+
+        Assert.Equal(1, recovered.Rows);
+        Assert.Contains("fix", Assert.Single(recovered.Changed).NowIs);
     }
 
     /// <summary>

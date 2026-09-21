@@ -3,13 +3,21 @@ using MocdDocFix.Storage;
 
 namespace MocdDocFix.Commands;
 
-/// <param name="Notes">One line per row put right, for the operator to read.</param>
+/// <param name="NowIs">
+/// What the row says now, in the words of the final state column — or "back to fix" for a
+/// revert, which clears it. The one thing worth reading about a row that has just been changed
+/// underneath the operator is what it has been changed to.
+/// </param>
+public sealed record RecoveredRow(LedgerRow Row, string NowIs);
+
+/// <param name="Changed">Every row put right, and what each one now says.</param>
 /// <param name="MissingFromJournal">
 /// Rows the ledger says were corrected or deleted that the journal has never heard of. The
 /// journal is append-only and is written first, so it cannot fall behind on its own: anything
 /// here means it was deleted, truncated or replaced.
 /// </param>
-public sealed record Recovered(int Rows, IReadOnlyList<string> Notes, int MissingFromJournal = 0);
+public sealed record Recovered(
+    int Rows, IReadOnlyList<RecoveredRow> Changed, int MissingFromJournal = 0);
 
 /// <summary>
 /// Puts the ledger back in step with what actually happened, from the change journal.
@@ -35,15 +43,17 @@ public static class LedgerRecovery
         var byDocument = new Dictionary<Guid, LedgerRow>();
         foreach (var row in rows) byDocument[row.DocId] = row;
 
-        var notes = new List<string>();
-        var touched = new HashSet<Guid>();
+        var changed = new Dictionary<Guid, RecoveredRow>();
 
         // In order: a document corrected, reverted and corrected again must end where it ended.
+        // The dictionary is keyed on the document for the same reason — the last word wins, and
+        // saying a row is corrected when a later entry put it back to fix would be worse than
+        // saying nothing.
         foreach (var entry in journal.OrderBy(e => e.At))
         {
             if (!byDocument.TryGetValue(entry.Doc, out var row)) continue;
 
-            var note = entry.Action switch
+            var nowIs = entry.Action switch
             {
                 ChangeActions.Corrected => Correct(row, entry),
                 ChangeActions.Deleted => Delete(row),
@@ -51,10 +61,9 @@ public static class LedgerRecovery
                 _ => null
             };
 
-            if (note is null) continue;
+            if (nowIs is null) continue;
 
-            notes.Add($"row {row.Row} ({row.DocFileName}): {note}");
-            touched.Add(row.DocId);
+            changed[row.DocId] = new RecoveredRow(row, nowIs);
         }
 
         // The other direction. The journal is written before the ledger and only ever appended
@@ -66,9 +75,10 @@ public static class LedgerRecovery
         var missing = rows.Count(r =>
             r.State() is RowState.Corrected or RowState.Deleted && !known.Contains(r.DocId));
 
-        return new Recovered(touched.Count, notes, missing);
+        return new Recovered(changed.Count, changed.Values.ToList(), missing);
     }
 
+    /// <returns>What the row says now, or null when there was nothing to put right.</returns>
     private static string? Correct(LedgerRow row, ChangeEntry entry)
     {
         // Already recorded, by this run or an earlier one. Nothing to put right.
@@ -78,10 +88,11 @@ public static class LedgerRecovery
         row.FinalState = RowStates.Text(RowState.Corrected);
         row.Verdict = RowVerdicts.Done;
         row.Error = string.Empty;
-        row.Notes = Add(row.Notes, $"recovered from the change journal {Now()}");
+        row.Notes = Add(row.Notes,
+            $"recovered from the change journal {Now()} — it was corrected at " +
+            $"{entry.At.LocalDateTime:yyyy-MM-dd HH:mm} and the ledger never recorded it");
 
-        return $"was corrected at {entry.At.LocalDateTime:yyyy-MM-dd HH:mm} but the ledger never " +
-               "recorded it — marked corrected and pending the delete of old docs";
+        return RowStates.Corrected;
     }
 
     private static string? Delete(LedgerRow row)
@@ -90,9 +101,11 @@ public static class LedgerRecovery
 
         row.FinalState = RowStates.Text(RowState.Deleted);
         row.Verdict = RowVerdicts.Done;
-        row.Notes = Add(row.Notes, $"recovered from the change journal {Now()}");
+        row.Notes = Add(row.Notes,
+            $"recovered from the change journal {Now()} — its old file was deleted and the " +
+            "ledger never recorded it");
 
-        return "its old file was deleted but the ledger never recorded it — marked old files deleted";
+        return RowStates.Text(RowState.Deleted);
     }
 
     private static string? Revert(LedgerRow row)
@@ -107,9 +120,12 @@ public static class LedgerRecovery
         row.NewFilePath = string.Empty;
         row.FinalState = string.Empty;
         row.Verdict = RowVerdicts.Fix;
-        row.Notes = Add(row.Notes, $"recovered from the change journal {Now()}");
+        row.Notes = Add(row.Notes,
+            $"recovered from the change journal {Now()} — it was put back and the ledger never " +
+            "recorded it");
 
-        return "was reverted but the ledger never recorded it — put back to fix";
+        // No final state to name. What matters is that it is work again.
+        return "back to fix — its record was put back";
     }
 
     private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm");
