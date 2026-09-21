@@ -614,14 +614,15 @@ public sealed class Session : IDisposable
 
         if (recovered.Changed.Count <= 3)
             foreach (var one in recovered.Changed)
-                _prompts.Say($"{one.Row.Ref()} is now \"{one.NowIs}\" — an earlier run " +
-                             $"{one.Did} and was cut short before recording it.", Tone.Muted);
+                _prompts.Say($"{one.Row.Named()}: an earlier run {one.Did} and was cut short " +
+                             $"before recording it, so it moves to {one.NowIs}.", Tone.Muted);
         else
-            _prompts.Say($"{recovered.Rows} row(s) put right from the change journal: " +
-                         string.Join(", ", recovered.Changed
+            _prompts.Say($"{recovered.Rows} row(s) were the work of an earlier run that was cut " +
+                         "short before recording it, so they move to " +
+                         string.Join("; ", recovered.Changed
                              .GroupBy(c => c.NowIs)
                              .OrderByDescending(g => g.Count())
-                             .Select(g => $"{g.Count()} → \"{g.Key}\"")) + ".", Tone.Muted);
+                             .Select(g => $"{g.Count()} → {g.Key}")) + ".", Tone.Muted);
 
         _ledger.Write(rows);
 

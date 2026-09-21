@@ -84,4 +84,54 @@ public class LedgerRowTests
             $"https://crm.example/main.aspx?etn=mocd_documentfile&pagetype=entityrecord&id={id}",
             CrmLinks.DocumentFile("https://crm.example", id));
     }
+
+    // ---- naming a row in a message ----
+
+    private static LedgerRow Named() => new()
+    {
+        Row = 1,
+        DocId = Guid.Parse("2cd3b04c-391c-f111-b119-005056010908"),
+        DocFileName = "Application Summary.png"
+    };
+
+    [Fact]
+    public void A_settled_row_is_named_with_its_number_document_and_file()
+    {
+        var text = Named().Ref();
+
+        Assert.Contains("row 1", text);
+        Assert.Contains("2cd3b04c", text);
+        Assert.Contains("Application Summary.png", text);
+    }
+
+    /// <summary>The tab helps somebody find the row, while the row is really on it.</summary>
+    [Fact]
+    public void A_row_awaiting_its_delete_is_named_with_the_tab_it_sits_on()
+    {
+        var row = Named();
+        row.FinalState = RowStates.Text(RowState.Corrected);
+
+        Assert.Contains("on the corrected tab", row.Ref());
+    }
+
+    /// <summary>
+    /// The bug this closes. The two halves of Ref are not as of the same moment: the tab comes
+    /// from the row's state right now, the number from the last write. A row whose state has
+    /// just been changed therefore reads as "row 1 on the corrected tab" — where 1 was its
+    /// number on the ledger tab, and the corrected tab is somewhere it has not been written to.
+    /// That sends the reader to the wrong sheet to look for a row that is not there.
+    /// </summary>
+    [Fact]
+    public void Named_leaves_the_tab_out_so_a_row_just_changed_is_not_placed_where_it_is_not_yet()
+    {
+        var row = Named();
+        row.FinalState = RowStates.Text(RowState.Corrected);
+
+        var text = row.Named();
+
+        Assert.DoesNotContain("tab", text);
+        Assert.Contains("row 1", text);
+        Assert.Contains("2cd3b04c", text);
+        Assert.Contains("Application Summary.png", text);
+    }
 }

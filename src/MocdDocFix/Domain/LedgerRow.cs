@@ -112,4 +112,20 @@ public sealed class LedgerRow
         return $"row {Row}{where} · doc {DocId.ToString()[..8]}" +
                (DocFileName.Length == 0 ? string.Empty : $" ({DocFileName})");
     }
+
+    /// <summary>
+    /// The same name, without the tab. **Use this whenever the row's state has just changed.**
+    ///
+    /// The two halves of <see cref="Ref"/> are not as of the same moment. The tab is worked out
+    /// from the row's final state right now; the number is the one the last write gave it. While
+    /// nothing has changed they agree, and naming the tab helps somebody find the row.
+    ///
+    /// The moment something does change they do not. A row that has just been marked corrected
+    /// reads as "row 1 on the corrected tab" — where 1 was its number on the *ledger* tab, and
+    /// the corrected tab is somewhere it has not been written to yet. That is a reference to a
+    /// place that does not exist, and it sends the reader to the wrong sheet to look for it.
+    /// </summary>
+    public string Named() =>
+        $"row {Row} · doc {DocId.ToString()[..8]}" +
+        (DocFileName.Length == 0 ? string.Empty : $" ({DocFileName})");
 }

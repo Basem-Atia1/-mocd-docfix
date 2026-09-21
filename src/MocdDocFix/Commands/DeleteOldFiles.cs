@@ -118,12 +118,12 @@ public sealed class DeleteOldFiles
                 if (outcome.AlreadyGone)
                 {
                     alreadyGone++;
-                    _prompts.Info($"  [ {where} ]  {row.Ref()}  the old file was already gone",
+                    _prompts.Info($"  [ {where} ]  {row.Named()}  the old file was already gone",
                         Tone.Muted);
                 }
                 else
                 {
-                    _prompts.Info($"  [ {where} ]  {row.Ref()}  old file deleted", Tone.Good);
+                    _prompts.Info($"  [ {where} ]  {row.Named()}  old file deleted", Tone.Good);
                 }
             }
             else

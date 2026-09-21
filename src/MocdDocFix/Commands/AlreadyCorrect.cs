@@ -205,7 +205,7 @@ public sealed class AlreadyCorrect
             row.FinalState = string.Empty;
             row.Error = string.Empty;
             row.Notes = Note(row.Notes,
-                $"settled {Now()} — its file was corrected by {corrected.Ref()}, which shares " +
+                $"settled {Now()} — its file was corrected by {corrected.Named()}, which shares " +
                 "this document file record and owns the delete of the old file");
         }
 

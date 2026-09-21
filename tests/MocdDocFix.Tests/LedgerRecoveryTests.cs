@@ -50,7 +50,9 @@ public class LedgerRecoveryTests
         // What the operator is told: which row, and what it says now.
         var changed = Assert.Single(recovered.Changed);
         Assert.Same(row, changed.Row);
-        Assert.Equal(RowStates.Corrected, changed.NowIs);
+        Assert.Contains(RowStates.Corrected, changed.NowIs);
+        Assert.Contains(RowVerdicts.Done, changed.NowIs);
+        Assert.Equal("corrected it", changed.Did);
     }
 
     [Fact]
@@ -60,7 +62,7 @@ public class LedgerRecoveryTests
 
         var recovered = LedgerRecovery.Apply(new[] { row }, new[] { Entry(ChangeActions.Deleted) });
 
-        Assert.Equal(RowStates.Text(RowState.Deleted), Assert.Single(recovered.Changed).NowIs);
+        Assert.Contains(RowStates.Text(RowState.Deleted), Assert.Single(recovered.Changed).NowIs);
     }
 
     /// <summary>
@@ -75,7 +77,7 @@ public class LedgerRecoveryTests
 
         var recovered = LedgerRecovery.Apply(new[] { row }, new[] { Entry(ChangeActions.Reverted) });
 
-        Assert.Equal(RowVerdicts.Fix, Assert.Single(recovered.Changed).NowIs);
+        Assert.Contains($"\"{RowVerdicts.Fix}\" with no final state", Assert.Single(recovered.Changed).NowIs);
         Assert.Equal(RowVerdict.Fix, row.Verdict2());
     }
 
@@ -96,7 +98,7 @@ public class LedgerRecoveryTests
         });
 
         Assert.Equal(1, recovered.Rows);
-        Assert.Equal(RowVerdicts.Fix, Assert.Single(recovered.Changed).NowIs);
+        Assert.Contains($"\"{RowVerdicts.Fix}\" with no final state", Assert.Single(recovered.Changed).NowIs);
     }
 
     /// <summary>

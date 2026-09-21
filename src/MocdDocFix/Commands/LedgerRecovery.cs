@@ -3,17 +3,16 @@ using MocdDocFix.Storage;
 
 namespace MocdDocFix.Commands;
 
-/// <param name="NowIs">
-/// The cell the row now holds, and nothing else — the final state's own words, or the verdict
-/// where a revert has cleared the final state. Anything more in here reads badly the moment it
-/// is quoted: "back to fix — its record was put back" inside quotation marks, inside a sentence
-/// with its own dash, is three clauses deep and says two things at once.
-/// </param>
 /// <param name="Did">
 /// What the earlier run did, as the verb of a sentence: "corrected it", "deleted its old file".
-/// Kept apart from <paramref name="NowIs"/> so each lands in its own half of the line.
+/// It comes first on the line, because it is the cause and the rest follows from it.
 /// </param>
-public sealed record RecoveredRow(LedgerRow Row, string NowIs, string Did);
+/// <param name="NowIs">
+/// Where the row moves to, naming both cells this changes — recovery writes the verdict and the
+/// final state, and an operator reading one of them without the other cannot tell what the row
+/// is. Kept apart from <paramref name="Did"/> so each lands in its own half of the line.
+/// </param>
+public sealed record RecoveredRow(LedgerRow Row, string Did, string NowIs);
 
 /// <param name="Changed">Every row put right, and what each one now says.</param>
 /// <param name="MissingFromJournal">
@@ -68,7 +67,7 @@ public static class LedgerRecovery
 
             if (what is null) continue;
 
-            changed[row.DocId] = new RecoveredRow(row, what.Value.NowIs, what.Value.Did);
+            changed[row.DocId] = new RecoveredRow(row, what.Value.Did, what.Value.NowIs);
         }
 
         // The other direction. The journal is written before the ledger and only ever appended
@@ -84,7 +83,7 @@ public static class LedgerRecovery
     }
 
     /// <returns>What the row holds now and what was done to it, or null when nothing was.</returns>
-    private static (string NowIs, string Did)? Correct(LedgerRow row, ChangeEntry entry)
+    private static (string Did, string NowIs)? Correct(LedgerRow row, ChangeEntry entry)
     {
         // Already recorded, by this run or an earlier one. Nothing to put right.
         if (row.State() is RowState.Corrected or RowState.Deleted) return null;
@@ -97,10 +96,11 @@ public static class LedgerRecovery
             $"recovered from the change journal {Now()} — it was corrected at " +
             $"{entry.At.LocalDateTime:yyyy-MM-dd HH:mm} and the ledger never recorded it");
 
-        return (RowStates.Corrected, "corrected it");
+        return ("corrected it",
+            $"verdict \"{RowVerdicts.Done}\" and final state \"{RowStates.Corrected}\"");
     }
 
-    private static (string NowIs, string Did)? Delete(LedgerRow row)
+    private static (string Did, string NowIs)? Delete(LedgerRow row)
     {
         if (row.State() == RowState.Deleted) return null;
 
@@ -110,10 +110,11 @@ public static class LedgerRecovery
             $"recovered from the change journal {Now()} — its old file was deleted and the " +
             "ledger never recorded it");
 
-        return (RowStates.Text(RowState.Deleted), "deleted its old file");
+        return ("deleted its old file",
+            $"verdict \"{RowVerdicts.Done}\" and final state \"{RowStates.Text(RowState.Deleted)}\"");
     }
 
-    private static (string NowIs, string Did)? Revert(LedgerRow row)
+    private static (string Did, string NowIs)? Revert(LedgerRow row)
     {
         if (row.State() != RowState.Corrected) return null;
 
@@ -131,7 +132,7 @@ public static class LedgerRecovery
 
         // A revert clears the final state, so the verdict is the cell that now says what the row
         // is. It is work again, which is the whole point of putting a record back.
-        return (RowVerdicts.Fix, "put its record back");
+        return ("put its record back", $"verdict \"{RowVerdicts.Fix}\" with no final state");
     }
 
     private static string Now() => DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm");
