@@ -178,7 +178,6 @@ public class RepairRunTests : IDisposable
 
         Assert.Equal(0, summary.Corrected);
         Assert.Empty(_files.Uploads);
-        Assert.Contains(summary.Skips, s => s.Why.Contains("already"));
     }
 
     [Fact]
@@ -457,7 +456,7 @@ public class RepairRunTests : IDisposable
     [Theory]
     [InlineData(WatchMode.Quiet)]
     [InlineData(WatchMode.Unattended)]
-    public async Task A_row_that_is_walked_past_is_counted_and_not_printed(WatchMode mode)
+    public async Task A_row_that_is_walked_past_leaves_no_trace_in_the_run(WatchMode mode)
     {
         var ignored = Fixable(1);
         ignored.Verdict = RowVerdicts.Ignore;
@@ -469,9 +468,14 @@ public class RepairRunTests : IDisposable
 
         var summary = await Subject(mode).RunAsync(rows, rows, CancellationToken.None);
 
-        Assert.Equal(2, summary.Skips.Sum(s => s.Count));
+        // Not a line while it runs, and not a tally at the end. "642 — its verdict is ignore"
+        // under a run that corrected five is a bigger number than anything the run did, about
+        // rows it was never going to touch. What is in the sheet is the sheet's to say.
+        Assert.Equal(0, summary.Corrected);
+        Assert.Empty(_files.Uploads);
         Assert.DoesNotContain(_prompts.Messages, m =>
-            m.Contains("skipped", StringComparison.OrdinalIgnoreCase));
+            m.Contains("skipped", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("its verdict is", StringComparison.OrdinalIgnoreCase));
     }
 
     // ---- rows that share a document file record ----

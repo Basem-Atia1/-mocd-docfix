@@ -4,9 +4,6 @@ using MocdDocFix.Ui;
 
 namespace MocdDocFix.Commands;
 
-/// <param name="Why">Said as it should appear on screen, without a count.</param>
-public sealed record SkipTally(string Why, int Count);
-
 /// <param name="Declined">
 /// Rows where the operator said the two copies did not match. Counted apart from failures on
 /// purpose: nothing went wrong, a person decided.
@@ -21,8 +18,7 @@ public sealed record SkipTally(string Why, int Count);
 /// </param>
 public sealed record RepairSummary(
     int Corrected, int Declined, int Failed, bool Stopped, int AlreadyRight,
-    IReadOnlyList<SkipTally> Skips, IReadOnlyList<string> Unrecognised,
-    int SettledBySibling = 0);
+    IReadOnlyList<string> Unrecognised, int SettledBySibling = 0);
 
 /// <summary>
 /// The loop. It decides which rows are worked on, keeps the ledger on disk current, and stops
@@ -64,16 +60,6 @@ public sealed class RepairRun
 
         _progress.SayHowToStop();
         var unrecognised = new List<string>();
-        var skips = new Dictionary<string, int>(StringComparer.Ordinal);
-
-        // Counted, not printed.
-        //
-        // A run over 2,478 rows with 668 to fix printed 1,810 lines saying a row was ignored or
-        // reviewed or already done — before the first document was touched. The operator is
-        // watching for what the run *does*, and the tally at the end says the same thing in one
-        // line per reason. Only rows the loop actually works on get a line of their own.
-        void Skip(LedgerRow row, string why) =>
-            skips[why] = skips.TryGetValue(why, out var n) ? n + 1 : 1;
 
         // Only the rows this run will actually act on.
         //
@@ -98,21 +84,15 @@ public sealed class RepairRun
             if (row.Verdict2() == RowVerdict.Unrecognised)
             {
                 unrecognised.Add($"row {row.Row}: '{row.Verdict}'");
-                Skip(row, "its verdict is not one this tool understands");
                 continue;
             }
 
-            if (row.Verdict2() != RowVerdict.Fix)
-            {
-                Skip(row, $"its verdict is {RowVerdicts.Text(row.Verdict2())}");
-                continue;
-            }
-
-            if (row.State() is RowState.Corrected or RowState.Deleted)
-            {
-                Skip(row, "it was already corrected in an earlier run");
-                continue;
-            }
+            // Walked past, and not counted either. The tally said "642 — its verdict is ignore"
+            // under a run that corrected five documents: a bigger number than anything the run
+            // did, about rows it was never going to touch. What is in the sheet is the sheet's
+            // to say.
+            if (row.Verdict2() != RowVerdict.Fix) continue;
+            if (row.State() is RowState.Corrected or RowState.Deleted) continue;
 
             _progress.StartRow(++started, toDo, row);
 
@@ -177,8 +157,7 @@ public sealed class RepairRun
         }
 
         return new RepairSummary(corrected, declined, failed, stopped, alreadyRight,
-            skips.Select(s => new SkipTally(s.Key, s.Value)).ToList(), unrecognised,
-            settledBySibling);
+            unrecognised, settledBySibling);
     }
 
     /// <summary>

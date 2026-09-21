@@ -1196,7 +1196,6 @@ public sealed class Session : IDisposable
 
             var details = _ledger.Paths.Select(p => $"ledger → {p}").ToList();
 
-            foreach (var skip in summary.Skips) details.Add($"skipped: {skip.Count} — {skip.Why}");
 
             if (summary.SettledBySibling > 0)
                 details.Add($"{summary.SettledBySibling} row(s) settled because another row " +
