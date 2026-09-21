@@ -255,9 +255,13 @@ public sealed class DeleteOldFiles
             row.Notes = Note(Cleared(row.Notes),
                 $"{Now()} — said deleted, but the old file is still on the server at " +
                 $"{row.OldFilePath} {Recheck}");
-
-            _prompts.Info($"  [ {row.Ref()} ]  still on the server at {row.OldFilePath}", Tone.Warn);
         }
+
+        // Counted, not listed. The mark goes in each row's notes, the next run offers them back,
+        // and a line each would bury the number in a wall of paths.
+        if (foundAgain > 0)
+            _prompts.Info($"  {foundAgain} of the {toCheck.Count} checked are still on the " +
+                          "server. They are marked, and the next run will offer them.", Tone.Warn);
 
         return (toCheck.Count, foundAgain);
     }
@@ -273,15 +277,9 @@ public sealed class DeleteOldFiles
         var marked = rows.Where(r => r.Notes.Contains(Recheck, StringComparison.Ordinal)).ToList();
         if (marked.Count == 0) return Array.Empty<LedgerRow>();
 
-        _prompts.Section($"{marked.Count} row(s) say their old file was deleted, but a check " +
-                         "found it still on the server", Tone.Warn);
-
-        foreach (var row in marked.Take(10))
-            _prompts.Bullet($"{row.Ref()}: {row.OldFilePath}", Tone.Muted);
-
-        if (marked.Count > 10)
-            _prompts.Bullet($"… and {marked.Count - 10} more", Tone.Muted);
-
+        _prompts.Blank();
+        _prompts.Warn($"{marked.Count} row(s) say their old file was deleted, but a check found " +
+                      "it still on the server. Each one says so in its notes.", Tone.Warn);
         _prompts.Blank();
 
         if (_prompts.YesNo("  Delete those old files too, in this run?", defaultYes: true))

@@ -34,4 +34,29 @@ public sealed class ErrorLog
 
         File.AppendAllText(Path, text.ToString(), Utf8);
     }
+
+    /// <summary>
+    /// A step's refusals and findings, in full, under one heading.
+    ///
+    /// The screen says how many there were; this is where the reasons go. Redo and Check it all
+    /// used to print theirs as a line each under the step, which was the only copy — so reading
+    /// them meant reading them there and then, and forty of them pushed the rest of the summary
+    /// off the screen.
+    /// </summary>
+    public void AppendLines(string heading, IReadOnlyList<string> lines)
+    {
+        if (lines.Count == 0) return;
+
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+
+        var text = new StringBuilder();
+        text.AppendLine(new string('-', 78));
+        text.AppendLine($"{heading}   {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}");
+        text.AppendLine();
+
+        foreach (var line in lines) text.AppendLine("  " + line.TrimEnd());
+        text.AppendLine();
+
+        File.AppendAllText(Path, text.ToString(), Utf8);
+    }
 }

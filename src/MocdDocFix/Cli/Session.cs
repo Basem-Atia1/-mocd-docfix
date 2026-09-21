@@ -477,13 +477,12 @@ public sealed class Session : IDisposable
                          "run — nothing will act on them.", Tone.Muted);
 
         // These are a different thing: still in scope, and CRM did not return them. That is a
-        // document that has been deleted, and it is worth naming.
-        foreach (var row in absent.Take(10))
-            _prompts.Bullet($"{row.Ref()}: CRM did not return this document. Kept in the " +
-                            "ledger, but nothing will act on it.", Tone.Warn);
-
-        if (absent.Count > 10)
-            _prompts.Bullet($"… and {absent.Count - 10} more", Tone.Muted);
+        // document that has been deleted — so it is said louder, but still as a number. The
+        // rows are in the sheet, which is where anybody would go to read them.
+        if (absent.Count > 0)
+            _prompts.Say($"{absent.Count} row(s) are in scope and CRM did not return them — " +
+                         "deleted documents. Kept in the sheet; nothing will act on them.",
+                Tone.Warn);
     }
 
     /// <summary>
@@ -534,13 +533,10 @@ public sealed class Session : IDisposable
         _prompts.Section($"{merged.Excluded.Count} row(s) are marked ignore and have never been " +
                          "worked on", Tone.Warn);
 
-        foreach (var d in merged.Excluded.Take(10))
-            _prompts.Bullet($"{d.Row.Ref()}: ignored — the scan makes " +
-                            $"it '{d.ScanSays}'{Because(d.ScanReason)}", Tone.Muted);
-
-        if (merged.Excluded.Count > 10)
-            _prompts.Bullet($"… and {merged.Excluded.Count - 10} more", Tone.Muted);
-
+        // What the scan makes of them, as a count per verdict rather than a row each. Which
+        // rows they are is a question for the sheet; how many and of what kind is what decides
+        // the answer to the question below.
+        _prompts.Say(Tally(merged.Excluded), Tone.Muted);
         _prompts.Blank();
 
         var answer = new Asker(_prompts).Ask("What should happen to them?", new[]
@@ -624,12 +620,8 @@ public sealed class Session : IDisposable
         _prompts.Section($"{recovered.Rows} row(s) were out of step with the change journal",
             Tone.Warn);
         _prompts.Say("A run did the work but was cut short before it could record it. The " +
-                     "journal had it, so the ledger has been put right:");
-        _prompts.Blank();
-
-        foreach (var note in recovered.Notes.Take(20)) _prompts.Bullet(note, Tone.Muted);
-        if (recovered.Notes.Count > 20)
-            _prompts.Bullet($"… and {recovered.Notes.Count - 20} more", Tone.Muted);
+                     "journal had it, so the ledger has been put right. Each row says what " +
+                     "changed, in its notes.");
 
         _ledger.Write(rows);
         _prompts.Blank();
@@ -661,33 +653,17 @@ public sealed class Session : IDisposable
 
         if (scan.MissingFile.Count > 0)
         {
-            _prompts.Section($"{scan.MissingFile.Count} row(s) are filed correctly in CRM, but " +
-                             "their file is not on the server", Tone.Warn);
-
-            foreach (var m in scan.MissingFile.Take(10))
-                _prompts.Bullet($"{m.Row.Ref()}: nothing at {m.NowAt}", Tone.Muted);
-
-            if (scan.MissingFile.Count > 10)
-                _prompts.Bullet($"… and {scan.MissingFile.Count - 10} more", Tone.Muted);
-
             _prompts.Blank();
-            _prompts.Say("They keep their verdict, so the run will put the file back from the " +
-                         "old copy. If that has gone too, the row will fail and say so.",
-                Tone.Muted);
-            _prompts.Blank();
+            _prompts.Say($"{scan.MissingFile.Count} row(s) are filed correctly in CRM but their " +
+                         "file is not on the server. They keep their verdict, so the run will " +
+                         "put the file back from the old copy.", Tone.Warn);
         }
 
         if (scan.Settled.Count == 0) return;
 
-        _prompts.Section($"{scan.Settled.Count} row(s) marked fix are already correct in CRM",
-            Tone.Warn);
-
-        foreach (var s in scan.Settled.Take(10))
-            _prompts.Bullet($"{s.Row.Ref()}: {Why(s)}", Tone.Muted);
-
-        if (scan.Settled.Count > 10)
-            _prompts.Bullet($"… and {scan.Settled.Count - 10} more", Tone.Muted);
-
+        _prompts.Blank();
+        _prompts.Say($"{scan.Settled.Count} row(s) marked fix are already correct in CRM. " +
+                     Outstanding(scan.Settled), Tone.Warn);
         _prompts.Blank();
 
         if (!_prompts.YesNo($"  Settle those {scan.Settled.Count} row(s)? Nothing is uploaded " +
@@ -705,15 +681,22 @@ public sealed class Session : IDisposable
         _prompts.Blank();
     }
 
-    /// <summary>Why one row needs no work, said the way it should appear in the list.</summary>
-    private static string Why(AlreadyCorrectRow settled) => settled.As switch
+    /// <summary>
+    /// How many of the settled rows still owe a delete, in one line.
+    ///
+    /// That is the only part of "why" worth saying up front: it is the difference between a row
+    /// that is finished and a row the delete step still has work on. Which rows, and the reason
+    /// for each, goes into their notes as they are settled.
+    /// </summary>
+    private static string Outstanding(IReadOnlyList<AlreadyCorrectRow> settled)
     {
-        SettleAs.AlwaysRight => "the path never changed — nothing to correct, nothing to delete",
-        SettleAs.BySibling =>
-            $"its file was corrected by {settled.Sibling!.Ref()}, which shares the same record",
-        SettleAs.PendingDelete => "already corrected — its old file is still on the server",
-        _ => "already corrected — its old file has gone"
-    };
+        var pending = settled.Count(s => s.As == SettleAs.PendingDelete);
+
+        return pending == 0
+            ? "Nothing is outstanding on any of them."
+            : $"{pending} of them still have their old file on the server, so the delete step " +
+              "will have work to do.";
+    }
 
     /// <summary>
     /// Says which rows describe a file that has moved since the ledger last looked, and what
@@ -732,47 +715,32 @@ public sealed class Session : IDisposable
     {
         if (merged.Moved.Count == 0) return;
 
-        _prompts.Section($"{merged.Moved.Count} row(s) point at a file that has moved since the " +
-                         "ledger last looked", Tone.Warn);
-
-        foreach (var m in merged.Moved.Take(10))
-        {
-            _prompts.Bullet(m.CorrectedBy is null
-                ? $"{m.Row.Ref()}: its file is now at {m.NowAt}, and " +
-                  "nothing in this ledger put it there"
-                : $"{m.Row.Ref()}: the same document file record was " +
-                  $"corrected by {m.CorrectedBy!.Ref()}, so this one is already correct too",
-                Tone.Muted);
-        }
-
-        if (merged.Moved.Count > 10)
-            _prompts.Bullet($"… and {merged.Moved.Count - 10} more", Tone.Muted);
+        // Two causes, and the split between them is the whole content of this report: one is a
+        // sibling row in this very sheet, the other is somebody outside the tool. Each row says
+        // which in its notes, so the screen only needs the counts.
+        var bySibling = merged.Moved.Count(m => m.CorrectedBy is not null);
+        var byOthers = merged.Moved.Count - bySibling;
 
         _prompts.Blank();
-        _prompts.Say("Their old path is kept as it was, so the old file can still be found and " +
-                     "deleted. Nothing will be uploaded for them a second time.", Tone.Muted);
-        _prompts.Blank();
+        _prompts.Say($"{merged.Moved.Count} row(s) point at a file that has moved since the " +
+                     $"ledger last looked — {bySibling} moved by another row sharing the same " +
+                     $"record, {byOthers} by something outside this tool. Their old path is " +
+                     "kept, and nothing will be uploaded for them twice.", Tone.Warn);
     }
 
     /// <summary>
-    /// What the scan makes of a row, in words.
+    /// What a fresh look at CRM makes of a set of rows, counted per verdict.
     ///
-    /// A blank verdict is the scan saying there is nothing wrong with the document. It is what
-    /// a correctly-filed row gets, and such rows are no longer written to the sheet at all —
-    /// but an existing row can still turn correct, when somebody fixes it in CRM. "CRM says ''"
-    /// is not a sentence, so this says the thing it means instead.
+    /// This replaced a bullet per row. Ten of four hundred told the operator nothing they could
+    /// act on — the rows are in the sheet, which is where anybody goes to read them — while the
+    /// question underneath, which is the thing that actually needs answering, was pushed off the
+    /// screen. The shape of the set is what decides that answer, and it fits on one line.
     /// </summary>
-    private static string ScanSaid(string scanSays) =>
-        scanSays.Length == 0
-            ? "the scan no longer finds anything wrong with it"
-            : $"CRM says '{scanSays}'";
-
-    /// <summary>The scan's own words for a verdict, trimmed to fit one line of the report.</summary>
-    private static string Because(string reason)
-    {
-        if (reason.Length == 0) return string.Empty;
-        return reason.Length <= 90 ? $" — {reason}" : $" — {reason[..87]}…";
-    }
+    private static string Tally(IReadOnlyList<VerdictDisagreement> rows) =>
+        "The scan makes them: " + string.Join(", ", rows
+            .GroupBy(d => d.ScanSays.Length == 0 ? "already correct" : d.ScanSays)
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{g.Count()} {g.Key}")) + ".";
 
     /// <summary>
     /// Rows the ledger calls finished that CRM still files under the wrong catalogue.
@@ -788,14 +756,6 @@ public sealed class Session : IDisposable
 
         _prompts.Section($"{merged.StillWrong.Count} row(s) are marked finished, but CRM still " +
                          "files them under the wrong catalogue", Tone.Warn);
-
-        foreach (var d in merged.StillWrong.Take(10))
-            _prompts.Bullet($"{d.Row.Ref()}: says '{d.Row.Verdict}'" +
-                            (d.Row.FinalState.Length > 0 ? $" / '{d.Row.FinalState}'" : "") +
-                            $"{Because(d.ScanReason)}", Tone.Muted);
-
-        if (merged.StillWrong.Count > 10)
-            _prompts.Bullet($"… and {merged.StillWrong.Count - 10} more", Tone.Muted);
 
         _prompts.Blank();
 
@@ -857,34 +817,20 @@ public sealed class Session : IDisposable
         var pending = stranded.Count(s => s.DeleteStillPending);
         var reRuns = stranded.Count(s => s.WouldReRun);
 
-        _prompts.Section($"{stranded.Count} finished row(s) have a verdict typed over them",
-            Tone.Warn);
-        _prompts.Say("These rows record work that was carried out, and their verdict now says " +
-                     "something else.");
         _prompts.Blank();
+        _prompts.Warn($"{stranded.Count} finished row(s) have a verdict typed over them — work " +
+                      "was carried out, and the verdict now says something else.", Tone.Warn);
 
-        foreach (var one in stranded.Take(10))
-            _prompts.Bullet($"{one.Row.Ref()}: {one.Row.FinalState} — verdict says " +
-                            $"'{one.Row.Verdict}'", Tone.Muted);
-
-        if (stranded.Count > 10)
-            _prompts.Bullet($"… and {stranded.Count - 10} more", Tone.Muted);
-
+        // The two that change what happens next. Everything else about these rows is in the
+        // sheet; these two sentences are not, and neither is obvious.
         if (pending > 0)
-        {
-            _prompts.Blank();
-            _prompts.Warn("Delete old files reads the final state column, not the verdict. " +
-                          $"{pending} of these still say \"{RowStates.Corrected}\", so their old " +
-                          "files WILL be deleted whatever the verdict says.", Tone.Danger);
-        }
+            _prompts.Warn($"{pending} still say \"{RowStates.Corrected}\", and Delete old files " +
+                          "reads that column, not the verdict — their old files will go anyway " +
+                          "(unless the verdict says redo, which holds them back).", Tone.Danger);
 
         if (reRuns > 0)
-        {
-            _prompts.Blank();
-            _prompts.Warn($"{reRuns} of them say fix on a document that has already been " +
-                          "corrected. Working those again uploads a second copy and leaves the " +
-                          "first with nothing pointing at it.", Tone.Danger);
-        }
+            _prompts.Warn($"{reRuns} say fix on a document already corrected — working those " +
+                          "again uploads a second copy.", Tone.Danger);
 
         _prompts.Blank();
 
@@ -971,14 +917,7 @@ public sealed class Session : IDisposable
         if (rows.Count == 0) return;
 
         _prompts.Section($"{rows.Count} {heading}", Tone.Warn);
-
-        foreach (var d in rows.Take(10))
-            _prompts.Bullet($"{d.Row.Ref()}: the ledger says " +
-                            $"'{d.Row.Verdict}', {ScanSaid(d.ScanSays)}{Because(d.ScanReason)}",
-                Tone.Muted);
-
-        if (rows.Count > 10) _prompts.Bullet($"… and {rows.Count - 10} more", Tone.Muted);
-
+        _prompts.Say(Tally(rows), Tone.Muted);
         _prompts.Blank();
 
         var answer = new Asker(_prompts).Ask("Which should the ledger keep?", new[]
@@ -1285,8 +1224,14 @@ public sealed class Session : IDisposable
 
             if (summary.Failed > 0) details.Add($"errors → {_errors.Path}");
 
-            foreach (var odd in summary.Unrecognised.Take(10))
-                details.Add($"VERDICT NOT UNDERSTOOD — {odd}");
+            if (summary.Unrecognised.Count > 0)
+            {
+                // A typo in a verdict cell is worth knowing about, but which cells is a question
+                // for the sheet — sort the verdict column and they are all together.
+                _errors.AppendLines("verdict cells nobody recognises", summary.Unrecognised);
+                details.Add($"{summary.Unrecognised.Count} verdict cell(s) NOT UNDERSTOOD — " +
+                            $"listed in {_errors.Path}");
+            }
 
             if (summary.Stopped) details.Add("THE RUN WAS STOPPED at your request.");
 
@@ -1323,7 +1268,7 @@ public sealed class Session : IDisposable
                           ? $" {summary.Checked} checked afterwards, {summary.FoundAgain} still " +
                             "on the server."
                           : string.Empty),
-                summary.Reasons);
+                Filed("why the delete was refused", summary.Reasons));
         },
 
         RedoAsync: async ct =>
@@ -1343,7 +1288,7 @@ public sealed class Session : IDisposable
 
             return new StepOutcome(
                 $"{summary.Reverted} record(s) put back, {summary.Refused} refused.",
-                summary.Reasons);
+                Filed("why the redo was refused", summary.Reasons));
         },
 
         CheckAsync: async ct =>
@@ -1378,7 +1323,7 @@ public sealed class Session : IDisposable
                     ? $"{summary.Checked} checked, all as the ledger says."
                     : $"{summary.Checked} checked, {summary.AsExpected} correct, " +
                       $"{summary.NotAsExpected} NOT AS EXPECTED.",
-                summary.Problems);
+                Filed("what the check found", summary.Problems));
         },
 
         LookAsync: async asked =>
@@ -1389,6 +1334,22 @@ public sealed class Session : IDisposable
             return new StepOutcome($"{reports.Count} looked up. Nothing was changed.",
                 reports.Select(Summarise).ToList());
         });
+
+    /// <summary>
+    /// Puts a step's reasons in the error log and hands back one line naming the count.
+    ///
+    /// They used to be printed under the step, a line each, which was also the only copy of
+    /// them: reading forty refusals meant reading them there and then, and they pushed the rest
+    /// of the summary off the screen. The log keeps them for as long as anybody wants.
+    /// </summary>
+    private IReadOnlyList<string> Filed(string heading, IReadOnlyList<string> reasons)
+    {
+        if (reasons.Count == 0) return Array.Empty<string>();
+
+        _errors.AppendLines(heading, reasons);
+
+        return new[] { $"{reasons.Count} reason(s) → {_errors.Path}" };
+    }
 
     /// <summary>One line per look-up, for the summary under the step.</summary>
     private static string Summarise(LookupReport report)
