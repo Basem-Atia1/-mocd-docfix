@@ -592,31 +592,27 @@ public sealed class Session : IDisposable
 
         if (recovered.MissingFromJournal > 0)
         {
-            _prompts.Section("The change journal is missing history the ledger has", Tone.Warn);
+            _prompts.Blank();
+
+            // Kept as a warning, because it means a file has been deleted or replaced and only
+            // a person can decide what to do about that. Still one line: Redo does not read the
+            // journal, so nothing is lost for those rows.
             _prompts.Say($"{recovered.MissingFromJournal} row(s) record work the journal has " +
-                         "never heard of. The journal is only ever appended to and is written " +
-                         "before the ledger, so it cannot fall behind on its own — it has been " +
-                         "deleted or replaced.");
-            _prompts.Blank();
-            _prompts.Field("journal", _journal.Path, Tone.Muted);
-            _prompts.Bullet("Nothing is lost for those rows: Redo reads the crm.json snapshot in " +
-                            "each document's backup folder, not the journal.", Tone.Muted);
-            _prompts.Bullet("But the journal can no longer rebuild the ledger if the workbook is " +
-                            "damaged. Leave it alone from here and it will fill in again.",
-                Tone.Muted);
-            _prompts.Blank();
+                         "never heard of, so it has been deleted or replaced — see " +
+                         $"{_journal.Path}. Redo is unaffected; it reads each backup folder.",
+                Tone.Warn);
         }
 
         if (recovered.Rows == 0) return rows;
 
-        _prompts.Section($"{recovered.Rows} row(s) were out of step with the change journal",
-            Tone.Warn);
-        _prompts.Say("A run did the work but was cut short before it could record it. The " +
-                     "journal had it, so the ledger has been put right. Each row says what " +
-                     "changed, in its notes.");
+        // One line. It is not a warning and there is nothing to decide: an earlier run did the
+        // work and was cut short before writing it down, the journal had it, and the ledger now
+        // agrees. Each row carries the detail in its notes.
+        _prompts.Blank();
+        _prompts.Say($"{recovered.Rows} row(s) were behind what an earlier run actually did. " +
+                     "Put right from the change journal.", Tone.Muted);
 
         _ledger.Write(rows);
-        _prompts.Blank();
 
         return rows;
     }
