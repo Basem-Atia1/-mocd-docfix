@@ -80,16 +80,11 @@ public sealed class RepairRun
         // The counter used to run over every row in the ledger, so a run with 668 documents to
         // correct out of 2,478 announced "[ 8/2478 ]" — a number that says nothing about how far
         // through the work you are, and reads as several times more of it than there is.
+        // Fixed once, before the first document. It is what this run set out to do, and a total
+        // that moves while the run is going is not a total anybody can read.
         var toDo = working.Count(r =>
             r.Verdict2() == RowVerdict.Fix &&
             r.State() is not (RowState.Corrected or RowState.Deleted));
-
-        // So that settling a sibling can take it back out of the total. Reference identity is
-        // what is wanted here — LedgerRow is a mutable class, and the rows in the working set
-        // are the same objects as the ones in the whole ledger.
-        var inTheTotal = new HashSet<LedgerRow>(working.Where(r =>
-            r.Verdict2() == RowVerdict.Fix &&
-            r.State() is not (RowState.Corrected or RowState.Deleted)));
 
         var started = 0;
         var settledBySibling = 0;
@@ -137,8 +132,6 @@ public sealed class RepairRun
                 if (siblings.Count > 0)
                 {
                     settledBySibling += siblings.Count;
-                    toDo -= siblings.Count(inTheTotal.Remove);
-
                     _progress.SettledSiblings(siblings.Count);
                 }
             }

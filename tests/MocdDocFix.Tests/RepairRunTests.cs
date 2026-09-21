@@ -575,23 +575,27 @@ public class RepairRunTests : IDisposable
     }
 
     /// <summary>
-    /// The counter is the work, and settling three rows means three fewer to do. Announcing
-    /// "[ 2/4 ]" on a run that will only ever start two documents is the same lie the counter
-    /// over the whole sheet used to tell.
+    /// The total is what the run set out to do, settled before the first document and not moved
+    /// afterwards. A denominator that changes while the run is going cannot be read; how many
+    /// rows a sibling settled is said on the line itself and again in the summary.
     /// </summary>
     [Fact]
-    public async Task The_total_drops_when_siblings_are_settled()
+    public async Task The_total_does_not_move_when_siblings_are_settled()
     {
         UploadsSucceed();
 
         var first = Fixable(1);
         var rows = new[] { first, Sibling(first, 2), Sibling(first, 3), Fixable(4) };
 
-        await Subject().RunAsync(rows, rows, CancellationToken.None);
+        var summary = await Subject().RunAsync(rows, rows, CancellationToken.None);
 
-        // Four rows said fix; two of them were settled by the first, so two were ever started.
+        // Four rows said fix; two were settled by the first, so two were ever started — and the
+        // total stays at four throughout.
         Assert.Contains(_prompts.Messages, m => m.Contains("[ 1/4 ]"));
-        Assert.Contains(_prompts.Messages, m => m.Contains("[ 2/2 ]"));
+        Assert.Contains(_prompts.Messages, m => m.Contains("[ 2/4 ]"));
+        Assert.DoesNotContain(_prompts.Messages, m => m.Contains("[ 2/2 ]"));
+
+        Assert.Equal(2, summary.SettledBySibling);
     }
 
     /// <summary>

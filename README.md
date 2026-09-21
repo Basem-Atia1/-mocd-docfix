@@ -166,11 +166,9 @@ One row is one document, but one *file* can belong to several. A correction writ
 correcting one row moves the file under every row that shares it.
 
 **Those rows are settled the moment the correction lands**, in the same run, and the run says so
-in one line: `3 other row(s) share this file — settled, nothing uploaded for them`. The `[ n/N ]`
-total drops by three at the same time, because there are three fewer documents to work on. Each
-settled row says in its notes which row settled it. They settle as `done` with **no** final
-state: the old file belongs to the row that corrected it, and two rows must never queue the same
-deletion.
+in one line: `3 other row(s) share this file — settled, nothing uploaded for them`. Each settled
+row says in its notes which row settled it. They settle as `done` with **no** final state: the
+old file belongs to the row that corrected it, and two rows must never queue the same deletion.
 
 Rows whose sibling was corrected by an *earlier* run are found by the check before the run
 starts, and settled the same way. The scan also says how many distinct files the sheet holds when
