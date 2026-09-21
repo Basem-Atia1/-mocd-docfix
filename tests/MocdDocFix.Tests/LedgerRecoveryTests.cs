@@ -82,11 +82,12 @@ public class LedgerRecoveryTests
     }
 
     /// <summary>
-    /// Corrected, then put back. Saying the row is corrected when a later entry undid it would
-    /// be worse than saying nothing — so the last word wins, and the row is named once.
+    /// Corrected, then put back. Where the journal ends is where the row already is, so there is
+    /// no gap and nothing to say. Replaying both entries instead would have corrected the row and
+    /// then reverted it, arriving at the same answer while reporting a change that never was.
     /// </summary>
     [Fact]
-    public void A_row_the_journal_touched_twice_is_reported_once_and_as_it_ended()
+    public void A_row_that_already_agrees_with_where_the_journal_ended_is_left_alone()
     {
         var row = Row();
         var first = DateTimeOffset.UtcNow;
@@ -97,8 +98,10 @@ public class LedgerRecoveryTests
             Entry(ChangeActions.Reverted, first.AddMinutes(1))
         });
 
-        Assert.Equal(1, recovered.Rows);
-        Assert.Contains($"\"{RowVerdicts.Fix}\" with no final state", Assert.Single(recovered.Changed).NowIs);
+        Assert.Equal(0, recovered.Rows);
+        Assert.Empty(recovered.Changed);
+        Assert.Equal(RowVerdict.Fix, row.Verdict2());
+        Assert.Equal(string.Empty, row.Notes);
     }
 
     /// <summary>
@@ -256,5 +259,112 @@ public class LedgerRecoveryTests
 
         Assert.Equal(1, recovered.Rows);
         Assert.Equal(RowState.Deleted, row.State());
+    }
+
+    // ---- running twice must be the same as running once ----
+    //
+    // Every mode reconciles the ledger before it starts, so this runs on every open. Replaying
+    // each entry in turn looked equivalent to taking the last word and was not: a document
+    // corrected, reverted and corrected again was replayed from the beginning every time, and
+    // the middle entry undid a row that had already been put right. It arrived at the same
+    // answer, so the row was never wrong — but it reported a change on every open, rewrote both
+    // files, and appended a note and a superseded path, for ever.
+
+    /// <summary>The real journal that showed it: corrected, put back, corrected again.</summary>
+    private static ChangeEntry[] CorrectedRevertedCorrected()
+    {
+        var start = DateTimeOffset.UtcNow.AddHours(-9);
+
+        return new[]
+        {
+            Entry(ChangeActions.Corrected, start),
+            Entry(ChangeActions.Reverted, start.AddMinutes(1)),
+            Entry(ChangeActions.Corrected, start.AddHours(8))
+        };
+    }
+
+    [Fact]
+    public void A_document_corrected_reverted_and_corrected_again_ends_corrected()
+    {
+        var row = Row();
+
+        var recovered = LedgerRecovery.Apply(new[] { row }, CorrectedRevertedCorrected());
+
+        Assert.Equal(1, recovered.Rows);
+        Assert.Equal(RowState.Corrected, row.State());
+        Assert.Equal(NewPath, row.NewFilePath);
+    }
+
+    [Fact]
+    public void The_second_open_finds_nothing_left_to_put_right()
+    {
+        var row = Row();
+        var journal = CorrectedRevertedCorrected();
+
+        LedgerRecovery.Apply(new[] { row }, journal);
+        var again = LedgerRecovery.Apply(new[] { row }, journal);
+
+        Assert.Equal(0, again.Rows);
+        Assert.Empty(again.Changed);
+    }
+
+    /// <summary>
+    /// The notes cell is read in a spreadsheet. One line per open, for ever, fills it with the
+    /// same sentence and buries whatever somebody wrote there by hand.
+    /// </summary>
+    [Fact]
+    public void Opening_the_ledger_again_and_again_does_not_grow_the_notes()
+    {
+        var row = Row();
+        var journal = CorrectedRevertedCorrected();
+
+        LedgerRecovery.Apply(new[] { row }, journal);
+        var afterFirst = row.Notes;
+
+        for (var i = 0; i < 5; i++) LedgerRecovery.Apply(new[] { row }, journal);
+
+        Assert.Equal(afterFirst, row.Notes);
+    }
+
+    /// <summary>
+    /// Every revert files the abandoned copy under superseded paths, and the repair run reads
+    /// that column to reuse a copy rather than upload another. Re-running the revert on each
+    /// open wrote the same path again and again.
+    /// </summary>
+    [Fact]
+    public void Opening_the_ledger_again_and_again_does_not_repeat_a_superseded_path()
+    {
+        var row = Row(finalState: RowStates.Corrected);
+        row.NewFilePath = NewPath;
+
+        var journal = new[] { Entry(ChangeActions.Reverted) };
+
+        LedgerRecovery.Apply(new[] { row }, journal);
+        var afterFirst = row.SupersededPaths;
+
+        for (var i = 0; i < 5; i++) LedgerRecovery.Apply(new[] { row }, journal);
+
+        Assert.Equal(afterFirst, row.SupersededPaths);
+        Assert.Equal(NewPath, row.SupersededPaths);
+    }
+
+    /// <summary>
+    /// A row recovered straight to "deleted" still needs to say where the file went. The delete
+    /// is the last word, but the new path was written by the correction before it.
+    /// </summary>
+    [Fact]
+    public void A_row_recovered_straight_to_deleted_keeps_the_new_file_path()
+    {
+        var row = Row();
+        var start = DateTimeOffset.UtcNow.AddHours(-1);
+
+        LedgerRecovery.Apply(new[] { row }, new[]
+        {
+            Entry(ChangeActions.Corrected, start),
+            Entry(ChangeActions.Deleted, start.AddMinutes(5))
+        });
+
+        Assert.Equal(RowState.Deleted, row.State());
+        Assert.Equal(NewPath, row.NewFilePath);
     }
 }

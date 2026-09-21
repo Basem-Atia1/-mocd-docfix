@@ -34,11 +34,18 @@ public sealed record Recovered(
 /// recorded as superseded.
 ///
 /// The journal is append-only and is written before the ledger, so it always knows at least as
-/// much. Replaying it in order and filling in what the ledger is missing closes the gap without
-/// asking CRM anything.
+/// much. Comparing the ledger against where the journal says each document ended closes the gap
+/// without asking CRM anything.
 ///
-/// It only ever fills in blanks. A row the ledger already has an answer for is left alone —
-/// this reconciles a gap, it does not overrule the operator.
+/// **Where it ended, not every step it took.** Replaying each entry in turn looks equivalent and
+/// is not: a document corrected, reverted and corrected again was replayed from the beginning on
+/// every open, and the middle entry undid a row that had already been put right. It came out at
+/// the same answer, so the row was never wrong — but it reported a change every time, rewrote
+/// both files every time, and appended a note and a superseded path every time, for ever.
+///
+/// It only ever fills in blanks. A row that already agrees with the journal is left alone, and
+/// so is a row further along than the journal — this reconciles a gap, it does not overrule the
+/// operator or walk a finished row backwards.
 /// </summary>
 public static class LedgerRecovery
 {
@@ -47,27 +54,29 @@ public static class LedgerRecovery
         var byDocument = new Dictionary<Guid, LedgerRow>();
         foreach (var row in rows) byDocument[row.DocId] = row;
 
-        var changed = new Dictionary<Guid, RecoveredRow>();
+        var changed = new List<RecoveredRow>();
 
-        // In order: a document corrected, reverted and corrected again must end where it ended.
-        // The dictionary is keyed on the document for the same reason — the last word wins, and
-        // saying a row is corrected when a later entry put it back to fix would be worse than
-        // saying nothing.
-        foreach (var entry in journal.OrderBy(e => e.At))
+        foreach (var forOneDocument in journal.GroupBy(e => e.Doc))
         {
-            if (!byDocument.TryGetValue(entry.Doc, out var row)) continue;
+            if (!byDocument.TryGetValue(forOneDocument.Key, out var row)) continue;
 
-            var what = entry.Action switch
+            var history = forOneDocument.OrderBy(e => e.At).ToList();
+            var last = history[^1];
+
+            var what = last.Action switch
             {
-                ChangeActions.Corrected => Correct(row, entry),
-                ChangeActions.Deleted => Delete(row),
+                ChangeActions.Corrected => Correct(row, last),
+                ChangeActions.Deleted => Delete(row, history),
                 ChangeActions.Reverted => Revert(row),
                 _ => null
             };
 
             if (what is null) continue;
 
-            changed[row.DocId] = new RecoveredRow(row, what.Value.Did, what.Value.NowIs);
+            row.Notes = Add(row.Notes, $"recovered from the change journal {Now()} — an earlier " +
+                                       $"run {what.Value.Did} and never recorded it");
+
+            changed.Add(new RecoveredRow(row, what.Value.Did, what.Value.NowIs));
         }
 
         // The other direction. The journal is written before the ledger and only ever appended
@@ -79,7 +88,7 @@ public static class LedgerRecovery
         var missing = rows.Count(r =>
             r.State() is RowState.Corrected or RowState.Deleted && !known.Contains(r.DocId));
 
-        return new Recovered(changed.Count, changed.Values.ToList(), missing);
+        return new Recovered(changed.Count, changed, missing);
     }
 
     /// <returns>What the row holds now and what was done to it, or null when nothing was.</returns>
@@ -92,23 +101,26 @@ public static class LedgerRecovery
         row.FinalState = RowStates.Text(RowState.Corrected);
         row.Verdict = RowVerdicts.Done;
         row.Error = string.Empty;
-        row.Notes = Add(row.Notes,
-            $"recovered from the change journal {Now()} — it was corrected at " +
-            $"{entry.At.LocalDateTime:yyyy-MM-dd HH:mm} and the ledger never recorded it");
 
         return ("corrected it",
             $"verdict \"{RowVerdicts.Done}\" and final state \"{RowStates.Corrected}\"");
     }
 
-    private static (string Did, string NowIs)? Delete(LedgerRow row)
+    /// <param name="history">
+    /// Every entry for this document, in order. The delete is the last word, but the new path is
+    /// written by the correction before it — and a row recovered straight to "deleted" with no
+    /// new file path would have nothing to say where the file went.
+    /// </param>
+    private static (string Did, string NowIs)? Delete(LedgerRow row, IReadOnlyList<ChangeEntry> history)
     {
         if (row.State() == RowState.Deleted) return null;
 
+        if (row.NewFilePath.Length == 0)
+            row.NewFilePath = history.LastOrDefault(e => e.Action == ChangeActions.Corrected)
+                ?.New?.Path ?? row.NewFilePath;
+
         row.FinalState = RowStates.Text(RowState.Deleted);
         row.Verdict = RowVerdicts.Done;
-        row.Notes = Add(row.Notes,
-            $"recovered from the change journal {Now()} — its old file was deleted and the " +
-            "ledger never recorded it");
 
         return ("deleted its old file",
             $"verdict \"{RowVerdicts.Done}\" and final state \"{RowStates.Text(RowState.Deleted)}\"");
@@ -116,6 +128,8 @@ public static class LedgerRecovery
 
     private static (string Did, string NowIs)? Revert(LedgerRow row)
     {
+        // Already back, or never got as far as being corrected. Either way there is nothing to
+        // put back — and a row already at fix must not have its superseded path written twice.
         if (row.State() != RowState.Corrected) return null;
 
         if (row.NewFilePath.Length > 0)
@@ -126,9 +140,6 @@ public static class LedgerRecovery
         row.NewFilePath = string.Empty;
         row.FinalState = string.Empty;
         row.Verdict = RowVerdicts.Fix;
-        row.Notes = Add(row.Notes,
-            $"recovered from the change journal {Now()} — it was put back and the ledger never " +
-            "recorded it");
 
         // A revert clears the final state, so the verdict is the cell that now says what the row
         // is. It is work again, which is the whole point of putting a record back.
