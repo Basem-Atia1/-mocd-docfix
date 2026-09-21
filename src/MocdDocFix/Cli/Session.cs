@@ -1168,26 +1168,6 @@ public sealed class Session : IDisposable
             Tone.Muted);
     }
 
-    /// <summary>
-    /// Said once, on entering the repair run — not per document, which would train the operator
-    /// to skip past it.
-    /// </summary>
-    private void WarnAboutInPlace()
-    {
-        _prompts.Section("Before this starts", Tone.Warn);
-        _prompts.Say("Corrections are written into the existing mocd_documentfile record. A " +
-                     "portal-created record's id equals its original file id, and after a " +
-                     "correction it no longer will.");
-        _prompts.Blank();
-        _prompts.Bullet("Nothing in CRM reads a file path off the record id — DownloadDocument " +
-                        "takes a FilePath, and its callers read mocd_filepath off the record — " +
-                        "so this breaks the convention, not any code path.", Tone.Muted);
-        _prompts.Bullet("There is no new record and nothing is repointed.", Tone.Muted);
-        _prompts.Bullet("The ledger and the backup folder are the only route back. Do not delete " +
-                        "them.", Tone.Muted);
-        _prompts.Blank();
-    }
-
     // ---- the four modes ----
 
     public LedgerActions Actions(CancellationToken outer) => new(
@@ -1215,8 +1195,6 @@ public sealed class Session : IDisposable
             await SettleAlreadyCorrectAsync(rows, all, ct);
 
             ReportAbandonedUploads(rows);
-
-            WarnAboutInPlace();
 
             var progress = new RunProgress(_prompts, AskHowCloselyToWatch());
 
