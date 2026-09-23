@@ -132,7 +132,7 @@ on is that there is no file. A row carrying a final state is never removed by an
 | `corrected and pending the delete of old docs` | the only value the delete step acts on |
 | `old files deleted` | finished |
 | `ignore` | keep the old file forever |
-| `failed` | see the `error` column and `errors-<env>.txt` |
+| `failed` | see the `error` column and `errors-<env>.txt`; the verdict becomes `review`, so no run retries it until you set it back to `fix` |
 
 Anything else in either column is treated as "leave this row alone" and listed at the end of
 the run, so a typo can never cause a write.

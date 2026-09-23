@@ -623,4 +623,70 @@ public class RepairRunTests : IDisposable
 
         Assert.Single(_prompts.Messages, m => m.Contains("2 other row(s) share this file"));
     }
+
+    // ---- a failure is not tried again by itself ----
+    //
+    // Most failures here are permanent. A file server that reports success and returns no bytes
+    // will do it again tomorrow, and a row left saying fix is worked on every run for ever,
+    // failing identically and asking the operator the same question each time.
+
+    [Fact]
+    public async Task A_failed_row_is_set_to_review()
+    {
+        UploadsSucceed();
+        var row = Fixable(1);
+        var onTheServer = _files.Files[row.OldFilePath];
+        _files.Files.Remove(row.OldFilePath);
+        _prompts.YesNoQueue = new Queue<bool>(new[] { true });
+
+        await Subject().RunAsync(new[] { row }, new[] { row }, CancellationToken.None);
+
+        Assert.Equal(RowVerdict.Review, row.Verdict2());
+
+        // The final state still says what happened, and the error column still says why.
+        Assert.Equal(RowState.Failed, row.State());
+        Assert.NotEqual(string.Empty, row.Error);
+    }
+
+    [Fact]
+    public async Task The_next_run_does_not_work_a_row_that_failed_before()
+    {
+        UploadsSucceed();
+        var row = Fixable(1);
+        var onTheServer = _files.Files[row.OldFilePath];
+        _files.Files.Remove(row.OldFilePath);
+        _prompts.YesNoQueue = new Queue<bool>(new[] { true });
+
+        await Subject().RunAsync(new[] { row }, new[] { row }, CancellationToken.None);
+
+        // Everything put back as it would be on a second run — except the row's own verdict.
+        _files.Files[row.OldFilePath] = onTheServer;
+        _prompts.Questions.Clear();
+
+        var again = await Subject().RunAsync(new[] { row }, new[] { row }, CancellationToken.None);
+
+        Assert.Equal(0, again.Failed);
+        Assert.Equal(0, again.Corrected);
+        Assert.DoesNotContain(_prompts.Questions, q => q.Contains("Carry on"));
+    }
+
+    /// <summary>One cell back to fix and it is work again. Nothing else has to be undone.</summary>
+    [Fact]
+    public async Task Putting_the_verdict_back_to_fix_makes_it_work_again()
+    {
+        UploadsSucceed();
+        var row = Fixable(1);
+        var onTheServer = _files.Files[row.OldFilePath];
+        _files.Files.Remove(row.OldFilePath);
+        _prompts.YesNoQueue = new Queue<bool>(new[] { true });
+
+        await Subject().RunAsync(new[] { row }, new[] { row }, CancellationToken.None);
+
+        _files.Files[row.OldFilePath] = onTheServer;
+        row.Verdict = RowVerdicts.Fix;
+
+        var again = await Subject().RunAsync(new[] { row }, new[] { row }, CancellationToken.None);
+
+        Assert.Equal(1, again.Corrected);
+    }
 }

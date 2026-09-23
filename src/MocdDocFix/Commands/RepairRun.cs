@@ -122,6 +122,15 @@ public sealed class RepairRun
                 row.FinalState = RowStates.Text(RowState.Failed);
                 row.Error = Short(outcome.Failure!);
 
+                // Review, not fix. Most failures here are permanent — a file server that returns
+                // success and no bytes will do it again tomorrow — and a row left saying fix is
+                // tried on every run for ever, failing identically each time and asking the
+                // operator the same question. Somebody has to look; that is what review means.
+                //
+                // A failure that really was a blip is one cell back to fix, and the error column
+                // and the log say which kind it was.
+                row.Verdict = RowVerdicts.Review;
+
                 _errors.Append(started, toDo, row, outcome.FailedStep!, outcome.Failure!);
                 _progress.Failed(row, row.Error);
             }
@@ -168,8 +177,9 @@ public sealed class RepairRun
     private bool KeepGoing()
     {
         _prompts.Blank();
-        _prompts.Say("That document was not corrected. Its row says failed, and the full detail " +
-                     "is in the error log.", Tone.Warn);
+        _prompts.Say("That document was not corrected. Its row is now review, so no run will " +
+                     "try it again until you say so; the full detail is in the error log.",
+            Tone.Warn);
 
         return _prompts.YesNo("  Carry on with the next document?", defaultYes: false, Tone.Warn);
     }
