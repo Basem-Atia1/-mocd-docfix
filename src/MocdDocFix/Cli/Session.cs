@@ -715,10 +715,8 @@ public sealed class Session : IDisposable
         var byOthers = merged.Moved.Count - bySibling;
 
         _prompts.Blank();
-        _prompts.Say($"{merged.Moved.Count} row(s) point at a file that has moved since the " +
-                     $"ledger last looked — {bySibling} moved by another row sharing the same " +
-                     $"record, {byOthers} by something outside this tool. Their old path is " +
-                     "kept, and nothing will be uploaded for them twice.", Tone.Warn);
+        _prompts.Say($"{merged.Moved.Count} file(s) moved since the last scan · " +
+                     $"{bySibling} by a sibling row, {byOthers} outside this tool.", Tone.Warn);
     }
 
     /// <summary>
