@@ -226,6 +226,13 @@ public sealed class Session : IDisposable
         // documents out of the sheet is applied in exactly one place rather than two.
         var merged = LedgerMerge.Into(existing, scanned);
 
+        // Rows whose document CRM no longer returns. Nothing will ever act on one again, so a
+        // clean one goes; one that still records work stays and is marked in its notes, because
+        // deleting the document in CRM does not remove the old file or the copies left behind.
+        // Silently either way: there is nothing here to decide.
+        var deleted = DropDeletedDocuments.From(merged.Rows, merged.Gone, InScopeText);
+        merged = merged with { Rows = deleted.Rows };
+
         if (existing.Count == 0)
         {
             _ledger.Write(merged.Rows);
@@ -377,6 +384,10 @@ public sealed class Session : IDisposable
             ? all
             : _appConfig.ServiceCatalogues;
 
+    /// <summary>The same set as the rows hold it — a string, and case does not matter.</summary>
+    private IReadOnlySet<string> InScopeText =>
+        InScope.Select(c => c.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// What the scan found, in two lines.
     ///
@@ -426,30 +437,22 @@ public sealed class Session : IDisposable
     {
         if (merged.Gone.Count == 0) return;
 
-        var inScope = InScope.Select(c => c.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
         var outOfScope = merged.Gone
-            .Where(r => r.ServiceCatalogueId.Length > 0 && !inScope.Contains(r.ServiceCatalogueId))
-            .ToList();
+            .Count(r => r.ServiceCatalogueId.Length > 0 && !InScopeText.Contains(r.ServiceCatalogueId));
 
-        var absent = merged.Gone.Except(outOfScope).ToList();
+        if (outOfScope == 0) return;
 
         _prompts.Blank();
 
         // Counted, not listed. Narrowing from every catalogue back to the eight puts tens of
         // thousands of rows in here at once, and a bullet each says nothing a single number does
         // not — it only buries the rows below that are worth reading.
-        if (outOfScope.Count > 0)
-            _prompts.Say($"{outOfScope.Count} row(s) belong to services you did not scan this " +
-                         "run — nothing will act on them.", Tone.Muted);
+        _prompts.Say($"{outOfScope} row(s) belong to services you did not scan this run — " +
+                     "nothing will act on them.", Tone.Muted);
 
-        // These are a different thing: still in scope, and CRM did not return them. That is a
-        // document that has been deleted — so it is said louder, but still as a number. The
-        // rows are in the sheet, which is where anybody would go to read them.
-        if (absent.Count > 0)
-            _prompts.Say($"{absent.Count} row(s) are in scope and CRM did not return them — " +
-                         "deleted documents. Kept in the sheet; nothing will act on them.",
-                Tone.Warn);
+        // The ones that really are gone are not reported at all. DropDeletedDocuments has
+        // already taken them out of the sheet, and the few it kept say why in their own notes —
+        // there is nothing on screen to decide, and a line saying so is a line about tidying up.
     }
 
     /// <summary>

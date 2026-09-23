@@ -175,9 +175,14 @@ Rows whose sibling was corrected by an *earlier* run are found by the check befo
 starts, and settled the same way. The scan also says how many distinct files the sheet holds when
 it is fewer than the number of rows.
 
-Documents CRM no longer returns are kept — deleting the row would throw away the record of what
-was done — and no run acts on them. The message says which kind of gone they are: out of scope
-now, because their service is not one the tool is set up for any more, or genuinely absent.
+A document CRM no longer returns has been deleted there, so its row leaves the sheet — quietly,
+because there is nothing to decide. The exception is a row that still records work: a correction
+whose old file is waiting to be deleted, or a copy left on the file server. Deleting the document
+in CRM removes neither, and the row is the only thing that knows where they are, so it stays and
+its notes say `[deleted in crm]`.
+
+A row whose *service* you did not scan this run is a different thing — not missing, just not
+looked for. Those are left exactly as they are, and counted in one line.
 
 The row number is positional. The sheet is sorted by verdict and renumbered every time it is
 written, so a document that was row 1 this morning can be row 408 this afternoon. That is why
